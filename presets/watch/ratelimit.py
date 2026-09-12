@@ -23,6 +23,7 @@ instance of, one layer up.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from typing import Any
@@ -213,6 +214,7 @@ def fleet_projected_requests_per_hour(
     census: dict[str, Any],
     interval_by_source: dict[str, int] | None = None,
     default_interval: int = 30,
+    calls_per_tick_by_source: dict[str, int] | None = None,
 ) -> tuple[float, dict[str, int]]:
     """(projected total requests/hour, {source: poller count}), fleet-wide.
 
@@ -222,12 +224,20 @@ def fleet_projected_requests_per_hour(
     30s, every `GH_SOURCES` member's own shipped default -- rather than
     failing the whole projection over one source this call could not
     resolve an interval for.
+
+    `calls_per_tick_by_source` (#2525) lets a caller override
+    `CALLS_PER_TICK`'s flat, hand-kept estimate with a measured number --
+    `gh_branch_calls_per_tick(workflow_file_count(...))` for `gh-branch`,
+    whose flat `3` this module's own comment already admitted undercounts.
+    A source missing from it falls back to `CALLS_PER_TICK`, same shape as
+    `interval_by_source` above.
     """
     counts = fleet_gh_poller_counts(census)
     total = 0.0
     for source, n in counts.items():
         interval = (interval_by_source or {}).get(source) or default_interval
-        calls = CALLS_PER_TICK.get(source, DEFAULT_CALLS_PER_TICK)
+        calls = ((calls_per_tick_by_source or {}).get(source)
+                 or CALLS_PER_TICK.get(source, DEFAULT_CALLS_PER_TICK))
         total += projected_requests_per_hour(n, calls, interval)
     return total, counts
 
@@ -237,6 +247,7 @@ def render_budget_lines(
     rate_limit_why: str,
     projected: float,
     counts: dict[str, int],
+    active_errors: list[tuple[str, str, str]] | None = None,
 ) -> list[str]:
     """The `watches` budget section -- plain strings, no `watches: ` prefix
     (the caller adds that, same as every other section of that board).
@@ -247,6 +258,21 @@ def render_budget_lines(
     is the one positive control this function exists to make testable in
     isolation: it fires when (and only when) `projected` exceeds the core
     limit this read actually returned.
+
+    `active_errors` (#2525) is `[(source, id, error), ...]` for every
+    GH_SOURCES poller whose own last-read state currently carries a
+    rate-limit-shaped error -- `active_gh_rate_limit_errors`, below, builds
+    it from the fleet's own state files. When it is non-empty *and* the core
+    reading above shows real headroom, the two instruments disagree: GitHub
+    enforces a *secondary* rate limit (abuse-detection throttling on request
+    concurrency/burst rate, undocumented thresholds) entirely separately
+    from the primary per-hour budget `gh api rate_limit` reports on, and
+    GitHub's own docs say a secondary-limit rejection is not reflected in
+    `/rate_limit` or in any response header at all -- so a full-looking core
+    line here is never evidence that the fleet is not being throttled.
+    `remaining == 0` is the one case this must NOT flag: there the core
+    budget itself explains the failure, and printing a disagreement over a
+    consistent reading would be the false positive this exists to avoid.
     """
     lines: list[str] = []
     if not counts:
@@ -279,5 +305,87 @@ def render_budget_lines(
                      f"spends a call. Use a fleet-wide interval override "
                      f"(SUPERTOOL_WATCH_INTERVAL) or unwatch some of the "
                      f"{sum(counts.values())} gh-backed pollers listed above.")
+    if active_errors and isinstance(remaining, (int, float)) and remaining > 0:
+        example_source, example_id, example_error = active_errors[0]
+        lines.append(
+            f"  DISAGREEMENT: {len(active_errors)} gh-backed poller(s) are "
+            f"currently failing with a rate-limit-shaped error (e.g. "
+            f"{example_source}:{example_id} — {example_error!r}) while this "
+            f"core reading shows {remaining} of {limit} still free. GitHub's "
+            f"secondary rate limit (abuse-detection throttling) is not "
+            f"reported by `gh api rate_limit` or by any response header at "
+            f"all — a healthy-looking core budget here does not mean the "
+            f"fleet is not being throttled. Trust the poller's own error over "
+            f"this line.")
     return lines
+
+
+def active_gh_rate_limit_errors(
+    states: dict[tuple[str, str], dict[str, Any]],
+) -> list[tuple[str, str, str]]:
+    """`[(source, id, error), ...]` for every `GH_SOURCES` poller in `states`
+    whose current state carries a rate-limit-shaped `error` right now (#2525).
+
+    `states` maps `(source, watcher_id) -> state dict` -- the caller reads
+    each poller's own state file (`transport.read_state`) fresh, because the
+    board rows this preset already builds carry only `last_event`'s event
+    key, not the raw error text `is_rate_limit_error` classifies. A source
+    outside `GH_SOURCES` (GitLab, Slack, ...) contributes nothing: it draws
+    on a different budget, or none, and the same "rate limit" wording in an
+    unrelated tool's error would be a false positive here.
+    """
+    out: list[tuple[str, str, str]] = []
+    for (source, watcher_id), state in states.items():
+        if source not in GH_SOURCES:
+            continue
+        error = (state or {}).get("error") or ""
+        if is_rate_limit_error(error):
+            out.append((source, watcher_id, error))
+    return out
+
+
+def gh_branch_calls_per_tick(workflow_count: int) -> int:
+    """3 fixed calls (`_head_commit`, `_run_list`, `_repo_identity`) plus one
+    `_jobs_for` call per workflow selected on the watched sha (#2525).
+
+    `CALLS_PER_TICK["gh-branch"]` used to be a flat `3` that this module's
+    own comment already admitted undercounts by exactly this -- one
+    `_jobs_for` call per selected run, never zero once any workflow has run
+    on the watched sha. `workflow_count` is the number of workflow files in
+    the watched repo's `.github/workflows/` (see `workflow_file_count`,
+    below) -- an upper approximation of how many runs are typically selected
+    on one commit, since a path-filtered workflow will not fire on every
+    push. An upper approximation is the right direction to round in: this
+    table exists to warn before the budget is empty, and rounding it down
+    the way the flat `3` did is rounding toward the false negative.
+
+    Never below the three fixed calls `_snapshot` always makes, regardless
+    of how a caller's workflow count was derived -- a negative or garbage
+    count must not project fewer requests than the poller's own floor.
+    """
+    return 3 + max(0, workflow_count)
+
+
+def workflow_file_count(repo_root: str) -> tuple[int | None, str]:
+    """How many `*.yml`/`*.yaml` files live under `repo_root/.github/workflows`,
+    or `(None, why)` when that cannot be told (#2525).
+
+    Each workflow file is a candidate producer of a run selected on the
+    watched sha (`gh-branch._run_list` + `runs_on_sha`) -- not every one
+    necessarily fires on a given push (path filters, branch filters), so
+    this is an upper bound on `gh_branch_calls_per_tick`'s `workflow_count`,
+    never an exact per-commit count. `None` on an absent or unreadable
+    directory, never `0`: a repo that genuinely ships no workflows and a
+    repo whose `.github/workflows` this call could not list must not render
+    the same, the same three-states rule as every other read in this module.
+    """
+    wf_dir = os.path.join(repo_root, ".github", "workflows")
+    try:
+        names = os.listdir(wf_dir)
+    except FileNotFoundError:
+        return None, f"{wf_dir} does not exist"
+    except OSError as e:
+        return None, f"{wf_dir} could not be listed ({type(e).__name__})"
+    count = sum(1 for n in names if n.endswith((".yml", ".yaml")))
+    return count, ""
 

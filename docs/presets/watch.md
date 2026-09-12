@@ -2202,6 +2202,45 @@ A `gh api rate_limit` read that itself fails (no `gh`, no credentials, a
 timeout) says so rather than omitting the section or rendering as though the
 projection had been checked — the third state this whole preset keeps to.
 
+### `gh-branch`'s calls-per-tick is measured against the watched repo's own workflows, not a flat guess ([#2525](https://github.com/Digital-Process-Tools/claude-supertool/issues/2525))
+
+`ratelimit.CALLS_PER_TICK["gh-branch"]`'s flat `3` above always undercounted
+by exactly the `_jobs_for` calls the paragraph above already admits it
+drops. `watches` now reads `.github/workflows/` in its own cwd (the repo the
+session is watching) once per render and derives
+`ratelimit.gh_branch_calls_per_tick(workflow_count)` — `3 + workflow_count`
+— to use in place of the flat `3` in the projection above, an upper
+approximation (a path-filtered workflow will not fire on every push) rather
+than the flat table's undercount. When that directory cannot be read at all,
+the flat table entry is used exactly as before — this never guesses a
+workflow count it could not establish.
+
+### `watches` flags a DISAGREEMENT between the core reading and a poller that is presently being throttled ([#2525](https://github.com/Digital-Process-Tools/claude-supertool/issues/2525))
+
+Five exhaustions in nine hours (#2525) turned up `gh api rate_limit`
+reporting a healthy core (`5000/5000`, `4998/5000`, ...) within minutes of a
+`*_unreachable` event on the same token. GitHub enforces a *secondary* rate
+limit — abuse-detection throttling on request burst/concurrency, with
+thresholds it does not publish — entirely separately from the primary
+per-hour budget the section above is built on, and GitHub's own REST API
+docs say a secondary-limit rejection is not reflected in `/rate_limit` or in
+any response header at all. A full-looking core line is therefore never
+proof the fleet is not being throttled.
+
+`watches` now reads every `GH_SOURCES` poller's own current state on this
+channel and, when at least one is presently failing with a rate-limit-shaped
+error while the core reading above shows real headroom, prints both
+instruments side by side:
+
+```
+watches:   core: 4800/5000 remaining, resets 2026-09-12T02:00:00Z
+watches:   DISAGREEMENT: 1 gh-backed poller(s) are currently failing with a rate-limit-shaped error (e.g. gh-branch:main — 'ERROR: GitHub API rate limit exceeded. Wait a few minutes.') while this core reading shows 4800 of 5000 still free. GitHub's secondary rate limit (abuse-detection throttling) is not reported by `gh api rate_limit` or by any response header at all — a healthy-looking core budget here does not mean the fleet is not being throttled. Trust the poller's own error over this line.
+```
+
+`remaining == 0` never triggers this: there the core budget itself already
+explains the failure, and flagging a disagreement over a consistent reading
+would be the false positive this exists to avoid.
+
 ### Back-off: `retry_after` on a rate-limit-shaped `*_unreachable`
 
 `presets/watch/tiers/gh_prs.py` already special-cases the rate-limit stderr

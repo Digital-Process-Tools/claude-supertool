@@ -84,6 +84,20 @@ def test_fleet_projected_requests_per_hour_uses_default_interval() -> None:
     assert total == 120.0
 
 
+def test_fleet_projected_requests_per_hour_takes_a_calls_per_tick_override() -> None:
+    """#2525: a measured `gh-branch` call count (3 fixed + 2 selected runs =
+    5, via `gh_branch_calls_per_tick`) overrides the flat `CALLS_PER_TICK`
+    entry (3) that this module's own comment already admits undercounts."""
+    census = _census(mine={("gh-branch", "1"): [111]})
+    flat_total, _ = ratelimit.fleet_projected_requests_per_hour(census)
+    measured_total, counts = ratelimit.fleet_projected_requests_per_hour(
+        census, calls_per_tick_by_source={"gh-branch": ratelimit.gh_branch_calls_per_tick(2)})
+    assert counts == {"gh-branch": 1}
+    assert measured_total > flat_total
+    # 1 poller x 5 calls/tick x 3600/30 = 600
+    assert measured_total == 600.0
+
+
 # ---------------------------------------------------------------------------
 # render_budget_lines: the WARN is a positive control, paired must-fire /
 # must-not-fire in the same fixture
@@ -147,3 +161,106 @@ def test_reset_iso_formats_a_real_epoch_and_rejects_garbage() -> None:
     assert ratelimit.reset_iso("not-a-number") == ""
     assert ratelimit.reset_iso(None) == ""
 
+
+
+
+# ---------------------------------------------------------------------------
+# #2525: /rate_limit reporting a full core bucket while gh-backed pollers are
+# actively failing with a rate-limit-shaped error -- GitHub's *secondary*
+# rate limit (abuse-detection throttling) is not reflected in `/rate_limit`
+# or in any response header at all (per GitHub's own REST API rate-limit
+# docs), so a healthy-looking core reading here is not evidence that the
+# fleet is not being throttled. The two instruments must render side by
+# side when they disagree.
+# ---------------------------------------------------------------------------
+
+def test_active_gh_rate_limit_errors_keeps_only_gh_sources_with_a_matching_error() -> None:
+    states = {
+        ("gh-branch", "42"): {"error": "ERROR: GitHub API rate limit exceeded. Wait a few minutes."},
+        ("gh-run", "99"): {"error": "ERROR: gh timed out"},
+        ("gl-mr", "7"): {"error": "ERROR: GitHub API rate limit exceeded. Wait a few minutes."},
+    }
+    out = ratelimit.active_gh_rate_limit_errors(states)
+    assert out == [("gh-branch", "42",
+                     "ERROR: GitHub API rate limit exceeded. Wait a few minutes.")]
+
+
+def test_active_gh_rate_limit_errors_is_empty_when_nothing_matches() -> None:
+    """Must-not-fire twin: a GH_SOURCES poller with a clean or unrelated
+    error contributes nothing."""
+    states = {
+        ("gh-branch", "42"): {"error": ""},
+        ("gh-run", "99"): {"error": "ERROR: gh CLI not authenticated. Run: gh auth login"},
+    }
+    assert ratelimit.active_gh_rate_limit_errors(states) == []
+
+
+def test_render_budget_lines_flags_a_disagreement_when_core_looks_healthy() -> None:
+    """Must-fire half: core shows 4800/5000 free while a gh-backed poller is
+    presently failing with a rate-limit-shaped error -- exactly the shape
+    #2525 measured five times in nine hours."""
+    lines = ratelimit.render_budget_lines(
+        _rate_limit(remaining=4800, limit=5000), "", projected=200.0,
+        counts={"gh-branch": 1},
+        active_errors=[("gh-branch", "42",
+                        "ERROR: GitHub API rate limit exceeded. Wait a few minutes.")])
+    assert any("DISAGREEMENT" in line for line in lines), lines
+    assert any("secondary rate limit" in line for line in lines), lines
+
+
+def test_render_budget_lines_no_disagreement_when_core_is_actually_exhausted() -> None:
+    """Must-not-fire twin, same fixture shape: remaining is 0, so the
+    poller's failure is explained by the primary budget itself -- no
+    disagreement to report."""
+    lines = ratelimit.render_budget_lines(
+        _rate_limit(remaining=0, limit=5000), "", projected=200.0,
+        counts={"gh-branch": 1},
+        active_errors=[("gh-branch", "42",
+                        "ERROR: GitHub API rate limit exceeded. Wait a few minutes.")])
+    assert not any("DISAGREEMENT" in line for line in lines), lines
+
+
+def test_render_budget_lines_no_disagreement_when_no_active_errors() -> None:
+    """Must-not-fire twin: a healthy core and no active_errors argument at
+    all (the default) must never manufacture a disagreement."""
+    lines = ratelimit.render_budget_lines(
+        _rate_limit(remaining=4800, limit=5000), "", projected=200.0,
+        counts={"gh-branch": 1})
+    assert not any("DISAGREEMENT" in line for line in lines), lines
+
+
+# ---------------------------------------------------------------------------
+# #2525: gh-branch's real per-tick cost -- the flat "3" in CALLS_PER_TICK
+# undercounts by one `_jobs_for` call per run selected on the watched sha,
+# and this measures that instead of assuming a fixed number.
+# ---------------------------------------------------------------------------
+
+def test_gh_branch_calls_per_tick_adds_one_call_per_selected_workflow() -> None:
+    assert ratelimit.gh_branch_calls_per_tick(0) == 3
+    assert ratelimit.gh_branch_calls_per_tick(1) == 4
+    assert ratelimit.gh_branch_calls_per_tick(3) == 6
+
+
+def test_gh_branch_calls_per_tick_never_goes_below_the_three_fixed_calls() -> None:
+    """Must-not-fire twin: a negative or garbage workflow count must not
+    project fewer than the three calls `_snapshot` always makes."""
+    assert ratelimit.gh_branch_calls_per_tick(-5) == 3
+
+
+def test_workflow_file_count_reads_the_watched_repos_own_workflows(tmp_path) -> None:
+    wf_dir = tmp_path / ".github" / "workflows"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "tests.yml").write_text("name: tests\n")
+    (wf_dir / "changelog.yml").write_text("name: changelog\n")
+    (wf_dir / "notes.md").write_text("not a workflow\n")
+    count, why = ratelimit.workflow_file_count(str(tmp_path))
+    assert count == 2, why
+    assert why == ""
+
+
+def test_workflow_file_count_says_why_not_when_the_directory_is_absent(tmp_path) -> None:
+    """Third state: no `.github/workflows` at all must not read as zero
+    workflows silently -- it is "could not tell", not "confirmed none"."""
+    count, why = ratelimit.workflow_file_count(str(tmp_path))
+    assert count is None
+    assert why
