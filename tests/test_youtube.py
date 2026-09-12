@@ -7,6 +7,7 @@ youtube_list (#227). No OAuth2 write ops exist yet.
 """
 from __future__ import annotations
 
+import io
 import json
 import urllib.error
 from pathlib import Path
@@ -342,9 +343,17 @@ def test_yt_get_returns_parsed_json(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_yt_get_maps_http_error_and_redacts_key(monkeypatch: pytest.MonkeyPatch) -> None:
     def raise_http_error(*a, **kw):
+        # A real HTTPError from urlopen always carries a real file-like `fp`
+        # (its own body). fp=None is not a shape this repo's own HTTPError
+        # constructions use anywhere else -- tests/test_security_error_echo_691.py's
+        # _http_error() passes io.BytesIO(...) for exactly this reason, and
+        # HTTPError.read() on an fp=None instance behaves differently across
+        # Python versions (observed: raises KeyError on 3.9, not on 3.10/3.11)
+        # rather than being a documented, stable API. Mirror the established
+        # pattern instead of exercising an unsupported shape.
         raise urllib.error.HTTPError(
             "https://www.googleapis.com/youtube/v3/videos?key=SECRETKEY123",
-            403, "Forbidden", {}, None)
+            403, "Forbidden", {}, io.BytesIO(b'{"error": "quota exceeded"}'))
 
     monkeypatch.setattr(yt, "urlopen", raise_http_error)
     with pytest.raises(yt.YouTubeAPIError) as exc:
