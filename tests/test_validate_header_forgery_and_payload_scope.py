@@ -358,6 +358,13 @@ ROW_FIELD_BUILDERS = {
                               "resolved_to": v, "errors": []},
     "msg": lambda v: {"tool": "t", "ok": False, "count": 1, "errors": [
         {"line": 1, "code": "c", "msg": v}]},
+    # #1487 -- `_validator_render_row`'s own docstring says "every field the
+    # adapter supplies goes through `_flat_cell`", and `code` did not: every
+    # shipped adapter emits a fixed literal there today, so nothing on disk
+    # renders wrong, but the docstring is a promise to the next adapter author
+    # and this is the field it was silently untrue for.
+    "code": lambda v: {"tool": "t", "ok": False, "count": 1, "errors": [
+        {"line": 1, "code": v, "msg": "m"}]},
     "source_context": lambda v: {"tool": "t", "ok": False, "count": 1, "errors": [
         {"line": 1, "code": "c", "msg": "m", "source_context": [v]}]},
     # #1446. It reaches a rendered line for the same reason `source_context`

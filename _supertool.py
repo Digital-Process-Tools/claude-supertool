@@ -737,7 +737,13 @@ def _repo_reachable_ops() -> set[str]:
 #: substituted into an API path (`projects/<target>`) and handed to a CLI that
 #: attaches a live token — `gl-api` already refuses a path that names a host
 #: for that reason (#1035), and a target is one more way to write a path.
-_REPO_SEGMENT_RE = re.compile(r"\A[A-Za-z0-9._-]+\Z")
+# A leading '-' is refused (#1040, #1487): a value validated here can reach a
+# shipped op as a POSITIONAL argv element to `gh`/`glab`, in the slot where a
+# `-`-prefixed token is read as a flag rather than a value. The callee
+# rejecting an unknown flag today is not this validator's guarantee to borrow
+# -- a call site moving, or a flag name colliding, is all it takes for that to
+# stop holding.
+_REPO_SEGMENT_RE = re.compile(r"\A[A-Za-z0-9._][A-Za-z0-9._-]*\Z")
 
 
 def _repo_target_platform(ops: List[str]) -> str | None:
@@ -767,7 +773,18 @@ def _repo_target_platform(ops: List[str]) -> str | None:
         return None
     if len(found) > 1:
         return "mixed"
-    return next(iter(found)) or None
+    # `""` here is a project-defined op: repo-targetable (present in `modes`,
+    # scanned from the SAME shipped presets/*.json), but not one
+    # `_shipped_preset_ops()` has an entry for. That used to collapse into the
+    # same `None` this function returns for "no repo-targetable op in this
+    # call at all" (`next(iter(found)) or None`) -- one checker, two different
+    # causes, one silent answer. Named `"unknown"` instead (#1487): the shape
+    # check still falls back to the generic >=2-segments rule either way --
+    # there is no way to know which forge's stricter rule a project op wants
+    # -- but the "could not classify" state is now its own value rather than
+    # an accidental falsy fallthrough.
+    sole = next(iter(found))
+    return sole if sole else "unknown"
 
 
 def _repo_shape_error(value: str, platform: str | None) -> str | None:
@@ -11177,6 +11194,60 @@ def _multi_path_suggest(op: str, path: str,
     return chr(10).join(lines)
 
 
+# A drive letter that sits after a SPACE (rather than after ',' or '|', the
+# two separators `_split_arg` already rejoins across). `_split_arg` never
+# looks across whitespace when deciding whether the piece it is holding ends
+# in a bare drive letter, so 'grep:pat:file.py C:\Users\x.py' tokenizes to
+# leading='pat:file.py C' + path='\Users\x.py' instead of rejoining the
+# drive letter into the path (#1271).
+#
+# Deliberately NOT fixed in `_split_arg` itself: widening the rejoin to look
+# across whitespace would change tokenization for a call that works today --
+# a pattern containing a space, immediately followed by an absolute path,
+# currently parses as pattern-with-space plus path and would silently become
+# one token on POSIX, where nothing is broken. This repair instead runs only
+# once a path has already failed to resolve, which is the one place that
+# cannot break a call that currently succeeds.
+_DRIVE_LETTER_AFTER_SPACE = re.compile(r"\s([A-Za-z])\Z")
+
+
+def _drive_letter_swap_suggest(op: str, leading: str, path: str) -> str:
+    """Recognise a drive letter split off `leading` by a preceding space.
+
+    Fires only when rejoining the trailing letter of `leading` with `path`
+    (as LETTER:path) produces a path that actually exists -- the same
+    "positively checkable, not a guess from shape alone" bar every sibling
+    suggest function in this file uses. Returns "" otherwise, including when
+    the candidate fails containment: a value that cannot be gated is treated
+    as "does not resolve", never surfaced as its own refusal (`_swap_suggest`
+    follows the same rule for the same reason).
+
+    Takes `op` rather than the caller's own `call_prefix`: that prefix is
+    built from the UNFIXED `leading` (`f"{op}:{leading}"`, for `_multi_path_
+    suggest`'s own repair), and appending to it here would print the broken
+    leading twice -- once inside the prefix, once as `fixed_leading`.
+    """
+    if not path or path[0] not in ("/", "\\"):
+        return ""
+    m = _DRIVE_LETTER_AFTER_SPACE.search(leading)
+    if not m:
+        return ""
+    letter = m.group(1)
+    candidate = f"{letter}:{path}"
+    _err, (expanded,) = _gate_paths([candidate])
+    if _err or not os.path.exists(expanded):
+        return ""
+    fixed_leading = leading[:m.start(1) - 1]
+    return (
+        f"this looks like a Windows absolute path that got split on its own "
+        f"drive letter: {leading!r} + {path!r} is really {fixed_leading!r} + "
+        f"{candidate!r} (the drive letter followed a space, and the "
+        f"tokenizer only rejoins one after ',' or '|', never after "
+        f"whitespace -- #1271).\n"
+        f"    {op}:{fixed_leading}:{candidate}"
+    )
+
+
 def _looks_like_path(tok: str) -> bool:
     """Could *tok* plausibly be a path the caller typed?
 
@@ -11402,6 +11473,9 @@ def _colon_split_hint(op: str, leading: str, path: str,
     # repair that fails identically one form further along (#1261).
     if call_prefix is None:
         call_prefix = f"{op}:{leading}"
+    _drive = _drive_letter_swap_suggest(op, leading, path)
+    if _drive:
+        return _path_not_found(path, suggest=_drive)
     _multi = _multi_path_suggest(op, path, call_prefix)
     if _multi:
         return _path_not_found(path, suggest=_multi)
@@ -26055,7 +26129,7 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     if verbose:
         for e in errors:
             line_n = f"L{e['line']}" if e.get("line") else "  "
-            code = e.get("code") or ""
+            code = _flat_cell(e.get("code") or "")
             msg = _flat_cell(e.get("msg") or "")
             out.append(f"  {line_n} {code}  {msg}")
             guess_line = _quote_open_guess_line(e)
@@ -26087,7 +26161,7 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     else:
         for e in errors[:5]:
             line_n = f"L{e['line']}" if e.get("line") else "  "
-            code = e.get("code") or ""
+            code = _flat_cell(e.get("code") or "")
             msg = _flat_cell(e.get("msg") or "", 120)
             out.append(f"  {line_n} {code}  {msg}")
             guess_line = _quote_open_guess_line(e)
@@ -26541,7 +26615,7 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         if not a_ok:
             for e in (after.get("errors") or [])[:5]:
                 line_n = f"L{e['line']}" if e.get("line") else "  "
-                code = e.get("code") or ""
+                code = _flat_cell(e.get("code") or "")
                 msg = _flat_cell(e.get("msg") or "", 120)
                 out.append(f"  {line_n} {code}  {msg}")
                 guess_line = _quote_open_guess_line(e)
@@ -26586,7 +26660,7 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         bullet = " " if b_unknown else "+"
         for e in new[:5]:
             line_n = f"L{e['line']}" if e.get("line") else "  "
-            code = e.get("code") or ""
+            code = _flat_cell(e.get("code") or "")
             msg = _flat_cell(e.get("msg") or "", 120)
             out.append(f"  {' ' if code == 'adapter' else bullet} "
                        f"{line_n} {code}  {msg}")
@@ -28632,7 +28706,7 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
             out.append(row)
             for e in errors:
                 line_n = f"L{e['line']}" if e.get("line") else "  "
-                code = e.get("code") or ""
+                code = _flat_cell(e.get("code") or "")
                 # `_flat_cell`, not `.replace(newline)`: the latter is one
                 # separator out of the ten `str.splitlines()` breaks on, and a
                 # lone CR returns the cursor to column 0 without making a line
