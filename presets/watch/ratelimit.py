@@ -31,7 +31,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
+sys.path.insert(0, str(Path(__file__).parent))  # for naming, our own sibling
 import _untrusted  # noqa: E402  (a poller's own error string is somebody else's text, #2525)
+import naming  # noqa: E402  (the one directory-listing classifier every enumeration in this preset must use, #1502)
 
 #: Substrings of a poller's own `error` string (already produced by
 #: `presets/github/run.py::_format_error` or `presets/github/branch.py`'s
@@ -423,18 +425,26 @@ def workflow_file_count(repo_root: str) -> tuple[int | None, str]:
     watched sha (`gh-branch._run_list` + `runs_on_sha`) -- not every one
     necessarily fires on a given push (path filters, branch filters), so
     this is an upper bound on `gh_branch_calls_per_tick`'s `workflow_count`,
-    never an exact per-commit count. `None` on an absent or unreadable
-    directory, never `0`: a repo that genuinely ships no workflows and a
-    repo whose `.github/workflows` this call could not list must not render
-    the same, the same three-states rule as every other read in this module.
+    never an exact per-commit count.
+
+    Goes through `naming.state_dir_listing`, the one directory-listing
+    classifier every enumeration in this preset must use (#1502) -- caught
+    by `tests/test_watch_state_dir_absent_1502.py`'s own sweep for a bare
+    stdlib directory-listing call anywhere under `presets/watch/`, on the
+    first version of this function, which called one directly. It is the
+    only thing that can tell "this directory has nothing in it" from "this
+    directory could not be read", the same three-states rule as every
+    other read in this module. A repo whose `.github/workflows` **does not
+    exist at all** is a complete, knowable answer here -- zero workflow
+    files -- not a "could not tell": `STATE_DIR_ABSENT` returns
+    `count = 0`. Only `STATE_DIR_UNREADABLE` (a permissions error, a file
+    sitting where the directory should be) is the genuine could-not-tell
+    case, and only that one returns `(None, why)`.
     """
     wf_dir = os.path.join(repo_root, ".github", "workflows")
-    try:
-        names = os.listdir(wf_dir)
-    except FileNotFoundError:
-        return None, f"{wf_dir} does not exist"
-    except OSError as e:
-        return None, f"{wf_dir} could not be listed ({type(e).__name__})"
+    names, state, why = naming.state_dir_listing(wf_dir)
+    if state == naming.STATE_DIR_UNREADABLE:
+        return None, why or f"{wf_dir} could not be listed"
     count = sum(1 for n in names if n.endswith((".yml", ".yaml")))
     return count, ""
 

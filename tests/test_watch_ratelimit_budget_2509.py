@@ -304,9 +304,28 @@ def test_workflow_file_count_reads_the_watched_repos_own_workflows(tmp_path) -> 
     assert why == ""
 
 
-def test_workflow_file_count_says_why_not_when_the_directory_is_absent(tmp_path) -> None:
-    """Third state: no `.github/workflows` at all must not read as zero
-    workflows silently -- it is "could not tell", not "confirmed none"."""
+def test_workflow_file_count_is_zero_when_the_repo_has_no_workflows_dir_at_all(tmp_path) -> None:
+    """#1502-guard fix: a repo with no `.github/workflows` at all is a
+    complete, knowable answer -- zero workflow files -- not "could not
+    tell". `naming.state_dir_listing`'s `STATE_DIR_ABSENT` is the same
+    "nothing has spawned here yet" state this preset already treats as
+    known-empty everywhere else; conflating it with "could not read" (the
+    first version of this function did, with a bare `os.listdir`) is
+    exactly the defect #1502 exists to catch."""
+    count, why = ratelimit.workflow_file_count(str(tmp_path))
+    assert count == 0
+    assert why == ""
+
+
+def test_workflow_file_count_says_why_not_when_the_directory_cannot_be_read(tmp_path) -> None:
+    """Must-not-fire twin, genuine third state: a *file* sitting at the
+    `.github/workflows` path (not a directory at all) cannot be listed --
+    `NotADirectoryError`, which `naming.state_dir_listing` classifies as
+    `STATE_DIR_UNREADABLE`, not `STATE_DIR_ABSENT`. This must return
+    `(None, why)`, never `0`."""
+    gh_dir = tmp_path / ".github"
+    gh_dir.mkdir()
+    (gh_dir / "workflows").write_text("not a directory\n")
     count, why = ratelimit.workflow_file_count(str(tmp_path))
     assert count is None
     assert why
