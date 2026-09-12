@@ -6961,9 +6961,21 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
     if len(pattern) > 1000:
         return f"ERROR: pattern too long ({len(pattern)} > 1000 chars)\n"
     # Nested unbounded quantifiers like `(a+)+`, `(a*)*`, `(.+)*` — the
-    # classic ReDoS shape. The check is intentionally loose; users with a
+    # classic ReDoS shape. The OUTER quantifier is what makes it dangerous:
+    # `+`/`*` can re-partition the same input across an unbounded number of
+    # iterations, each iteration free to re-decide how much of the group's
+    # own unbounded content it consumed. `?` bounds the group to at most ONE
+    # repetition, so there is no re-partitioning to explore and no
+    # catastrophic-backtracking risk -- `(a+)?` was refused here until #1311
+    # even though it is bounded, on a pattern reported live: digits, a dot,
+    # an alternation, an OPTIONAL group of a dot plus one-or-more
+    # lowercase/hyphen characters, a dot, "md". The exception is scoped to
+    # each matched group's own outer quantifier, not to the pattern as a
+    # whole: `(a+)?b(c+)?` is two independently-bounded groups, and neither
+    # one's risk depends on what quantifier the other carries, so both must
+    # pass. The check is intentionally loose otherwise; users with a
     # legitimate need can split into simpler greps.
-    if re.search(r"\([^)]*[+*][^)]*\)[+*?]", pattern):
+    if re.search(r"\([^)]*[+*][^)]*\)[+*]", pattern):
         return (
             "ERROR: pattern contains nested unbounded quantifiers "
             f"({pattern!r}) — would risk catastrophic backtracking. "
@@ -31156,6 +31168,25 @@ def _help_payload_route(op: str) -> str:
             f"payload.",
             f"    Keys: {', '.join(fields)}",
         ])
+    # #1311 — name `literal_backslashes` (#1096) wherever it can actually
+    # fire. It is discoverable today only by tripping the doubled-backslash
+    # write refusal (`_payload_double_backslash_refusal`) once, which is the
+    # very round-trip this whole block exists to save (#1400's own
+    # reasoning, one key later). Scoped to the fields that refusal is scoped
+    # to — `_PAYLOAD_DBS_WRITE_KEYS` — so an op whose route carries none of
+    # them (a read op, or a preset op taking `body`/`title`) is not told
+    # about a key nothing on its route would ever refuse.
+    if set(_at_file_fields(op)) & _PAYLOAD_DBS_WRITE_KEYS:
+        hint += (
+            chr(10) + "  A doubled backslash in a " + chr(39) * 3
+            + " literal block reaches disk at its full length (a literal "
+            "block processes no escapes) and is refused unless you say it "
+            "is meant AS WRITTEN: add `literal_backslashes = true` at the "
+            "top level of the payload, or name only the field(s) that need "
+            "it, e.g. `literal_backslashes = [\"" + sorted(
+                set(_at_file_fields(op)) & _PAYLOAD_DBS_WRITE_KEYS)[0]
+            + "\"]` (#1096)."
+        )
     return (chr(10) + "Payload route — the colon form is not the only one, and "
             "for an argument holding ':' or a newline it is not the working "
             "one (docs/input-forms.md):" + hint)
