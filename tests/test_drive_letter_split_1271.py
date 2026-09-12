@@ -12,15 +12,24 @@ lives at the point a path has already failed to resolve -- `_colon_split_hint`,
 via the new `_drive_letter_swap_suggest` -- which cannot break a call that
 currently succeeds, because it only ever runs after a failure.
 
-Every reproduction here uses a literal backslash-containing FILENAME (not a
-nested directory) so it is exercised identically on every CI platform: POSIX
-treats a backslash as an ordinary filename character, so a file literally
-named "C:\something.py" in cwd is indistinguishable, to os.path.exists, from
-what a genuine Windows absolute path resolves to on that platform. This is a
-positive control on every platform, not a Windows-only test -- the mechanism
-under test (string splitting and rejoining) has no OS dependency; only the
-real-world *filesystem* interpretation of a backslash does, and this fixture
-sidesteps that by making the candidate string itself the filename.
+`_drive_qualified_target` below produces a REAL, existing, drive-qualified
+path string identically on every CI platform, but not by the same technique
+on each: on Windows it is `tmp_path`'s own genuine absolute path (backslash
+truly is the separator there); on POSIX it is a literal FILENAME that merely
+contains the same shape a Windows path has (backslash is an ordinary
+filename character on POSIX, so a file literally named "C:\something.py" is
+indistinguishable, to os.path.exists, from what a genuine Windows absolute
+path resolves to). These cannot be unified into one technique: `pathlib`'s
+own `/` operator treats a drive-qualified RIGHT operand as replacing the left
+one outright --
+
+    >>> import pathlib
+    >>> pathlib.PureWindowsPath("/tmp/foo") / "C:\\something.py"
+    PureWindowsPath('C:/something.py')
+
+-- so naively writing a literal "C:\something.py" FILENAME under `tmp_path`
+on real Windows silently targets the real drive root instead of a file
+scoped to the test's own sandbox.
 
 Every "must fire" case is paired with a "must not fire" one in the same
 fixture, per the same-fixture rule for a silence assertion (CLAUDE.md, "A
@@ -29,25 +38,38 @@ negative assertion needs a positive control").
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import supertool
 import _supertool as core
 
+_ON_WINDOWS = sys.platform.startswith("win")
 
-def _write_literal(tmp_path: Path, literal_name: str, body: str = "x\n") -> None:
-    (tmp_path / literal_name).write_text(body, encoding="utf-8")
+
+def _drive_qualified_target(tmp_path: Path, body: str = "x\n") -> str:
+    """A real, EXISTING path shaped `LETTER:...` -- see the module docstring
+    for why the two platforms need different techniques to get there."""
+    if _ON_WINDOWS:
+        target = tmp_path / "something.py"
+        target.write_text(body, encoding="utf-8")
+        return str(target)
+    literal = "C:\\something.py"
+    (tmp_path / literal).write_text(body, encoding="utf-8")
+    return literal
 
 
 def test_drive_letter_after_space_is_recognised_and_rejoined(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_literal(tmp_path, r"C:\something.py")
-    out = supertool.dispatch(r"grep:pattern:file.py C:\something.py")
+    candidate = _drive_qualified_target(tmp_path)
+    assert candidate[1] == ":"
+    out = supertool.dispatch(f"grep:pattern:file.py {candidate}")
     assert "Windows absolute path" in out, out
-    assert r"C:\something.py" in out, out
-    assert r"grep:pattern:file.py:C:\something.py" in out, out
+    assert candidate in out, out
+    assert f"grep:pattern:file.py:{candidate}" in out, out
 
 
 def test_drive_letter_after_space_must_not_fire_when_candidate_absent(
@@ -55,21 +77,24 @@ def test_drive_letter_after_space_must_not_fire_when_candidate_absent(
 ) -> None:
     """Must-not-fire half: no file exists at the rejoined candidate, so this
     is an ordinary colon-absorbed-pattern failure and the drive-letter
-    diagnosis must stay silent (falling through to the existing message)."""
+    diagnosis must stay silent (falling through to the existing message).
+    Never writes anything -- a nonexistent-path check is safe identically on
+    every platform, so no `_drive_qualified_target` call is needed here."""
     monkeypatch.chdir(tmp_path)
-    out = supertool.dispatch(r"grep:pattern:file.py C:\something.py")
+    out = supertool.dispatch(r"grep:pattern:file.py C:\something-else.py")
     assert "Windows absolute path" not in out, out
     assert "split on ':'" in out, out
 
 
 def test_drive_letter_swap_suggest_unit_positive(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    _write_literal(tmp_path, r"C:\x.py")
-    out = core._drive_letter_swap_suggest("read", "leading C", r"\x.py")
+    candidate = _drive_qualified_target(tmp_path)
+    letter, remainder = candidate[0], candidate[2:]
+    out = core._drive_letter_swap_suggest("read", f"leading {letter}", remainder)
     assert out
     assert "leading" in out
-    assert r"C:\x.py" in out
-    assert out.endswith(r"read:leading:C:\x.py")
+    assert candidate in out
+    assert out.endswith(f"read:leading:{candidate}")
 
 
 def test_drive_letter_swap_suggest_unit_no_space_before_letter() -> None:
@@ -91,7 +116,9 @@ def test_drive_letter_swap_suggest_unit_candidate_must_exist(
 # --- regression: the WORKING (non-whitespace) drive-letter cases in
 # `_split_arg` itself must parse exactly as before this change (#1271's own
 # "must not fire" pairing, at the tokenizer level rather than the message
-# level, since the fix deliberately never touches `_split_arg`). ------------
+# level, since the fix deliberately never touches `_split_arg`). These are
+# pure string-splitting assertions with no filesystem interaction, so they
+# need no platform branching at all. ----------------------------------------
 
 def test_split_arg_drive_letter_still_rejoins_without_whitespace() -> None:
     assert core._split_arg(r"read:C:\Users\file.py") == [

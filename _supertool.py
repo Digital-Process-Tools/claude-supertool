@@ -749,10 +749,12 @@ _REPO_SEGMENT_RE = re.compile(r"\A[A-Za-z0-9._][A-Za-z0-9._-]*\Z")
 def _repo_target_platform(ops: List[str]) -> str | None:
     """Which forge the repo-targetable ops in *ops* belong to.
 
-    ``"github"``, ``"gitlab"``, ``"mixed"``, or None when the call names no
-    targetable op at all. Derived from the shipped preset each op is declared
-    in, not from its name prefix — the manifest is the registry, and a prefix
-    is a convention that can be broken without anything failing.
+    ``"github"``, ``"gitlab"``, ``"mixed"``, ``"unknown"`` (a repo-targetable
+    op whose declaring preset is not one of the shipped forges, e.g. a
+    project-defined op -- #1487), or None when the call names no targetable
+    op at all. Derived from the shipped preset each op is declared in, not
+    from its name prefix — the manifest is the registry, and a prefix is a
+    convention that can be broken without anything failing.
 
     The pre-pass needs this because the two forges do not accept the same
     target shape (#676): GitHub is exactly ``OWNER/NAME``, GitLab allows
