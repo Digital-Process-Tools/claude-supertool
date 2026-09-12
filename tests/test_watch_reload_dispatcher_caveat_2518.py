@@ -134,6 +134,37 @@ def test_reload_still_reports_success_and_swap_confirmation(
     assert f"{dispatcher.RELOAD_EVENT}" in out
 
 
+@pytest.mark.skipif(dispatcher.RELOAD_SIGNAL is None, reason="requires SIGHUP")
+def test_reload_caveat_does_not_print_when_nothing_was_actually_signalled(
+        machine, monkeypatch, capsys) -> None:
+    """The must-not-fire twin (#2518 self-review): the tracked PID is gone by
+    the time the signal is sent (it exited between the scan and the kill),
+    so `os.kill` raises for every PID and nothing was reached. The caveat
+    describes what a signal that landed does and does not reach, so it must
+    not print here -- there was no signal that landed."""
+    transport.record_pid(SOURCE, WATCHER, 4242)  # tracked, but never "alive"
+    monkeypatch.setattr(dispatcher, "start_poller",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("reload must never spawn")))
+    machine.alive.add(4242)  # visible to the scan that builds `pids`...
+    real_kill = machine.kill
+
+    def kill_then_vanish(pid, sig):
+        machine.alive.discard(pid)  # ...but gone by the time it is signalled
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(dispatcher.os, "kill", kill_then_vanish)
+
+    assert dispatcher.cmd_watch([SOURCE, WATCHER, "reload"]) == 1
+
+    out = capsys.readouterr().out
+    assert "PID 4242 is gone" in out
+    assert "dispatcher.py" not in out, (
+        "nothing was actually signalled, so a caveat about what a landed "
+        "signal reaches must not print here"
+    )
+
+
 def test_the_change_is_findable():
     from _changelog_findable import assert_change_is_findable
     assert_change_is_findable(2518)

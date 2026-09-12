@@ -2144,9 +2144,12 @@ itself — was imported once at that process's own spawn and stays exactly as
 it was. A fix that lives in `dispatcher.py` needs `unwatch:SOURCE:ID` then
 `watch:SOURCE:ID` to actually take effect, losing the baseline that `reload`
 exists to keep; a `reload` in that case reports success and swaps nothing
-relevant. `cmd_reload` now says this in its own printed receipt on every
-successful reload — unconditionally, since it has no way to tell which file
-a pending fix actually lives in.
+relevant. `cmd_reload` now says this in its own printed receipt whenever the
+signal actually lands on at least one live PID -- unconditionally at that
+point, since it has no way to tell which file a pending fix actually lives
+in. It does not print when every PID for the slot had already exited before
+the signal reached it (nothing was reached, so there is nothing to caveat
+about).
 
 The fingerprint is coarse deliberately — one value for the whole
 `presets/watch/` tree rather than one per source file, since every source
