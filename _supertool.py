@@ -144,7 +144,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple, Union
 
-VERSION = "0.60.0"
+VERSION = "0.61.0"
 
 # Children never see an operator's ambient `FORCE_COLOR` (#1429). CPython
 # 3.13+ colourises its own tracebacks purely because the variable is set --
