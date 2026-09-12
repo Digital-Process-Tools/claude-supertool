@@ -156,6 +156,19 @@ class ResponseTooLarge(Exception):
     """
 
     def __init__(self, url: str, limit: int, declared: int | None = None) -> None:
+        # Scrubbed BEFORE `super().__init__()` (#2533 follow-up), not only in
+        # `__str__`: `Exception.__init__` stores every constructor argument in
+        # `self.args` verbatim, and the default `__repr__` is built from
+        # `self.args`, not from `__str__` -- a caller that reaches for
+        # `repr(exc)` (a common logging idiom) would otherwise get the raw
+        # URL back regardless of what `__str__` does. `self.url` is set from
+        # the raw request/response URL at the raise site, and a caller that
+        # embeds a credential in the query string (youtube/_yt.py's `key=`)
+        # gets it back verbatim unless every render site remembers its own
+        # scrub -- the exact per-caller reliance the redirect-NOTE fix in
+        # `urlopen()` exists to remove; this closes the same gap for `.args`
+        # and `repr()`, not only `str()`.
+        url = _scrub_query_secrets(url)
         super().__init__(url, limit, declared)
         self.url = url
         self.limit = limit
@@ -184,6 +197,10 @@ class DeadlineExceeded(TimeoutError):
     """
 
     def __init__(self, url: str, seconds: float) -> None:
+        # Same reasoning as `ResponseTooLarge.__init__` just above: scrubbed
+        # before `super().__init__()` so `.args`/`repr()` cannot bypass it,
+        # not only `str()` (#2533 follow-up).
+        url = _scrub_query_secrets(url)
         super().__init__(url, seconds)
         self.url = url
         self.seconds = seconds
@@ -208,6 +225,13 @@ class DestinationRefused(Exception):
     """
 
     def __init__(self, url: str, reason: str) -> None:
+        # `download()`'s destination policy fetches URLs somebody else chose
+        # (a tracker comment), not a caller's own credentialed request -- but
+        # scrubbed anyway, before `super().__init__()`, for the same reason
+        # as its three siblings above: a future caller of this same policy
+        # against a credentialed endpoint should not depend on remembering to
+        # do this itself (#2533 follow-up).
+        url = _scrub_query_secrets(url)
         super().__init__(url, reason)
         self.url = url
         self.reason = reason
@@ -232,6 +256,20 @@ class RedirectRefused(Exception):
     """
 
     def __init__(self, from_url: str, to_url: str, code: int, reason: str) -> None:
+        # Scrubbed before `super().__init__()`, same reasoning as the three
+        # siblings above (#2533 follow-up): `from_url` is the requested URL
+        # (`req.full_url` at the raise site) and is exactly where a
+        # query-embedded credential lives (youtube/_yt.py's `key=`) -- an
+        # off-origin redirect refusal is the class this docstring itself
+        # calls a credential exfiltration attempt, so it is the single
+        # likeliest place for one to show up, and scrubbing only inside
+        # `__str__` would still leak it through `.args`/`repr()`. `to_url` is
+        # scrubbed too even though it is attacker-chosen text rather than a
+        # caller's own credential, for the same reason both ends already
+        # share one `!r` treatment: one rule for both URLs is less to get
+        # wrong than two.
+        from_url = _scrub_query_secrets(from_url)
+        to_url = _scrub_query_secrets(to_url)
         super().__init__(from_url, to_url, code, reason)
         self.from_url = from_url
         self.to_url = to_url
@@ -677,6 +715,115 @@ def read_capped(
     return b"".join(chunks)
 
 
+#: Query-parameter names, matched case-insensitively and with `-`
+#: normalised to `_` (so `api-key` and `api_key` are one rule, not two), that
+#: this repo's own callers or a future one could put a live credential into.
+#: `youtube/_yt.py` is the first (`query["key"] = api_key`, #227) -- every
+#: other credentialed client here sends its secret as a header instead,
+#: which never reaches a URL at all. Kept here rather than in `_secrets.py`:
+#: that module detects a secret by *shape* in text nobody handed it (a
+#: transcript), which is a guess; this one redacts by *position* in a URL
+#: this function itself is about to print, which is exact regardless of
+#: what the value looks like.
+#:
+#: `id_token`/`access_token`/`refresh_token` are the OAuth2 implicit- and
+#: refresh-flow names; `session_token`/`csrf_token` are common ad-hoc
+#: session-auth query params; `api-key` is the hyphenated spelling several
+#: vendor APIs (Azure among them) use instead of `api_key`. None of this
+#: repo's current callers use any of these -- widened past `key` alone so
+#: the "a future integration is covered without knowing this function
+#: exists" claim below holds for more than the one literal spelling youtube
+#: happens to use (#2533 self-review).
+_SENSITIVE_QUERY_PARAMS = frozenset({
+    "key", "api_key", "apikey", "access_token", "token", "secret",
+    "client_secret", "password", "auth", "id_token", "refresh_token",
+    "session_token", "csrf_token",
+})
+
+
+def _scrub_query_secrets(url: str) -> str:
+    """Redact known credential-shaped query parameters before a URL is
+    disclosed inside an exception's message (#2533).
+
+    Used by `ResponseTooLarge`, `DeadlineExceeded`, `RedirectRefused` and
+    `DestinationRefused`'s constructors, so a caller that reaches for
+    `str(exc)`, `repr(exc)` or `exc.args` never gets a URL-embedded
+    credential back. The same-origin redirect NOTE inside `urlopen()` used
+    to route through this function too, but does not any more --
+    `_origin_and_path()` below covers that disclosure instead, by never
+    reading `.query` in the first place rather than redacting it after the
+    fact (see that function's docstring for why).
+
+    Applied generically, at the one place every credentialed caller's
+    exception construction already passes through, rather than per-caller: a
+    future integration that repeats youtube's shape is covered without
+    having to know this function exists. Never raises on a malformed URL --
+    returns it unchanged rather than block a disclosure that is otherwise
+    working correctly.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.query:
+        return url
+    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    scrubbed = [
+        (k, "[REDACTED]" if k.lower().replace("-", "_") in _SENSITIVE_QUERY_PARAMS else v)
+        for k, v in pairs
+    ]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(scrubbed)))
+
+
+def _origin_and_path(url: str) -> str:
+    """Render `url` for disclosure using only its scheme, netloc and path --
+    never `.query`, never the raw string, never anything derived from
+    `.query` by any function (#2533).
+
+    This is the redirect-NOTE disclosure inside `urlopen()`'s fourth attempt
+    at satisfying CodeQL's `py/clear-text-logging-sensitive-data` check on
+    the same line. The first three all redacted the query string and then
+    printed the result, and CodeQL flagged the print every time regardless:
+    inline scrubbing inside the f-string, the same scrub hoisted into two
+    named locals, and finally an inline `# codeql[...]` suppression comment
+    -- none of those satisfied it, because this repo's default (non-advanced)
+    CodeQL setup does not honour inline suppression comments the way an
+    advanced, workflow-based setup might, and because a redaction pass is
+    still, to taint analysis, a caller-defined function between a tainted
+    source and a sink -- not a sanitizer CodeQL's dataflow model recognises.
+
+    This function does not redact anything. It never reads `.query` at all,
+    so there is no data-flow path from the query string -- where a
+    URL-embedded credential lives, see `_scrub_query_secrets` -- to whatever
+    prints this function's return value. That is a structural difference
+    from every prior attempt, not a better-worded version of the same one.
+
+    The trade-off: the redirect NOTE's whole purpose is telling an operator
+    which URL a same-origin redirect actually landed on, and dropping the
+    query string loses visibility into non-secret query parameters too, not
+    only the secret-shaped ones. Accepted here because three rounds already
+    failed to satisfy CodeQL any other way on this exact line.
+
+    A consequence worth naming rather than tripping over silently: a
+    redirect that changes only the query string (rotating a token, say)
+    makes this function return the identical string for both the requested
+    and the final URL, since the query is the one part it never looks at.
+    `urlopen()`'s caller-side check names that case explicitly in the NOTE
+    text rather than printing what would otherwise read as a no-op bug
+    report (#2533 self-review).
+
+    Never raises on a malformed URL -- falls back to a plain string split on
+    the first `?` and then the first `#`, which still never touches anything
+    past either one, rather than disclose the query string (or a
+    credential-bearing fragment) on the one input `urlsplit()` cannot parse.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url.split("?", 1)[0].split("#", 1)[0]
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
 def urlopen(
     req: urllib.request.Request | str,
     timeout: int = 30,
@@ -706,7 +853,12 @@ def urlopen(
     Both URLs are printed with `!r`. The destination comes from a remote
     `Location` header, so it is attacker-chosen text on its way to a terminal;
     `repr` escapes the control characters that would otherwise let it rewrite the
-    lines around it.
+    lines around it. Both also go through `_origin_and_path()` first (#2533):
+    scheme, netloc and path only, never the query string, so a caller that puts
+    a credential in the query string rather than a header -- youtube/_yt.py's
+    `key=` parameter is the first -- never has it reach this print at all. The
+    cost is that a non-secret query parameter is not disclosed here either;
+    see `_origin_and_path()`'s docstring for why that trade was made.
 
     `timeout` keeps urllib's meaning: a per-socket-operation timeout. `deadline`
     is the overall wall clock in seconds, defaulting to `DEADLINE_FACTOR` times
@@ -729,10 +881,46 @@ def urlopen(
     resp = do_open(req, timeout=timeout)
     final = getattr(resp, "url", None)
     if final and final != requested:
+        # Neither value below is `.query`, and neither is derived from `.query`
+        # by any function: `_origin_and_path()` builds each string from
+        # `urlsplit(...)`'s scheme/netloc/path components alone, so there is
+        # no data-flow path from the query string -- where a URL-embedded
+        # credential lives -- to this print at all. This is the fourth
+        # attempt at this exact line (#2533): a redaction pass called inline
+        # in the f-string, the same redaction hoisted into two named locals,
+        # and an inline `# codeql[...]` suppression comment all left
+        # CodeQL's py/clear-text-logging-sensitive-data flagging it, because
+        # this repo's default (non-advanced) CodeQL setup does not honour
+        # inline suppressions and because taint analysis does not treat a
+        # caller-defined redaction function as a sanitizer. Structurally
+        # never touching `.query` is what the first three attempts did not
+        # do. If this print() ever grows a third interpolated value, route
+        # it through `_origin_and_path()` too, or drop it if it cannot be --
+        # never back to `_scrub_query_secrets()` here.
+        disclosed_requested = _origin_and_path(requested)
+        disclosed_final = _origin_and_path(final)
+        # A redirect that changes only the query string -- rotating a
+        # token, say -- leaves these two equal even though `final !=
+        # requested` triggered this block on the full URL: the query is the
+        # one part `_origin_and_path()` never looks at. Left unremarked, the
+        # NOTE would print the same string on both sides of the arrow, which
+        # reads as a no-op bug report and defeats the very thing this NOTE
+        # exists for -- telling an operator a hop happened at all (#2533
+        # self-review). Naming that case explicitly keeps the disclosure
+        # honest without printing the query string itself.
+        if disclosed_requested == disclosed_final:
+            detail = (
+                "only the query string differed between them, and it is "
+                "omitted from this disclosure -- #2533"
+            )
+        else:
+            detail = "query strings omitted from this disclosure -- #2533"
         print(
             f"NOTE: the request was redirected before it was answered: "
-            f"{requested!r} -> {final!r}. The response came from the second URL. "
-            f"The hop stayed on the same origin, so it was followed.",
+            f"{disclosed_requested!r} -> {disclosed_final!r}. "
+            f"The response came from the second URL. "
+            f"The hop stayed on the same origin, so it was followed. "
+            f"({detail})",
             file=sys.stderr,
         )
     if expires is not None:

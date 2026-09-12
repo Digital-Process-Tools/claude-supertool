@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import sys
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import SimpleNamespace
@@ -193,6 +194,28 @@ def test_redirect_refused_is_not_an_oserror() -> None:
     assert not issubclass(_http.RedirectRefused, ValueError)
 
 
+def test_refusal_message_scrubs_a_url_embedded_secret_from_the_origin_url() -> None:
+    """`RedirectRefused.from_url` is `req.full_url` at the raise site (#766) --
+    the requested URL itself, which is exactly where youtube/_yt.py's `key=`
+    query parameter lives (#2533). This is the class this fix's own docstring
+    calls "a credential exfiltration attempt": an off-origin redirect refusal
+    is the single most likely place a query-embedded credential shows up in
+    the very URL that triggered the raise, yet `__str__` rendered `from_url`
+    raw with no call to `_scrub_query_secrets()`, unlike `ResponseTooLarge`
+    and `DeadlineExceeded` next door (#2533 follow-up self-review)."""
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    exc = _http.RedirectRefused(
+        f"https://api.example.com/x?key={secret}",
+        "https://evil.example/y",
+        302,
+        "different host",
+    )
+    text = str(exc)
+    assert secret not in text, (
+        f"the URL-embedded secret leaked into the RedirectRefused message: {text!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. Every credentialed client refuses, loudly
 # ---------------------------------------------------------------------------
@@ -335,6 +358,197 @@ def test_a_permitted_redirect_is_still_disclosed(hop, capsys, monkeypatch) -> No
     assert "/api/elsewhere" in err, f"destination URL not named: {err!r}"
     assert FAKE_DEVTO_KEY not in err, "the disclosure must not echo the credential"
 
+
+
+@pytest.mark.parametrize(
+    "url,expect_redacted,expect_kept",
+    [
+        ("https://api.example.com/x?key=SECRET123", "key=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?KEY=SECRET123", "KEY=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?api_key=SECRET123&id=5", "api_key=%5BREDACTED%5D", "id=5"),
+        ("https://api.example.com/x?token=SECRET123", "token=%5BREDACTED%5D", None),
+        # Hyphenated spelling (Azure-style `api-key`) and OAuth2 param names
+        # (`id_token`, `refresh_token`, `session_token`, `csrf_token`) are
+        # common credential-shaped query params this repo has no caller for
+        # yet -- widening coverage past the one name (`key`) youtube actually
+        # uses, so the "generic, future-caller" claim in the docstring holds
+        # for more than one literal spelling (#2533 self-review).
+        ("https://api.example.com/x?api-key=SECRET123", "api-key=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?id_token=SECRET123", "id_token=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?refresh_token=SECRET123", "refresh_token=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?session_token=SECRET123", "session_token=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?csrf_token=SECRET123", "csrf_token=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?q=hello&limit=10", None, "q=hello&limit=10"),
+        ("https://api.example.com/x", None, None),
+    ],
+)
+def test_scrub_query_secrets_redacts_known_params(url, expect_redacted, expect_kept) -> None:
+    out = _http._scrub_query_secrets(url)
+    assert "SECRET123" not in out
+    if expect_redacted is not None:
+        assert expect_redacted in out
+    if expect_kept is not None:
+        assert expect_kept in out
+
+
+def test_scrub_query_secrets_leaves_an_unparseable_url_unchanged() -> None:
+    """`urlsplit` raises `ValueError` on a malformed IPv6 host. This function
+    must fail closed to a no-op -- returning the original text -- rather than
+    let a URL it cannot parse crash the disclosure it is protecting."""
+    hostile = "https://[::1/x?key=SECRET123"
+    assert _http._scrub_query_secrets(hostile) == hostile
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "https://[::1/x?key=SECRET123",
+        "https://[::1/x#key=SECRET123",
+    ],
+    ids=["query", "fragment"],
+)
+def test_origin_and_path_strips_credential_from_an_unparseable_url(hostile) -> None:
+    """`urlsplit` raises `ValueError` on a malformed IPv6 host, exactly as it
+    does for `_scrub_query_secrets()` above (#2533 self-review: this
+    fallback branch had no test of its own before this one, even though the
+    sibling function's identical-shaped fallback does).
+
+    Unlike `_scrub_query_secrets()`, which fails closed to a no-op here
+    (returning the original text -- there is nothing left to redact once
+    parsing itself has failed), `_origin_and_path()` must not: its whole
+    point is to never disclose anything past `?` or `#`, parsed or not, so
+    the fallback strips both rather than falling back to the raw string.
+    """
+    out = _http._origin_and_path(hostile)
+    assert "SECRET123" not in out, (
+        f"the credential survived _origin_and_path()'s unparseable-URL "
+        f"fallback: {out!r}"
+    )
+    assert "?" not in out and "#" not in out
+
+
+@pytest.mark.parametrize(
+    "make_exc",
+    [
+        lambda secret: _http.ResponseTooLarge(f"http://x/?key={secret}", 10, 20),
+        lambda secret: _http.DeadlineExceeded(f"http://x/?key={secret}", 1.0),
+        lambda secret: _http.RedirectRefused(
+            f"http://x/?key={secret}", "http://evil/y", 302, "different host"
+        ),
+        lambda secret: _http.DestinationRefused(f"http://x/?key={secret}", "blocked"),
+    ],
+    ids=["ResponseTooLarge", "DeadlineExceeded", "RedirectRefused", "DestinationRefused"],
+)
+def test_url_embedded_secret_does_not_survive_repr_or_args(make_exc) -> None:
+    """`str(exc)` is scrubbed (#2533 follow-up), but `Exception.__init__` also
+    stores every constructor argument in `self.args` untouched, and the
+    default `__repr__` is built from `self.args`, not from `__str__` -- a
+    caller that reasonably reaches for `repr(exc)` or `f"{exc!r}"` (a common
+    logging idiom) gets the raw, unscrubbed URL back regardless of what
+    `__str__` does. The fix has to scrub before `super().__init__()` ever
+    sees the URL, not only inside `__str__`.
+    """
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    exc = make_exc(secret)
+    assert secret not in repr(exc), f"the secret survived repr(): {exc!r}"
+    assert secret not in str(exc.args), f"the secret survived .args: {exc.args!r}"
+
+
+def test_url_embedded_secret_is_scrubbed_from_the_redirect_note(hop, capsys) -> None:
+    """youtube/_yt.py is the first caller in this repo that puts a credential
+    in the URL's query string rather than in a header (`query["key"] =
+    api_key`, #2533) -- every other credentialed client here (hashnode,
+    devto, bluesky) sends its secret as a header, which the NOTE below never
+    echoes because the URL itself never carries it.
+
+    On a followed (same-origin) redirect, `urlopen()` deliberately discloses
+    both URLs on stderr so an operator does not mistake a silently-followed
+    hop for a call that went where it was asked -- see the module docstring.
+    That disclosure is fine for a header-based credential. It is the leak
+    itself when the credential rides in the URL, because the NOTE line is
+    printed on the success path, inside `urlopen()`, before any caller-level
+    `_scrub`-style exception handler ever gets a chance to run.
+
+    Rounds one through three of #2533 fixed this by redacting the query
+    string and printing the result -- CodeQL's
+    py/clear-text-logging-sensitive-data kept flagging the print regardless,
+    three times running, because a redaction pass is not a sanitizer to its
+    dataflow model. Round four (`_origin_and_path()`) does not redact: it
+    never reads `.query` at all, so this test now asserts the printed URLs
+    carry no query string whatsoever, not merely that the secret specifically
+    is absent from one that otherwise survives.
+    """
+    hop.front.redirect_to = hop.front_base + "/api/elsewhere"
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    url = f"{hop.front_base}/api/videos?key={secret}"
+    req = urllib.request.Request(url, method="GET")
+    with _http.urlopen(req, timeout=5) as resp:
+        resp.read()
+    err = capsys.readouterr().err
+    assert "redirected" in err, f"the redirect was not disclosed at all: {err!r}"
+    assert secret not in err, (
+        f"the URL-embedded secret leaked into the redirect NOTE: {err!r}"
+    )
+    assert "?" not in err, (
+        f"the redirect NOTE still carries a query string of some kind: {err!r}"
+    )
+    assert "/api/videos" in err, f"origin path not named: {err!r}"
+
+
+def test_redirect_note_names_a_query_only_change_explicitly(hop, capsys) -> None:
+    """`_origin_and_path()` never reads `.query`, so a redirect that changes
+    only the query string -- same scheme, same netloc, same path -- makes
+    the requested and final disclosure strings identical, even though the
+    NOTE fired because the full URLs differed. Printing the same string on
+    both sides of the arrow with no explanation would read as a no-op bug
+    report, defeating the NOTE's purpose (#2533 self-review). This asserts
+    the disclosure names that case explicitly instead of leaving it silent.
+    """
+    hop.front.redirect_to = hop.front_base + "/api/videos?key=SECRET&session=xyz"
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    url = f"{hop.front_base}/api/videos?key={secret}"
+    req = urllib.request.Request(url, method="GET")
+    with _http.urlopen(req, timeout=5) as resp:
+        resp.read()
+    err = capsys.readouterr().err
+    assert "redirected" in err, f"the redirect was not disclosed at all: {err!r}"
+    assert secret not in err, f"the secret leaked into the redirect NOTE: {err!r}"
+    assert "SECRET" not in err.replace(secret, ""), (
+        f"the query-only redirect's own destination secret leaked: {err!r}"
+    )
+    assert "only the query string differed" in err, (
+        f"a query-only redirect prints identical strings on both sides of "
+        f"the arrow with no explanation -- it must say so: {err!r}"
+    )
+
+
+def test_non_secret_query_params_are_also_absent_from_the_redirect_note(
+    hop, capsys
+) -> None:
+    """The #2533 round-four fix (`_origin_and_path()`) drops the whole query
+    string from the redirect NOTE, not only credential-shaped parameters --
+    that is the accepted trade-off (see `_origin_and_path()`'s docstring), so
+    an ordinary, non-secret query parameter must be just as absent as a
+    secret one would be. No earlier round of this fix had this property:
+    `_scrub_query_secrets()` (still used for exception messages, just not
+    here) deliberately keeps a non-credential-shaped param like `q=hello`.
+    """
+    hop.front.redirect_to = hop.front_base + "/api/elsewhere"
+    url = f"{hop.front_base}/api/videos?q=hello&limit=10"
+    req = urllib.request.Request(url, method="GET")
+    with _http.urlopen(req, timeout=5) as resp:
+        resp.read()
+    err = capsys.readouterr().err
+    assert "redirected" in err, f"the redirect was not disclosed at all: {err!r}"
+    assert "q=hello" not in err, (
+        f"a non-secret query param survived into the redirect NOTE: {err!r}"
+    )
+    assert "limit=10" not in err, (
+        f"a non-secret query param survived into the redirect NOTE: {err!r}"
+    )
+    assert "?" not in err, (
+        f"the redirect NOTE still carries a query string of some kind: {err!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
