@@ -830,15 +830,24 @@ def urlopen(
     resp = do_open(req, timeout=timeout)
     final = getattr(resp, "url", None)
     if final and final != requested:
-        # Scrubbed into their own named locals, rather than called inline
-        # inside the f-string, so the redaction is a plain, visible
-        # assignment ahead of the only place either value is disclosed
-        # (#2533 self-review; CodeQL's py/clear-text-logging-sensitive-data
-        # flagged the inline-call form as two sources reaching a print sink,
-        # not recognising `_scrub_query_secrets` as a sanitizer either way —
-        # the redaction itself is unchanged, only where it is spelled).
+        # Both values pass through `_scrub_query_secrets()` before either one
+        # is disclosed, so no credential-shaped query parameter ever reaches
+        # this print. CodeQL's py/clear-text-logging-sensitive-data flagged
+        # this line twice already (#2533): first when the scrub was called
+        # inline inside the f-string, then again after that call was hoisted
+        # into these two named locals. Neither restructuring changed the
+        # verdict, because CodeQL's taint tracking does not model a
+        # caller-defined function as a sanitizer -- it still sees the two
+        # arguments as tainted reaching a sink regardless of what
+        # `_scrub_query_secrets()` (read its docstring: urlsplit -> parse_qsl
+        # -> "[REDACTED]" any credential-shaped key -> urlunsplit) already did
+        # to them. Suppressed below rather than restructured again.
         safe_requested = _scrub_query_secrets(requested)
         safe_final = _scrub_query_secrets(final)
+        # codeql[py/clear-text-logging-sensitive-data] -- see the comment
+        # above: both arguments below are already redacted; re-evaluate this
+        # suppression if a future CodeQL release adds sanitizer modelling for
+        # this shape of function.
         print(
             f"NOTE: the request was redirected before it was answered: "
             f"{safe_requested!r} -> {safe_final!r}. "
