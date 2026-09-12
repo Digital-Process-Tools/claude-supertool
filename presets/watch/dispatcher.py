@@ -243,6 +243,17 @@ def cmd_reload(source: str, watcher_id: str) -> int:
           + ", ".join(
               f"{pid} ({'tracked' if pid == info['tracked'] else 'untracked'})"
               for pid in pids))
+    print(f"Note: this signal only re-imports {source}'s own poller.py in the "
+          f"running process -- dispatcher.py itself (the shared back-off/retry/"
+          f"wait machinery every poller runs under: _retry_after_seconds, "
+          f"_wait_interruptible, MAX_RETRY_AFTER_SECONDS, the outer poll loop) "
+          f"is already imported by that same process and is NOT swapped by "
+          f"this signal, no matter how many pollers it reaches. If the fix "
+          f"you are deploying lives in dispatcher.py rather than in "
+          f"{source}'s own poller.py, this reload will not pick it up -- "
+          f"{_st_hint.st_hint(f'unwatch:{source}:{watcher_id}')} then "
+          f"{_st_hint.st_hint(f'watch:{source}:{watcher_id}')} instead, which "
+          f"forks a fresh process and re-imports both.")
     failures = 0
     for pid in pids:
         try:
