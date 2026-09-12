@@ -1,0 +1,32 @@
+{
+  "description": "YouTube discovery via the Data API v3 (search/read/list, API key only, no OAuth2 writes yet -- #227).",
+  "requires": "python",
+  "ops": {
+    "youtube_search": {
+      "safety": "read-only",
+      "cmd": "{python} {path}youtube/search.py {args}",
+      "timeout": 15,
+      "description": "Search videos matching a query (search.list, type=video). Costs 100 quota units per call, the most expensive endpoint in this API.",
+      "syntax": "youtube_search:QUERY[|N]",
+      "example": "youtube_search:AI agent frameworks|10",
+      "default_limit": 10
+    },
+    "youtube_list": {
+      "safety": "read-only",
+      "cmd": "{python} {path}youtube/list.py {args}",
+      "timeout": 15,
+      "description": "List a channel's uploads (playlistItems.list on its uploads playlist). CHANNEL accepts a channel ID, an @handle, a bare name tried as a handle, or a youtube.com/channel/... or youtube.com/@... URL.",
+      "syntax": "youtube_list:CHANNEL[|N]",
+      "example": "youtube_list:@GoogleDevelopers|5",
+      "default_limit": 10
+    },
+    "youtube_read": {
+      "safety": "read-only",
+      "cmd": "{python} {path}youtube/read.py {args}",
+      "timeout": 15,
+      "description": "Read video title + channel + stats + top N inline comments (with comment IDs). Accepts a bare video ID or a watch/youtu.be/shorts/embed URL. A video with comments disabled degrades to a note rather than failing.",
+      "syntax": "youtube_read:VIDEO_ID_OR_URL",
+      "example": "youtube_read:https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    }
+  }
+}

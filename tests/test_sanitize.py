@@ -1,6 +1,6 @@
 """Tests for the _sanitize.py prompt-injection helper.
 
-The same helper is duplicated across bluesky/hashnode/devto presets
+The same helper is duplicated across bluesky/hashnode/devto/youtube presets
 (intentional — keeps each preset self-contained). Tests load the
 bluesky copy as canonical; the others must stay byte-identical.
 """
@@ -80,8 +80,17 @@ def test_wrap_empty_passthrough() -> None:
 
 
 def test_presets_have_identical_sanitize() -> None:
-    """All three presets must ship the same helper to avoid drift."""
+    """All four presets must ship the same helper to avoid drift.
+
+    `youtube` was added in #227 as a straight copy of the bluesky original;
+    it was absent from this list for a while after that (#227 self-review)
+    -- a fifth same-shaped preset that drifts would have passed this test
+    silently the same way, so it belongs here as soon as the file exists,
+    not only once something is found wrong with it.
+    """
     bluesky_text = (PRESETS / "bluesky" / "_sanitize.py").read_text(encoding="utf-8")
     hashnode_text = (PRESETS / "hashnode" / "_sanitize.py").read_text(encoding="utf-8")
     devto_text = (PRESETS / "devto" / "_sanitize.py").read_text(encoding="utf-8")
-    assert bluesky_text == hashnode_text == devto_text, "_sanitize.py drift between presets — keep them in sync"
+    youtube_text = (PRESETS / "youtube" / "_sanitize.py").read_text(encoding="utf-8")
+    assert bluesky_text == hashnode_text == devto_text == youtube_text, (
+        "_sanitize.py drift between presets — keep them in sync")

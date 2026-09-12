@@ -287,7 +287,13 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # all -- `cmd` is `{args}` from the first line, same shape as an
         # optional-only op, because it always resolves empty and is never a
         # single-slot `{file}/{dir}/{arg}` case.
-        assert len(rows) == 95, len(rows)
+        # 95 → 98 in #227: `youtube_search`, `youtube_read` and `youtube_list`
+        # are three new ops in a new `presets/youtube.json`, each `cmd` taking
+        # `{args}` from the first line -- QUERY[|N], VIDEO_ID_OR_URL and
+        # CHANNEL[|N] respectively, all one colon-rejoined blob the script
+        # itself splits on `|`, the same shape as `bluesky_search`/
+        # `bluesky_list`/`bluesky_read`'s own `cmd`s this file already counts.
+        assert len(rows) == 98, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -313,7 +319,10 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # (see the population count's own comment above).
         # 69 → 70 in #1850: `statusline` is `{args}` from the first line too
         # (see the population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (70, 21, 4), (
+        # 70 → 73 in #227: `youtube_search`, `youtube_read` and `youtube_list`
+        # are all `{args}` from the first line too (see the population
+        # count's own comment above).
+        assert (len(multi), len(one), len(none)) == (73, 21, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a
