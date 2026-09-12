@@ -2202,6 +2202,62 @@ A `gh api rate_limit` read that itself fails (no `gh`, no credentials, a
 timeout) says so rather than omitting the section or rendering as though the
 projection had been checked — the third state this whole preset keeps to.
 
+### `gh-branch`'s real calls-per-tick can now be measured, but is not yet applied fleet-wide ([#2525](https://github.com/Digital-Process-Tools/claude-supertool/issues/2525))
+
+`ratelimit.CALLS_PER_TICK["gh-branch"]`'s flat `3` above always undercounted
+by exactly the `_jobs_for` calls the paragraph above already admits it
+drops. `ratelimit.workflow_file_count(repo_root)` (counts `.github/workflows/`
+files) and `ratelimit.gh_branch_calls_per_tick(workflow_count)`
+(`3 + workflow_count`) exist and are tested, as an upper approximation of a
+repo's real per-tick cost. **They are deliberately not wired into `watches`
+today.** A first attempt applied `workflow_file_count(os.getcwd())`
+fleet-wide to every `gh-branch` poller's projection; self-review on #2525
+found this unsound, twice independently: a poller resolves its own watched
+repo via `SUPERTOOL_REPO` at spawn time, or the spawning process's own cwd
+at that time, either of which can differ from the cwd `watches` happens to
+be run from later, and from each other across pollers on different
+channels — so one repo's workflow count applied fleet-wide can *undercount*
+a different poller's real cost, the exact failure this was meant to close.
+Left as a building block for a caller that can resolve each poller's own
+repo, which this preset does not have today.
+
+### `watches` flags a DISAGREEMENT between the core reading and a poller that is presently being throttled ([#2525](https://github.com/Digital-Process-Tools/claude-supertool/issues/2525))
+
+Five exhaustions in nine hours (#2525) turned up `gh api rate_limit`
+reporting a healthy core (`5000/5000`, `4998/5000`, ...) within minutes of a
+`*_unreachable` event on the same token. GitHub enforces a *secondary* rate
+limit — abuse-detection throttling on request burst/concurrency, with
+thresholds it does not publish — entirely separately from the primary
+per-hour budget the section above is built on, and GitHub's own REST API
+docs say a secondary-limit rejection is not reflected in `/rate_limit` or in
+any response header at all. A full-looking core line is therefore never
+proof the fleet is not being throttled.
+
+`watches` now reads every `GH_SOURCES` poller's own current state on this
+channel and, when at least one is presently failing with a rate-limit-shaped
+error while the core reading above shows real headroom, prints both
+instruments side by side:
+
+```
+watches:   core: 4800/5000 remaining, resets 2026-09-12T02:00:00Z
+watches:   DISAGREEMENT: 1 gh-backed poller(s) are currently failing with a rate-limit-shaped error (e.g. gh-branch:main — 'ERROR: GitHub API rate limit exceeded. Wait a few minutes.') while this core reading shows 4800 of 5000 still free. GitHub's secondary rate limit (abuse-detection throttling) is not reported by `gh api rate_limit` or by any response header at all — a healthy-looking core budget here does not mean the fleet is not being throttled. Trust the poller's own error over this line.
+```
+
+`remaining == 0` never triggers this: there the core budget itself already
+explains the failure, and flagging a disagreement over a consistent reading
+would be the false positive this exists to avoid. A poller's own `id` and
+`error` reach this line through `_untrusted.flat()`, the same convention
+every other row on this board already applies, since both are argv/state-
+derived text a poller's own name can influence.
+
+A poller whose state file could not be read at all (a symlink refusal, a
+corrupt or mid-write JSON file) is reported as its own caveat rather than
+silently counted as "no active error":
+
+```
+watches:   1 gh-backed poller state file(s) could not be read (/tmp/supertool-watch-gh-branch__main.state.json/... is a symlink and was not followed) — a rate-limit disagreement on those could not be checked, which is not the same as there being none.
+```
+
 ### Back-off: `retry_after` on a rate-limit-shaped `*_unreachable`
 
 `presets/watch/tiers/gh_prs.py` already special-cases the rate-limit stderr
