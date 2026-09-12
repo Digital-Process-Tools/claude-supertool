@@ -476,14 +476,15 @@ def test_no_unbounded_response_reads_remain_under_presets() -> None:
 # ---------------------------------------------------------------------------
 #
 # #2533 scrubbed the redirect-NOTE print() in urlopen(). `ResponseTooLarge` and
-# `DeadlineExceeded` carry the same raw, unscrubbed URL into their own __str__
-# (`self.url`, set from `resp.url`/the requested URL at the raise site) and
-# rely entirely on each *caller's* own exception handler to scrub it before
-# printing -- which is exactly the per-caller reliance the #2533 docstring
-# says the generic fix at the shared call site exists to remove. youtube/_yt.py
-# happens to scrub by known key value in its own handler today, but a future
-# caller that follows its query-string-credential shape and hits a deadline or
-# an oversized body, without writing its own scrub, gets the raw secret back.
+# `DeadlineExceeded` originally carried the same raw, unscrubbed URL into
+# their own __str__ (`self.url`, set from `resp.url`/the requested URL at the
+# raise site) and relied entirely on each *caller's* own exception handler to
+# scrub it before printing. Both -- along with `RedirectRefused` and
+# `DestinationRefused`, the same shape found on the same file's other two
+# raw-URL exception classes -- now scrub at construction, before
+# `Exception.__init__` ever stores the URL in `self.args`, so `str()`,
+# `repr()` and `.args` all read the redacted value: no caller has to write
+# its own scrub for this to hold (#2533 follow-up self-review).
 
 def test_deadline_exceeded_message_scrubs_a_url_embedded_secret(drip) -> None:
     secret = "AIzaFAKESECRETKEY00000000000000000"
