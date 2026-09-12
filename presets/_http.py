@@ -841,13 +841,13 @@ def urlopen(
         # arguments as tainted reaching a sink regardless of what
         # `_scrub_query_secrets()` (read its docstring: urlsplit -> parse_qsl
         # -> "[REDACTED]" any credential-shaped key -> urlunsplit) already did
-        # to them. Suppressed below rather than restructured again.
+        # to them. Suppressed below rather than restructured again -- and if
+        # this print() ever grows a third interpolated value, scrub that one
+        # too, since the suppression covers the whole statement below, not
+        # specifically `safe_requested`/`safe_final`.
         safe_requested = _scrub_query_secrets(requested)
         safe_final = _scrub_query_secrets(final)
-        # codeql[py/clear-text-logging-sensitive-data] -- see the comment
-        # above: both arguments below are already redacted; re-evaluate this
-        # suppression if a future CodeQL release adds sanitizer modelling for
-        # this shape of function.
+        # codeql[py/clear-text-logging-sensitive-data]: both arguments below are already redacted by _scrub_query_secrets() above; re-evaluate if a future CodeQL release adds sanitizer modelling for this pattern.
         print(
             f"NOTE: the request was redirected before it was answered: "
             f"{safe_requested!r} -> {safe_final!r}. "
