@@ -156,6 +156,19 @@ class ResponseTooLarge(Exception):
     """
 
     def __init__(self, url: str, limit: int, declared: int | None = None) -> None:
+        # Scrubbed BEFORE `super().__init__()` (#2533 follow-up), not only in
+        # `__str__`: `Exception.__init__` stores every constructor argument in
+        # `self.args` verbatim, and the default `__repr__` is built from
+        # `self.args`, not from `__str__` -- a caller that reaches for
+        # `repr(exc)` (a common logging idiom) would otherwise get the raw
+        # URL back regardless of what `__str__` does. `self.url` is set from
+        # the raw request/response URL at the raise site, and a caller that
+        # embeds a credential in the query string (youtube/_yt.py's `key=`)
+        # gets it back verbatim unless every render site remembers its own
+        # scrub -- the exact per-caller reliance the redirect-NOTE fix in
+        # `urlopen()` exists to remove; this closes the same gap for `.args`
+        # and `repr()`, not only `str()`.
+        url = _scrub_query_secrets(url)
         super().__init__(url, limit, declared)
         self.url = url
         self.limit = limit
@@ -167,15 +180,8 @@ class ResponseTooLarge(Exception):
             if self.declared is not None
             else "kept sending past the cap"
         )
-        # Scrubbed here rather than trusted to the caller (#2533 follow-up):
-        # `self.url` is set from the raw request/response URL at the raise
-        # site, and a caller that embeds a credential in the query string
-        # (youtube/_yt.py's `key=`) gets it back verbatim from `str(exc)`
-        # unless it writes its own scrub -- the exact per-caller reliance
-        # the redirect-NOTE fix in `urlopen()` exists to remove.
-        safe_url = _scrub_query_secrets(self.url)
         return (
-            f"response too large: {safe_url!r} {size}, over the {self.limit}-byte cap. "
+            f"response too large: {self.url!r} {size}, over the {self.limit}-byte cap. "
             f"The body was NOT read and NOT truncated — a truncated body would have "
             f"been reported to you as malformed data from the endpoint."
         )
@@ -191,18 +197,17 @@ class DeadlineExceeded(TimeoutError):
     """
 
     def __init__(self, url: str, seconds: float) -> None:
+        # Same reasoning as `ResponseTooLarge.__init__` just above: scrubbed
+        # before `super().__init__()` so `.args`/`repr()` cannot bypass it,
+        # not only `str()` (#2533 follow-up).
+        url = _scrub_query_secrets(url)
         super().__init__(url, seconds)
         self.url = url
         self.seconds = seconds
 
     def __str__(self) -> str:
-        # Same reasoning as `ResponseTooLarge.__str__` just above: `self.url`
-        # is the raw URL from the raise site, and this is the one rendering
-        # every caller reaches through `str(exc)` -- scrub it here rather
-        # than rely on each caller writing its own (#2533 follow-up).
-        safe_url = _scrub_query_secrets(self.url)
         return (
-            f"exceeded the {self.seconds:g}s deadline reading {safe_url!r}. urllib's "
+            f"exceeded the {self.seconds:g}s deadline reading {self.url!r}. urllib's "
             f"timeout bounds each socket read, not the call: a server sending one "
             f"byte at a time resets it forever."
         )
@@ -220,6 +225,13 @@ class DestinationRefused(Exception):
     """
 
     def __init__(self, url: str, reason: str) -> None:
+        # `download()`'s destination policy fetches URLs somebody else chose
+        # (a tracker comment), not a caller's own credentialed request -- but
+        # scrubbed anyway, before `super().__init__()`, for the same reason
+        # as its three siblings above: a future caller of this same policy
+        # against a credentialed endpoint should not depend on remembering to
+        # do this itself (#2533 follow-up).
+        url = _scrub_query_secrets(url)
         super().__init__(url, reason)
         self.url = url
         self.reason = reason
@@ -244,6 +256,20 @@ class RedirectRefused(Exception):
     """
 
     def __init__(self, from_url: str, to_url: str, code: int, reason: str) -> None:
+        # Scrubbed before `super().__init__()`, same reasoning as the three
+        # siblings above (#2533 follow-up): `from_url` is the requested URL
+        # (`req.full_url` at the raise site) and is exactly where a
+        # query-embedded credential lives (youtube/_yt.py's `key=`) -- an
+        # off-origin redirect refusal is the class this docstring itself
+        # calls a credential exfiltration attempt, so it is the single
+        # likeliest place for one to show up, and scrubbing only inside
+        # `__str__` would still leak it through `.args`/`repr()`. `to_url` is
+        # scrubbed too even though it is attacker-chosen text rather than a
+        # caller's own credential, for the same reason both ends already
+        # share one `!r` treatment: one rule for both URLs is less to get
+        # wrong than two.
+        from_url = _scrub_query_secrets(from_url)
+        to_url = _scrub_query_secrets(to_url)
         super().__init__(from_url, to_url, code, reason)
         self.from_url = from_url
         self.to_url = to_url

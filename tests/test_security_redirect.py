@@ -194,6 +194,28 @@ def test_redirect_refused_is_not_an_oserror() -> None:
     assert not issubclass(_http.RedirectRefused, ValueError)
 
 
+def test_refusal_message_scrubs_a_url_embedded_secret_from_the_origin_url() -> None:
+    """`RedirectRefused.from_url` is `req.full_url` at the raise site (#766) --
+    the requested URL itself, which is exactly where youtube/_yt.py's `key=`
+    query parameter lives (#2533). This is the class this fix's own docstring
+    calls "a credential exfiltration attempt": an off-origin redirect refusal
+    is the single most likely place a query-embedded credential shows up in
+    the very URL that triggered the raise, yet `__str__` rendered `from_url`
+    raw with no call to `_scrub_query_secrets()`, unlike `ResponseTooLarge`
+    and `DeadlineExceeded` next door (#2533 follow-up self-review)."""
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    exc = _http.RedirectRefused(
+        f"https://api.example.com/x?key={secret}",
+        "https://evil.example/y",
+        302,
+        "different host",
+    )
+    text = str(exc)
+    assert secret not in text, (
+        f"the URL-embedded secret leaked into the RedirectRefused message: {text!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. Every credentialed client refuses, loudly
 # ---------------------------------------------------------------------------
@@ -375,6 +397,33 @@ def test_scrub_query_secrets_leaves_an_unparseable_url_unchanged() -> None:
     let a URL it cannot parse crash the disclosure it is protecting."""
     hostile = "https://[::1/x?key=SECRET123"
     assert _http._scrub_query_secrets(hostile) == hostile
+
+
+@pytest.mark.parametrize(
+    "make_exc",
+    [
+        lambda secret: _http.ResponseTooLarge(f"http://x/?key={secret}", 10, 20),
+        lambda secret: _http.DeadlineExceeded(f"http://x/?key={secret}", 1.0),
+        lambda secret: _http.RedirectRefused(
+            f"http://x/?key={secret}", "http://evil/y", 302, "different host"
+        ),
+        lambda secret: _http.DestinationRefused(f"http://x/?key={secret}", "blocked"),
+    ],
+    ids=["ResponseTooLarge", "DeadlineExceeded", "RedirectRefused", "DestinationRefused"],
+)
+def test_url_embedded_secret_does_not_survive_repr_or_args(make_exc) -> None:
+    """`str(exc)` is scrubbed (#2533 follow-up), but `Exception.__init__` also
+    stores every constructor argument in `self.args` untouched, and the
+    default `__repr__` is built from `self.args`, not from `__str__` -- a
+    caller that reasonably reaches for `repr(exc)` or `f"{exc!r}"` (a common
+    logging idiom) gets the raw, unscrubbed URL back regardless of what
+    `__str__` does. The fix has to scrub before `super().__init__()` ever
+    sees the URL, not only inside `__str__`.
+    """
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    exc = make_exc(secret)
+    assert secret not in repr(exc), f"the secret survived repr(): {exc!r}"
+    assert secret not in str(exc.args), f"the secret survived .args: {exc.args!r}"
 
 
 def test_url_embedded_secret_is_scrubbed_from_the_redirect_note(hop, capsys) -> None:
