@@ -469,3 +469,39 @@ def test_no_unbounded_response_reads_remain_under_presets() -> None:
         "these reads are unbounded — use _http.read_capped() for a response body, "
         f"or pass an explicit byte limit for an error body: {offenders}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 5. A query-embedded credential must not survive into an exception message
+# ---------------------------------------------------------------------------
+#
+# #2533 scrubbed the redirect-NOTE print() in urlopen(). `ResponseTooLarge` and
+# `DeadlineExceeded` carry the same raw, unscrubbed URL into their own __str__
+# (`self.url`, set from `resp.url`/the requested URL at the raise site) and
+# rely entirely on each *caller's* own exception handler to scrub it before
+# printing -- which is exactly the per-caller reliance the #2533 docstring
+# says the generic fix at the shared call site exists to remove. youtube/_yt.py
+# happens to scrub by known key value in its own handler today, but a future
+# caller that follows its query-string-credential shape and hits a deadline or
+# an oversized body, without writing its own scrub, gets the raw secret back.
+
+def test_deadline_exceeded_message_scrubs_a_url_embedded_secret(drip) -> None:
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    url = f"{drip.base}/x?key={secret}"
+    with pytest.raises(_http.DeadlineExceeded) as exc:
+        with _http.urlopen(url, timeout=5, deadline=0.1) as resp:
+            _http.read_capped(resp)
+    assert secret not in str(exc.value), (
+        f"the URL-embedded secret leaked into the DeadlineExceeded message: {exc.value!r}"
+    )
+
+
+def test_response_too_large_message_scrubs_a_url_embedded_secret(big) -> None:
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    url = f"{big.base}/x?key={secret}"
+    with _http.urlopen(url, timeout=5) as resp:
+        with pytest.raises(_http.ResponseTooLarge) as exc:
+            _http.read_capped(resp, limit=TEST_CAP)
+    assert secret not in str(exc.value), (
+        f"the URL-embedded secret leaked into the ResponseTooLarge message: {exc.value!r}"
+    )

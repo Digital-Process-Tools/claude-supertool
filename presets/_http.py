@@ -167,8 +167,15 @@ class ResponseTooLarge(Exception):
             if self.declared is not None
             else "kept sending past the cap"
         )
+        # Scrubbed here rather than trusted to the caller (#2533 follow-up):
+        # `self.url` is set from the raw request/response URL at the raise
+        # site, and a caller that embeds a credential in the query string
+        # (youtube/_yt.py's `key=`) gets it back verbatim from `str(exc)`
+        # unless it writes its own scrub -- the exact per-caller reliance
+        # the redirect-NOTE fix in `urlopen()` exists to remove.
+        safe_url = _scrub_query_secrets(self.url)
         return (
-            f"response too large: {self.url!r} {size}, over the {self.limit}-byte cap. "
+            f"response too large: {safe_url!r} {size}, over the {self.limit}-byte cap. "
             f"The body was NOT read and NOT truncated — a truncated body would have "
             f"been reported to you as malformed data from the endpoint."
         )
@@ -189,8 +196,13 @@ class DeadlineExceeded(TimeoutError):
         self.seconds = seconds
 
     def __str__(self) -> str:
+        # Same reasoning as `ResponseTooLarge.__str__` just above: `self.url`
+        # is the raw URL from the raise site, and this is the one rendering
+        # every caller reaches through `str(exc)` -- scrub it here rather
+        # than rely on each caller writing its own (#2533 follow-up).
+        safe_url = _scrub_query_secrets(self.url)
         return (
-            f"exceeded the {self.seconds:g}s deadline reading {self.url!r}. urllib's "
+            f"exceeded the {self.seconds:g}s deadline reading {safe_url!r}. urllib's "
             f"timeout bounds each socket read, not the call: a server sending one "
             f"byte at a time resets it forever."
         )
@@ -792,9 +804,18 @@ def urlopen(
     resp = do_open(req, timeout=timeout)
     final = getattr(resp, "url", None)
     if final and final != requested:
+        # Scrubbed into their own named locals, rather than called inline
+        # inside the f-string, so the redaction is a plain, visible
+        # assignment ahead of the only place either value is disclosed
+        # (#2533 self-review; CodeQL's py/clear-text-logging-sensitive-data
+        # flagged the inline-call form as two sources reaching a print sink,
+        # not recognising `_scrub_query_secrets` as a sanitizer either way —
+        # the redaction itself is unchanged, only where it is spelled).
+        safe_requested = _scrub_query_secrets(requested)
+        safe_final = _scrub_query_secrets(final)
         print(
             f"NOTE: the request was redirected before it was answered: "
-            f"{_scrub_query_secrets(requested)!r} -> {_scrub_query_secrets(final)!r}. "
+            f"{safe_requested!r} -> {safe_final!r}. "
             f"The response came from the second URL. "
             f"The hop stayed on the same origin, so it was followed.",
             file=sys.stderr,
