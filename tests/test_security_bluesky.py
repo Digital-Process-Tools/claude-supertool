@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -404,6 +406,131 @@ class TestSessionJsonTampering:
         assert atproto._load_session() is None
 
 
+# POSIX file modes only -- Windows has no real user/group/other permission
+# bits, and os.chmod there only toggles the read-only flag, so a writable
+# file reads back with wide-looking st_mode regardless (mirrors the
+# platform guard in tests/test_atomic_write_mode_259.py).
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file modes; Windows os.chmod only toggles read-only",
+)
+class TestSessionFileNeverWideOpen:
+    """#2484: the session cache must never be observable on disk at a mode
+    wider than 0o600 -- not even for the instant between the file being
+    created/written and any narrowing chmod call.
+
+    A plain write_text() followed by a separate os.chmod(..., 0o600)
+    creates the file at 0o666 & ~umask first: under a permissive umask
+    (0, exercised here on purpose -- the reporting host's default of 0o022
+    would still narrow enough of the bits to hide the bug) that is world-
+    and group-readable, and stays that way for every instant between the
+    write and the chmod call. This suite catches that window directly
+    rather than only checking the mode after _save_session returns, which
+    the buggy write-then-chmod code already passes.
+    """
+
+    def _load_atproto(self):
+        spec = importlib.util.spec_from_file_location(
+            "bsky_sec__atproto_perm", PRESET_DIR / "_atproto.py"
+        )
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        return mod
+
+    def _assert_never_wide(self, save_session, session_file):
+        """Drive save_session under a permissive umask, recording the mode
+        of every os.open call that creates the file, and the mode observed
+        immediately before every narrowing call on it -- os.fchmod on
+        POSIX (the branch this suite always exercises, since the class is
+        skipped on win32), os.chmod as its own Windows-only fallback in
+        the implementation. Either open_modes or pre_narrow_modes being
+        non-empty and wide is a finding; os.open never firing at all is
+        also a finding (the write never went through an atomic,
+        mode-scoped creation, so nothing here proves the window is closed).
+        """
+        old_umask = os.umask(0)  # nothing masked away -- worst case
+        real_open = os.open
+        real_fchmod = getattr(os, "fchmod", None)
+        real_chmod = os.chmod
+        open_modes = []
+        pre_narrow_modes = []
+
+        def spying_open(path, flags, mode=0o777, *a, **kw):
+            fd = real_open(path, flags, mode, *a, **kw)
+            if os.fspath(path) == os.fspath(session_file) and (flags & os.O_CREAT):
+                open_modes.append(mode & 0o777)
+            return fd
+
+        def spying_fchmod(fd, mode, *a, **kw):
+            pre_narrow_modes.append(stat.S_IMODE(os.fstat(fd).st_mode))
+            return real_fchmod(fd, mode, *a, **kw)
+
+        def spying_chmod(path, mode, *a, **kw):
+            if os.fspath(path) == os.fspath(session_file) and os.path.exists(path):
+                pre_narrow_modes.append(stat.S_IMODE(os.stat(path).st_mode))
+            return real_chmod(path, mode, *a, **kw)
+
+        os.open = spying_open
+        if real_fchmod is not None:
+            os.fchmod = spying_fchmod
+        os.chmod = spying_chmod
+        try:
+            save_session()
+        finally:
+            os.umask(old_umask)
+            os.open = real_open
+            if real_fchmod is not None:
+                os.fchmod = real_fchmod
+            os.chmod = real_chmod
+
+        assert open_modes, (
+            "os.open was never used to create the session file atomically -- "
+            "nothing here proves the write-then-chmod window is closed"
+        )
+        assert real_fchmod is not None, (
+            "os.fchmod is unavailable on this platform -- this test only "
+            "runs where it should be exercised (skipif win32 above)"
+        )
+        assert pre_narrow_modes, (
+            "os.fchmod was never called to narrow the file -- the "
+            "TOCTOU-safe fd-based narrowing path went unexercised"
+        )
+        assert all(m == 0o600 for m in open_modes), [oct(m) for m in open_modes]
+        assert all(m == 0o600 for m in pre_narrow_modes), [oct(m) for m in pre_narrow_modes]
+        assert stat.S_IMODE(session_file.stat().st_mode) == 0o600
+
+    def test_atproto_save_session_never_world_or_group_readable(self, tmp_path, monkeypatch):
+        session_file = tmp_path / "session.json"
+        atproto = self._load_atproto()
+        monkeypatch.setattr(atproto, "SESSION_FILE", session_file)
+
+        self._assert_never_wide(
+            lambda: atproto._save_session({"accessJwt": "x", "refreshJwt": "y"}),
+            session_file,
+        )
+
+    def test_atproto_save_session_narrows_a_pre_existing_wide_file(self, tmp_path, monkeypatch):
+        """The fresh-file case above is trivially narrow because os.open()'s
+        own mode argument only applies to a file *it* creates -- POSIX
+        ignores that argument for a file that already exists. The actual
+        job of the fchmod/chmod call this test targets only shows up
+        against a file that pre-exists wide (e.g. left over from before
+        #2484's fix, or from a umask that widened an earlier write): this
+        pins that _save_session narrows it rather than leaving it as-is.
+        """
+        session_file = tmp_path / "session.json"
+        session_file.write_text('{"stale": true}', encoding="utf-8")
+        os.chmod(session_file, 0o644)
+        assert stat.S_IMODE(session_file.stat().st_mode) == 0o644  # precondition
+
+        atproto = self._load_atproto()
+        monkeypatch.setattr(atproto, "SESSION_FILE", session_file)
+        atproto._save_session({"accessJwt": "x", "refreshJwt": "y"})
+
+        assert stat.S_IMODE(session_file.stat().st_mode) == 0o600
+
+
 # ===========================================================================
 # 5. 300-char post cap
 # ===========================================================================
@@ -746,7 +873,6 @@ class TestSearchQueryInjection:
 
     def test_query_with_pipe_non_digit_limit_ignored(self, monkeypatch):
         """'query|DROP TABLE' — 'DROP TABLE' is not a digit, treated as no limit."""
-        import os
         q, n = search_mod.parse_args("query|DROP TABLE")
         assert q == "query"
         # 'DROP TABLE' is not .isdigit() → default limit used

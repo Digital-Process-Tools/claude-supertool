@@ -17,7 +17,12 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
+import stat
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).parent.parent
 SOURCE_DIR = REPO / "presets" / "watch" / "sources" / "bluesky-engagement"
@@ -134,3 +139,95 @@ def test_events_json_lists_exactly_what_the_poller_emits():
 
 def test_the_modules_own_declaration_matches_what_it_emits():
     assert set(feed.EVENT_KEYS) == _emitted_event_keys()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file modes; Windows os.chmod only toggles read-only",
+)
+def test_save_session_never_world_or_group_readable(tmp_path, monkeypatch):
+    """#2484: same write-then-chmod window as `presets/bluesky/_atproto.py`
+    -- `_save_session` here is its own separate copy (this module
+    deliberately never imports `_atproto.py`, see the module docstring),
+    so the fix has to land here independently too. Mirrors
+    `tests/test_security_bluesky.py::TestSessionFileNeverWideOpen`: drive
+    the write under a permissive umask and catch the file existing at a
+    wider mode than 0o600 at any point, not just after the call returns.
+    """
+    session_file = tmp_path / "session.json"
+    monkeypatch.setattr(feed, "SESSION_FILE", session_file)
+
+    old_umask = os.umask(0)  # nothing masked away -- worst case
+    real_open = os.open
+    real_fchmod = getattr(os, "fchmod", None)
+    real_chmod = os.chmod
+    open_modes = []
+    pre_narrow_modes = []
+
+    def spying_open(path, flags, mode=0o777, *a, **kw):
+        fd = real_open(path, flags, mode, *a, **kw)
+        if os.fspath(path) == os.fspath(session_file) and (flags & os.O_CREAT):
+            open_modes.append(mode & 0o777)
+        return fd
+
+    def spying_fchmod(fd, mode, *a, **kw):
+        pre_narrow_modes.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        return real_fchmod(fd, mode, *a, **kw)
+
+    def spying_chmod(path, mode, *a, **kw):
+        if os.fspath(path) == os.fspath(session_file) and os.path.exists(path):
+            pre_narrow_modes.append(stat.S_IMODE(os.stat(path).st_mode))
+        return real_chmod(path, mode, *a, **kw)
+
+    os.open = spying_open
+    if real_fchmod is not None:
+        os.fchmod = spying_fchmod
+    os.chmod = spying_chmod
+    try:
+        feed._save_session({"accessJwt": "x", "refreshJwt": "y"})
+    finally:
+        os.umask(old_umask)
+        os.open = real_open
+        if real_fchmod is not None:
+            os.fchmod = real_fchmod
+        os.chmod = real_chmod
+
+    assert open_modes, (
+        "os.open was never used to create the session file atomically -- "
+        "nothing here proves the write-then-chmod window is closed"
+    )
+    assert real_fchmod is not None, (
+        "os.fchmod is unavailable on this platform -- this test only "
+        "runs where it should be exercised (skipif win32 above)"
+    )
+    assert pre_narrow_modes, (
+        "os.fchmod was never called to narrow the file -- the "
+        "TOCTOU-safe fd-based narrowing path went unexercised"
+    )
+    assert all(m == 0o600 for m in open_modes), [oct(m) for m in open_modes]
+    assert all(m == 0o600 for m in pre_narrow_modes), [oct(m) for m in pre_narrow_modes]
+    assert stat.S_IMODE(session_file.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file modes; Windows os.chmod only toggles read-only",
+)
+def test_save_session_narrows_a_pre_existing_wide_file(tmp_path, monkeypatch):
+    """The fresh-file case above is trivially narrow because os.open()'s
+    own mode argument only applies to a file *it* creates -- POSIX
+    ignores that argument for a file that already exists. The actual
+    job of the fchmod/chmod call this test targets only shows up against
+    a file that pre-exists wide (e.g. left over from before #2484's fix,
+    or from a umask that widened an earlier write): this pins that
+    _save_session narrows it rather than leaving it as-is.
+    """
+    session_file = tmp_path / "session.json"
+    session_file.write_text('{"stale": true}', encoding="utf-8")
+    os.chmod(session_file, 0o644)
+    assert stat.S_IMODE(session_file.stat().st_mode) == 0o644  # precondition
+
+    monkeypatch.setattr(feed, "SESSION_FILE", session_file)
+    feed._save_session({"accessJwt": "x", "refreshJwt": "y"})
+
+    assert stat.S_IMODE(session_file.stat().st_mode) == 0o600

@@ -70,12 +70,41 @@ def _format_http_error(e: urllib.error.HTTPError, *secrets: str) -> str:
 
 
 def _save_session(session: dict[str, Any]) -> None:
+    """Write the session cache at mode 0o600 from the moment it exists on
+    disk -- never at the umask-determined mode `write_text()` + a later
+    `chmod()` would leave it at in between the two calls (#2484).
+    `os.open()`'s own mode argument is masked by umask the same way a
+    plain `open()`'s is, but 0o600 has no group/other bits to mask away,
+    so the file is 0o600 under every umask, not just the permissive one
+    this fix was found under.
+
+    Prefers `os.fchmod(fd, ...)` over `os.chmod(path, ...)` where available:
+    a path-based chmod re-resolves the path and follows a symlink, so a
+    swap of SESSION_FILE for a symlink between `os.open()` and the chmod
+    call would narrow whatever the link now points at instead of the file
+    this process actually opened -- `fchmod` operates on the fd itself and
+    cannot be redirected that way (mirrors `presets/mcp/_paths.py`'s own
+    "fchmod rather than chmod" comment for the identical reason). `fchmod`
+    does not exist on Windows at all (an `AttributeError` `except OSError`
+    never catches), where this repo's own CI matrix runs, so `os.chmod`
+    is the fallback there -- weaker (just toggles the read-only attribute)
+    but does not crash. Either way it stays a *separate*, own try/except
+    from the write -- best-effort, narrows a pre-existing file left wide
+    by #2484 -- so a narrowing failure never blocks or swallows the write
+    itself, matching `write_text()`'s original, unguarded propagation of
+    a write failure.
+    """
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps(session), encoding="utf-8")
+    fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(SESSION_FILE, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        else:
+            os.chmod(SESSION_FILE, 0o600)
     except OSError:
         pass
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(session))
 
 
 def _load_session() -> dict[str, Any] | None:
