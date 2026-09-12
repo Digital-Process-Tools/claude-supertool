@@ -6929,6 +6929,89 @@ def _grep_limit_and_label(limit: int) -> Tuple[int, str]:
     return limit, str(limit)
 
 
+def _has_outer_wrapped_unbounded_group(pattern: str) -> bool:
+    """True if *pattern* has a `(...)` group followed by an outer `+`/`*`
+    whose own content contains an unbounded quantifier (`+`/`*`) at ANY
+    nesting depth (#1311 self-review finding).
+
+    A single-level regex over `(...)` can only ever see the FIRST close-paren
+    it reaches, so it cannot tell `((a+)?)+` -- where the real danger is the
+    OUTER `+` wrapping a group whose own content is itself unbounded two
+    levels down -- from `(a+)?` alone, which is safe. #1311's own fix
+    narrowed a single-level regex from flagging every trailing `+`/`*`/`?` to
+    only `+`/`*`, and that narrowing accidentally stopped catching
+    `((a+)?)+` too: the old, over-eager regex only ever caught it as a side
+    effect of blanket-refusing the INNER `(a+)?` fragment wherever it
+    appeared, never because it understood the outer wrapping. Confirmed
+    catastrophic: `((a+)?)+` against 25 `a`s and a non-matching trailer took
+    several seconds on this machine.
+
+    This is a small bracket-depth-aware scan instead: for every `(`, find
+    its matching `)` by depth, note whether an unescaped `+`/`*` appeared
+    ANYWHERE inside (at any nesting depth), and refuse only if the character
+    immediately after that matching `)` is `+` or `*`.
+
+    Deliberately loose, like the check it replaces: character classes
+    (`[...]`) are skipped so a literal `+`/`*`/`(`/`)` inside one is never
+    mistaken for a quantifier or a grouping paren, and a backslash-escaped
+    `(`/`)` is skipped as two characters so it never contributes to depth.
+    Nothing here claims to be a real regex parser -- alternation, lookaround
+    and non-capturing groups are not distinguished from a plain group, which
+    only widens what gets refused, never what gets missed.
+    """
+    n = len(pattern)
+
+    def _skip_class(k: int) -> int:
+        """Index just past a `[...]` character class opened at *k* - 1."""
+        if k < n and pattern[k] == "^":
+            k += 1
+        if k < n and pattern[k] == "]":
+            k += 1
+        while k < n and pattern[k] != "]":
+            if pattern[k] == "\\":
+                k += 1
+            k += 1
+        return k + 1
+
+    i = 0
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "[":
+            i = _skip_class(i + 1)
+            continue
+        if c == "(":
+            depth = 1
+            j = i + 1
+            has_unbounded = False
+            while j < n and depth:
+                cj = pattern[j]
+                if cj == "\\":
+                    j += 2
+                    continue
+                if cj == "[":
+                    j = _skip_class(j + 1)
+                    continue
+                if cj == "(":
+                    depth += 1
+                elif cj == ")":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                elif cj in "+*":
+                    has_unbounded = True
+                j += 1
+            if has_unbounded and j < n and pattern[j] in "+*":
+                return True
+            i = j
+            continue
+        i += 1
+    return False
+
+
 def _op_grep(pattern: str, path: str = ".", limit: int = 0,
              context: int = 0, count_only: bool = False,
              no_exclude: bool = False, no_auto_read: bool = False,
@@ -6961,9 +7044,21 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
     if len(pattern) > 1000:
         return f"ERROR: pattern too long ({len(pattern)} > 1000 chars)\n"
     # Nested unbounded quantifiers like `(a+)+`, `(a*)*`, `(.+)*` — the
-    # classic ReDoS shape. The check is intentionally loose; users with a
+    # classic ReDoS shape. The OUTER quantifier is what makes it dangerous:
+    # `+`/`*` can re-partition the same input across an unbounded number of
+    # iterations, each iteration free to re-decide how much of the group's
+    # own unbounded content it consumed. `?` bounds the group to at most ONE
+    # repetition, so there is no re-partitioning to explore and no
+    # catastrophic-backtracking risk -- `(a+)?` was refused here until #1311
+    # even though it is bounded, on a pattern reported live: digits, a dot,
+    # an alternation, an OPTIONAL group of a dot plus one-or-more
+    # lowercase/hyphen characters, a dot, "md". The exception is scoped to
+    # each matched group's own outer quantifier, not to the pattern as a
+    # whole: `(a+)?b(c+)?` is two independently-bounded groups, and neither
+    # one's risk depends on what quantifier the other carries, so both must
+    # pass. The check is intentionally loose otherwise; users with a
     # legitimate need can split into simpler greps.
-    if re.search(r"\([^)]*[+*][^)]*\)[+*?]", pattern):
+    if _has_outer_wrapped_unbounded_group(pattern):
         return (
             "ERROR: pattern contains nested unbounded quantifiers "
             f"({pattern!r}) — would risk catastrophic backtracking. "
@@ -31156,6 +31251,25 @@ def _help_payload_route(op: str) -> str:
             f"payload.",
             f"    Keys: {', '.join(fields)}",
         ])
+    # #1311 — name `literal_backslashes` (#1096) wherever it can actually
+    # fire. It is discoverable today only by tripping the doubled-backslash
+    # write refusal (`_payload_double_backslash_refusal`) once, which is the
+    # very round-trip this whole block exists to save (#1400's own
+    # reasoning, one key later). Scoped to the fields that refusal is scoped
+    # to — `_PAYLOAD_DBS_WRITE_KEYS` — so an op whose route carries none of
+    # them (a read op, or a preset op taking `body`/`title`) is not told
+    # about a key nothing on its route would ever refuse.
+    if set(_at_file_fields(op)) & _PAYLOAD_DBS_WRITE_KEYS:
+        hint += (
+            chr(10) + "  A doubled backslash in a " + chr(39) * 3
+            + " literal block reaches disk at its full length (a literal "
+            "block processes no escapes) and is refused unless you say it "
+            "is meant AS WRITTEN: add `literal_backslashes = true` at the "
+            "top level of the payload, or name only the field(s) that need "
+            "it, e.g. `literal_backslashes = [\"" + sorted(
+                set(_at_file_fields(op)) & _PAYLOAD_DBS_WRITE_KEYS)[0]
+            + "\"]` (#1096)."
+        )
     return (chr(10) + "Payload route — the colon form is not the only one, and "
             "for an argument holding ':' or a newline it is not the working "
             "one (docs/input-forms.md):" + hint)
