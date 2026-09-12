@@ -804,14 +804,23 @@ def _origin_and_path(url: str) -> str:
     only the secret-shaped ones. Accepted here because three rounds already
     failed to satisfy CodeQL any other way on this exact line.
 
+    A consequence worth naming rather than tripping over silently: a
+    redirect that changes only the query string (rotating a token, say)
+    makes this function return the identical string for both the requested
+    and the final URL, since the query is the one part it never looks at.
+    `urlopen()`'s caller-side check names that case explicitly in the NOTE
+    text rather than printing what would otherwise read as a no-op bug
+    report (#2533 self-review).
+
     Never raises on a malformed URL -- falls back to a plain string split on
-    the first `?`, which still never touches anything past it, rather than
-    disclose the query string on the one input `urlsplit()` cannot parse.
+    the first `?` and then the first `#`, which still never touches anything
+    past either one, rather than disclose the query string (or a
+    credential-bearing fragment) on the one input `urlsplit()` cannot parse.
     """
     try:
         parts = urllib.parse.urlsplit(url)
     except ValueError:
-        return url.split("?", 1)[0]
+        return url.split("?", 1)[0].split("#", 1)[0]
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
@@ -890,12 +899,28 @@ def urlopen(
         # never back to `_scrub_query_secrets()` here.
         disclosed_requested = _origin_and_path(requested)
         disclosed_final = _origin_and_path(final)
+        # A redirect that changes only the query string -- rotating a
+        # token, say -- leaves these two equal even though `final !=
+        # requested` triggered this block on the full URL: the query is the
+        # one part `_origin_and_path()` never looks at. Left unremarked, the
+        # NOTE would print the same string on both sides of the arrow, which
+        # reads as a no-op bug report and defeats the very thing this NOTE
+        # exists for -- telling an operator a hop happened at all (#2533
+        # self-review). Naming that case explicitly keeps the disclosure
+        # honest without printing the query string itself.
+        if disclosed_requested == disclosed_final:
+            detail = (
+                "only the query string differed between them, and it is "
+                "omitted from this disclosure -- #2533"
+            )
+        else:
+            detail = "query strings omitted from this disclosure -- #2533"
         print(
             f"NOTE: the request was redirected before it was answered: "
             f"{disclosed_requested!r} -> {disclosed_final!r}. "
             f"The response came from the second URL. "
             f"The hop stayed on the same origin, so it was followed. "
-            f"(query strings omitted from this disclosure -- #2533)",
+            f"({detail})",
             file=sys.stderr,
         )
     if expires is not None:

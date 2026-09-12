@@ -400,6 +400,34 @@ def test_scrub_query_secrets_leaves_an_unparseable_url_unchanged() -> None:
 
 
 @pytest.mark.parametrize(
+    "hostile",
+    [
+        "https://[::1/x?key=SECRET123",
+        "https://[::1/x#key=SECRET123",
+    ],
+    ids=["query", "fragment"],
+)
+def test_origin_and_path_strips_credential_from_an_unparseable_url(hostile) -> None:
+    """`urlsplit` raises `ValueError` on a malformed IPv6 host, exactly as it
+    does for `_scrub_query_secrets()` above (#2533 self-review: this
+    fallback branch had no test of its own before this one, even though the
+    sibling function's identical-shaped fallback does).
+
+    Unlike `_scrub_query_secrets()`, which fails closed to a no-op here
+    (returning the original text -- there is nothing left to redact once
+    parsing itself has failed), `_origin_and_path()` must not: its whole
+    point is to never disclose anything past `?` or `#`, parsed or not, so
+    the fallback strips both rather than falling back to the raw string.
+    """
+    out = _http._origin_and_path(hostile)
+    assert "SECRET123" not in out, (
+        f"the credential survived _origin_and_path()'s unparseable-URL "
+        f"fallback: {out!r}"
+    )
+    assert "?" not in out and "#" not in out
+
+
+@pytest.mark.parametrize(
     "make_exc",
     [
         lambda secret: _http.ResponseTooLarge(f"http://x/?key={secret}", 10, 20),
@@ -465,6 +493,33 @@ def test_url_embedded_secret_is_scrubbed_from_the_redirect_note(hop, capsys) -> 
         f"the redirect NOTE still carries a query string of some kind: {err!r}"
     )
     assert "/api/videos" in err, f"origin path not named: {err!r}"
+
+
+def test_redirect_note_names_a_query_only_change_explicitly(hop, capsys) -> None:
+    """`_origin_and_path()` never reads `.query`, so a redirect that changes
+    only the query string -- same scheme, same netloc, same path -- makes
+    the requested and final disclosure strings identical, even though the
+    NOTE fired because the full URLs differed. Printing the same string on
+    both sides of the arrow with no explanation would read as a no-op bug
+    report, defeating the NOTE's purpose (#2533 self-review). This asserts
+    the disclosure names that case explicitly instead of leaving it silent.
+    """
+    hop.front.redirect_to = hop.front_base + "/api/videos?key=SECRET&session=xyz"
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    url = f"{hop.front_base}/api/videos?key={secret}"
+    req = urllib.request.Request(url, method="GET")
+    with _http.urlopen(req, timeout=5) as resp:
+        resp.read()
+    err = capsys.readouterr().err
+    assert "redirected" in err, f"the redirect was not disclosed at all: {err!r}"
+    assert secret not in err, f"the secret leaked into the redirect NOTE: {err!r}"
+    assert "SECRET" not in err.replace(secret, ""), (
+        f"the query-only redirect's own destination secret leaked: {err!r}"
+    )
+    assert "only the query string differed" in err, (
+        f"a query-only redirect prints identical strings on both sides of "
+        f"the arrow with no explanation -- it must say so: {err!r}"
+    )
 
 
 def test_non_secret_query_params_are_also_absent_from_the_redirect_note(
