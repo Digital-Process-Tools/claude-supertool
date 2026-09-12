@@ -633,27 +633,38 @@ def _foreign_poller_lines(census: dict) -> list[str]:
     return out
 
 
-def _active_gh_rate_limit_errors(rows: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
-    """`ratelimit.active_gh_rate_limit_errors`, fed from this channel's own
-    watcher rows (#2525).
+def _active_gh_rate_limit_errors(
+    rows: list[dict[str, Any]],
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """(errors, unreadable) -- `ratelimit.active_gh_rate_limit_errors`, fed
+    from this channel's own watcher rows (#2525).
 
     `rows` (from `transport.list_watchers`) carries `last_event`'s event
     key, never the raw error text `is_rate_limit_error` classifies -- so
-    each `GH_SOURCES` row's state is read fresh here, one `read_state` per
-    row, the same read `channel:health` and `radar` already do per row for
-    other fields. A row whose state file cannot be read contributes nothing
-    rather than raising: `read_state` (unlike `read_state_checked`) already
-    collapses that to `{}`, which classifies as no active error, not as a
-    false one.
+    each `GH_SOURCES` row's state is read fresh here, one
+    `transport.read_state_checked` per row. **Not `read_state`** (self-review
+    finding): this function feeds `render_budget_lines`, which is a report,
+    and `transport.read_state`'s own docstring says a report call site wants
+    the checked read so "I could not read this watcher's state" does not
+    collapse into "this watcher has had no events" -- exactly the
+    absence-read-as-clean shape this whole preset exists to stop. A row
+    whose state could not be read (symlink refusal, corrupt/mid-write JSON)
+    is returned separately as `unreadable`, never silently folded into "no
+    active error".
     """
     states: dict[tuple[str, str], dict[str, Any]] = {}
+    unreadable: list[tuple[str, str, str]] = []
     for row in rows:
         source = str(row.get("source", ""))
         if source not in ratelimit.GH_SOURCES:
             continue
         watcher_id = str(row.get("id", ""))
-        states[(source, watcher_id)] = transport.read_state(source, watcher_id)
-    return ratelimit.active_gh_rate_limit_errors(states)
+        state, refusal = transport.read_state_checked(source, watcher_id)
+        if refusal:
+            unreadable.append((source, watcher_id, refusal))
+            continue
+        states[(source, watcher_id)] = state or {}
+    return ratelimit.active_gh_rate_limit_errors(states), unreadable
 
 
 def cmd_list() -> int:
@@ -697,31 +708,34 @@ def cmd_list() -> int:
         fleet_interval = interval_override()
         interval_by_source = ({source: fleet_interval for source in ratelimit.GH_SOURCES}
                               if fleet_interval else None)
-        # #2525: `CALLS_PER_TICK["gh-branch"]`'s flat `3` undercounts by one
-        # `_jobs_for` call per run selected on the watched sha -- this repo's
-        # own `.github/workflows/` (the caller's cwd, the best local proxy
-        # for "the repo this session watches") is a real, cheap, local upper
-        # bound on how many runs are typically selected, replacing a guess
-        # with a measurement. Falls back to the flat table entry when the
-        # directory cannot be told (`workflow_count is None`), never guesses.
-        workflow_count, _workflow_why = ratelimit.workflow_file_count(os.getcwd())
-        calls_per_tick_by_source = (
-            {"gh-branch": ratelimit.gh_branch_calls_per_tick(workflow_count)}
-            if workflow_count is not None else None)
+        # #2525 self-review: a cwd-derived `workflow_count` was wired in here
+        # to replace `CALLS_PER_TICK["gh-branch"]`'s flat `3`, and both
+        # spawned reviewers independently flagged it as unsound -- `watches`'
+        # own cwd at render time is not a reliable stand-in for "the repo
+        # every gh-branch poller in the fleet watches" (a poller resolves its
+        # own target via `SUPERTOOL_REPO` at spawn time, or the *spawning*
+        # process's cwd, either of which can differ from this one and from
+        # each other across pollers on different channels), so applying one
+        # repo's workflow count fleet-wide can undercount a different
+        # poller's real cost -- the exact failure this was meant to close.
+        # `ratelimit.gh_branch_calls_per_tick`/`workflow_file_count` are kept,
+        # tested, as building blocks for a caller that can resolve each
+        # poller's own repo; not wired in here until one can.
         projected, gh_counts = ratelimit.fleet_projected_requests_per_hour(
-            census, interval_by_source=interval_by_source,
-            calls_per_tick_by_source=calls_per_tick_by_source)
+            census, interval_by_source=interval_by_source)
         rate_limit, rate_limit_why = ratelimit.read_rate_limit()
         # #2525: the fleet's own currently-active rate-limit-shaped failures,
         # read fresh off this channel's watcher state files -- what lets
         # `render_budget_lines` say when a healthy-looking core reading is
         # disagreeing with a poller that is presently being throttled by
         # GitHub's secondary (abuse-detection) limit, which `/rate_limit`
-        # cannot show at all.
-        active_errors = _active_gh_rate_limit_errors(rows)
+        # cannot show at all. `unreadable` is its own caveat, never folded
+        # silently into "no active error" (self-review finding).
+        active_errors, unreadable = _active_gh_rate_limit_errors(rows)
         for line in ratelimit.render_budget_lines(rate_limit, rate_limit_why,
                                                    projected, gh_counts,
-                                                   active_errors=active_errors):
+                                                   active_errors=active_errors,
+                                                   unreadable_states=unreadable):
             print(f"watches: {line}")
     dir_state, dir_why = transport.state_dir_status()
     if dir_state == transport.STATE_DIR_UNREADABLE:

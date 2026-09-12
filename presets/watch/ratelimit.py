@@ -25,8 +25,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
+import _untrusted  # noqa: E402  (a poller's own error string is somebody else's text, #2525)
 
 #: Substrings of a poller's own `error` string (already produced by
 #: `presets/github/run.py::_format_error` or `presets/github/branch.py`'s
@@ -229,6 +234,21 @@ def fleet_projected_requests_per_hour(
     `CALLS_PER_TICK`'s flat, hand-kept estimate with a measured number --
     `gh_branch_calls_per_tick(workflow_file_count(...))` for `gh-branch`,
     whose flat `3` this module's own comment already admitted undercounts.
+    **Not wired into `watches` today** (self-review on #2525 found the one
+    candidate source for it -- the calling process's own cwd -- is not a
+    sound stand-in for "the repo every gh-branch poller in the fleet
+    watches": a poller resolves its own target via `SUPERTOOL_REPO` at
+    spawn time or the *spawning* process's cwd, either of which can differ
+    from the cwd `watches` is run from later, and from each other across
+    pollers on different channels. Applying one repo's workflow count to
+    every gh-branch poller in the fleet can undercount a *different* one,
+    which is the exact failure this override exists to close. Kept here,
+    tested, as a building block for a future caller that can resolve each
+    poller's own repo -- see `workflow_file_count`'s own docstring.
+
+    A source explicitly present in `calls_per_tick_by_source` always wins,
+    including a deliberate `0` -- checked with `is not None`, not truthiness,
+    so an override of zero is not silently mistaken for "no override given".
     A source missing from it falls back to `CALLS_PER_TICK`, same shape as
     `interval_by_source` above.
     """
@@ -236,8 +256,9 @@ def fleet_projected_requests_per_hour(
     total = 0.0
     for source, n in counts.items():
         interval = (interval_by_source or {}).get(source) or default_interval
-        calls = ((calls_per_tick_by_source or {}).get(source)
-                 or CALLS_PER_TICK.get(source, DEFAULT_CALLS_PER_TICK))
+        override = (calls_per_tick_by_source or {}).get(source)
+        calls = (override if override is not None
+                 else CALLS_PER_TICK.get(source, DEFAULT_CALLS_PER_TICK))
         total += projected_requests_per_hour(n, calls, interval)
     return total, counts
 
@@ -248,6 +269,7 @@ def render_budget_lines(
     projected: float,
     counts: dict[str, int],
     active_errors: list[tuple[str, str, str]] | None = None,
+    unreadable_states: list[tuple[str, str, str]] | None = None,
 ) -> list[str]:
     """The `watches` budget section -- plain strings, no `watches: ` prefix
     (the caller adds that, same as every other section of that board).
@@ -273,6 +295,19 @@ def render_budget_lines(
     `remaining == 0` is the one case this must NOT flag: there the core
     budget itself explains the failure, and printing a disagreement over a
     consistent reading would be the false positive this exists to avoid.
+    `example_source`/`example_id`/`example_error` are a poller's own
+    argv-derived id and error text, so they are flattened through
+    `_untrusted.flat()` before they reach this board, the same convention
+    every other row on this board already applies.
+
+    `unreadable_states` (#2525, self-review finding) is
+    `[(source, id, why), ...]` for a `GH_SOURCES` poller whose state file
+    the caller could not read at all -- a symlink refusal, a corrupt or
+    mid-write JSON file. Reported as its own caveat rather than folded
+    silently into "no active error": a poller failing with a rate-limit
+    error whose state file cannot be read right now must not read as
+    "checked and clean", which is the same absence-as-clean shape this
+    whole preset exists to stop reproducing one layer up.
     """
     lines: list[str] = []
     if not counts:
@@ -310,13 +345,20 @@ def render_budget_lines(
         lines.append(
             f"  DISAGREEMENT: {len(active_errors)} gh-backed poller(s) are "
             f"currently failing with a rate-limit-shaped error (e.g. "
-            f"{example_source}:{example_id} — {example_error!r}) while this "
-            f"core reading shows {remaining} of {limit} still free. GitHub's "
-            f"secondary rate limit (abuse-detection throttling) is not "
-            f"reported by `gh api rate_limit` or by any response header at "
-            f"all — a healthy-looking core budget here does not mean the "
-            f"fleet is not being throttled. Trust the poller's own error over "
-            f"this line.")
+            f"{_untrusted.flat(example_source)}:{_untrusted.flat(example_id)} — "
+            f"{_untrusted.flat(example_error)!r}) while this core reading shows "
+            f"{remaining} of {limit} still free. GitHub's secondary rate limit "
+            f"(abuse-detection throttling) is not reported by `gh api "
+            f"rate_limit` or by any response header at all — a healthy-looking "
+            f"core budget here does not mean the fleet is not being throttled. "
+            f"Trust the poller's own error over this line.")
+    if unreadable_states:
+        first_why = unreadable_states[0][2]
+        lines.append(
+            f"  {len(unreadable_states)} gh-backed poller state file(s) could "
+            f"not be read ({_untrusted.flat(first_why)}) — a rate-limit "
+            f"disagreement on those could not be checked, which is not the "
+            f"same as there being none.")
     return lines
 
 
@@ -327,12 +369,19 @@ def active_gh_rate_limit_errors(
     whose current state carries a rate-limit-shaped `error` right now (#2525).
 
     `states` maps `(source, watcher_id) -> state dict` -- the caller reads
-    each poller's own state file (`transport.read_state`) fresh, because the
+    each poller's own state file fresh (`transport.read_state_checked`, not
+    `read_state`: a caller building a *report* -- which `render_budget_lines`
+    is -- must not have "could not read this file" collapse into "no error",
+    the same distinction `transport.read_state`'s own docstring already
+    draws for every other report call site in this preset), because the
     board rows this preset already builds carry only `last_event`'s event
     key, not the raw error text `is_rate_limit_error` classifies. A source
     outside `GH_SOURCES` (GitLab, Slack, ...) contributes nothing: it draws
     on a different budget, or none, and the same "rate limit" wording in an
-    unrelated tool's error would be a false positive here.
+    unrelated tool's error would be a false positive here. A state that
+    could not be read at all is the caller's concern (see
+    `dispatcher._active_gh_rate_limit_errors`'s `unreadable` half), not
+    this function's: it only classifies what it was actually handed.
     """
     out: list[tuple[str, str, str]] = []
     for (source, watcher_id), state in states.items():

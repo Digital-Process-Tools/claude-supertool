@@ -98,6 +98,18 @@ def test_fleet_projected_requests_per_hour_takes_a_calls_per_tick_override() -> 
     assert measured_total == 600.0
 
 
+def test_fleet_projected_requests_per_hour_honors_an_explicit_zero_override() -> None:
+    """Self-review finding (reviewer): the override lookup used to be
+    `.get(source) or CALLS_PER_TICK...`, so a deliberate `0` override fell
+    back to the flat table silently. `0` calls/tick must project `0`, not
+    the flat entry's non-zero value."""
+    census = _census(mine={("gh-branch", "1"): [111]})
+    total, counts = ratelimit.fleet_projected_requests_per_hour(
+        census, calls_per_tick_by_source={"gh-branch": 0})
+    assert counts == {"gh-branch": 1}
+    assert total == 0.0
+
+
 # ---------------------------------------------------------------------------
 # render_budget_lines: the WARN is a positive control, paired must-fire /
 # must-not-fire in the same fixture
@@ -227,6 +239,40 @@ def test_render_budget_lines_no_disagreement_when_no_active_errors() -> None:
         _rate_limit(remaining=4800, limit=5000), "", projected=200.0,
         counts={"gh-branch": 1})
     assert not any("DISAGREEMENT" in line for line in lines), lines
+
+
+def test_render_budget_lines_flags_unreadable_poller_states_separately() -> None:
+    """Self-review finding: a poller state file that could not be read at
+    all must say so, never render as "no active error"."""
+    lines = ratelimit.render_budget_lines(
+        _rate_limit(remaining=4800, limit=5000), "", projected=200.0,
+        counts={"gh-branch": 1},
+        unreadable_states=[("gh-branch", "9", "state file is a symlink and was not followed")])
+    assert any("could not be read" in line for line in lines), lines
+    assert any("not the same as there being none" in line for line in lines), lines
+
+
+def test_render_budget_lines_no_unreadable_caveat_when_nothing_was_unreadable() -> None:
+    """Must-not-fire twin: no `unreadable_states` argument at all (the
+    default) prints no caveat."""
+    lines = ratelimit.render_budget_lines(
+        _rate_limit(remaining=4800, limit=5000), "", projected=200.0,
+        counts={"gh-branch": 1})
+    assert not any("could not be read" in line for line in lines), lines
+
+
+def test_render_budget_lines_flattens_untrusted_poller_text_in_the_disagreement_line() -> None:
+    """A poller's own `id`/`error` (argv-derived, untrusted per this repo's
+    own convention) must reach the board through `_untrusted.flat()`, same
+    as every other row -- a newline in either must not become a second
+    board line."""
+    lines = ratelimit.render_budget_lines(
+        _rate_limit(remaining=4800, limit=5000), "", projected=200.0,
+        counts={"gh-branch": 1},
+        active_errors=[("gh-branch", "evil\nid",
+                        "ERROR: rate limit\nforged second line")])
+    disagreement = next(line for line in lines if "DISAGREEMENT" in line)
+    assert "\n" not in disagreement
 
 
 # ---------------------------------------------------------------------------
