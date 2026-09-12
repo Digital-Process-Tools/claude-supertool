@@ -261,7 +261,75 @@ RECONCILE_CAP = 6
 STALE_RUNNING_MINUTES = 240
 
 RADAR_OPTIONS = {"quiet_when_healthy", "default_branch", "reconcile_cap",
-                 "stale_running_minutes"}
+                 "stale_running_minutes", "pr_exclude_events"}
+
+# An event blacklist for the per-PR pollers this tier heals (claude-oss#1499).
+# `heal` used to fork every `github-pr` poller with `only=[]` -- no filter,
+# every event the source declares, on every PR, and nothing an operator could
+# set short of unwatching each poller by hand. The option names the keys to
+# drop; the poller's `only=` is every key `sources/github-pr/events.json`
+# declares minus those. Absent or empty keeps the unfiltered `[]`.
+#
+# An unknown key is refused (`RadarError`), never dropped: a typo silently
+# ignored is a filter the operator believes is on and is not, which is the
+# house defect one config key over. The vocabulary is read off the source's
+# own `events.json` rather than retyped here, for the reason `FEED_ONLY`'s
+# comment gives -- a hand-kept copy is one that drifts.
+PR_EXCLUDE_OPTION = "pr_exclude_events"
+
+
+def source_event_keys(source: str = SOURCE) -> list[str]:
+    """Every event key `sources/<source>/events.json` declares, in file order."""
+    path = _WATCH / "sources" / source / "events.json"
+    with open(path, encoding="utf-8") as f:
+        return [str(e["key"]) for e in json.load(f).get("events", [])]
+
+
+def exclude_events(raw: object) -> list[str]:
+    """The keys `pr_exclude_events` names, validated, or `RadarError`.
+
+    `radar.read_tiers` hands a tier native types, so a list arrives as a
+    list. A JSON-encoded *string* list is read the same way -- the shape a
+    `SUPERTOOL_`-prefixed op-config key takes on a subprocess env, and the
+    shape a config that stringified it by hand takes. Anything else is
+    refused with its type named, since guessing at a dict or a bare word
+    would be the silent-drop this option exists to refuse.
+    """
+    if raw is None or raw == "" or raw == []:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RadarError(
+                f"{PR_EXCLUDE_OPTION} is a string that is not a JSON list "
+                f"({exc.msg}): {raw!r}. Write it as a JSON array of event "
+                f"keys, e.g. {json.dumps(['comment_added'])}.") from None
+    if not isinstance(raw, list) or not all(isinstance(k, str) for k in raw):
+        raise RadarError(
+            f"{PR_EXCLUDE_OPTION} must be a list of event-key strings; got "
+            f"{type(raw).__name__}: {raw!r}.")
+    vocabulary = source_event_keys()
+    unknown = sorted(set(raw) - set(vocabulary))
+    if unknown:
+        raise RadarError(
+            f"{PR_EXCLUDE_OPTION} names event key(s) {SOURCE} cannot emit: "
+            f"{', '.join(unknown)}. Nothing was healed. Valid keys, from "
+            f"sources/{SOURCE}/events.json: {', '.join(vocabulary)}.")
+    return [k for k in vocabulary if k in set(raw)]
+
+
+def poller_only(excluded: list[str]) -> list[str]:
+    """The `only=` a healed per-PR poller is forked with.
+
+    `[]` -- the source's own unfiltered default, exactly what `heal` always
+    passed -- when nothing is excluded, so an unset option changes no argv.
+    Otherwise the declared vocabulary minus the blacklist, in file order.
+    """
+    if not excluded:
+        return []
+    drop = set(excluded)
+    return [k for k in source_event_keys() if k not in drop]
 
 # A healthy PR board still speaks: a board that prints nothing on a quiet day
 # is byte-identical to a radar that failed to run.
@@ -630,8 +698,13 @@ def watch_coverage() -> set[str] | None:
 
 
 def heal(numbers: list[str], watched: set[str] | None,
-         watch) -> tuple[list[str], list[str]]:
+         watch, only: list[str] | None = None) -> tuple[list[str], list[str]]:
     """`(healed, uncovered)` — one live poller per open PR.
+
+    `only` is the event filter every poller spawned here is forked with --
+    `poller_only(...)`'s answer, `[]` meaning the source's own unfiltered
+    default. It reaches only the pollers *this call* spawns: a slot already
+    alive keeps the `only=` it was forked with, and nothing here re-forks it.
 
     Spawning goes through radar's `_watch`, never `dispatcher.start_poller`:
     radar owns the #476 slot claim and the #513 death cap, records every slot,
@@ -647,7 +720,7 @@ def heal(numbers: list[str], watched: set[str] | None,
     healed: list[str] = []
     uncovered: list[str] = []
     for number in [n for n in numbers if n not in watched]:
-        status = watch(SOURCE, number, [])
+        status = watch(SOURCE, number, list(only or []))
         if status == "spawned":
             healed.append(number)
         elif status == "alive":
@@ -1250,7 +1323,8 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
            stale_running_minutes: float = STALE_RUNNING_MINUTES,
            feed: str = "alive", feed_err: str = "",
            other_feed_scopes: list[str] | None = None,
-           feed_blind: str = "") -> list[str]:
+           feed_blind: str = "",
+           excluded_events: list[str] | None = None) -> list[str]:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     Every open PR lands in exactly one of `shown` and `elided`, and both are
@@ -1328,7 +1402,23 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
         lines.append(f"radar: no rows changed | {footer}")
     else:
         lines.append(f"radar: no change | {footer}")
+    if excluded_events:
+        lines.append(_exclude_note(excluded_events))
     return lines
+
+
+def _exclude_note(excluded: list[str]) -> str:
+    """One footer line, only when the blacklist is on (claude-oss#1499).
+
+    The caveat is the point of the line: `heal` forks with the filter, and a
+    poller already alive keeps whatever `only=` it was forked with, so the
+    option applies to pollers spawned *after* it was set. Stated on the board
+    rather than in a doc, because the reader who set the option ten minutes
+    ago and still sees `comment_added` events is looking at the board.
+    """
+    return (f"pollers spawned from here exclude: {', '.join(excluded)} — a "
+            f"github-pr poller already alive keeps the filter it was forked "
+            f"with; `unwatch:github-pr:N` then `radar` re-forks #N with this one")
 
 
 def _no_watch(source: str, scope: str, only: list[str] | None = None) -> str:
@@ -1352,6 +1442,9 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     options = options or {}
     watch = options.get("_watch") or _no_watch
     filters = resolve_filter(str(options.get("_arg") or ""))
+    # Refused before the first `gh` call: a config typo should cost nothing
+    # and heal nothing, not a page of PRs and then a refusal.
+    excluded = exclude_events(options.get(PR_EXCLUDE_OPTION))
 
     repo = repo_name()
     open_prs = live_open_prs(filters)
@@ -1365,7 +1458,7 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
 
     numbers = [str(p.get("number")) for p in open_prs if p.get("number") is not None]
     watched = watch_coverage()
-    healed, uncovered = heal(numbers, watched, watch)
+    healed, uncovered = heal(numbers, watched, watch, poller_only(excluded))
     covered = None if watched is None else watched | set(healed)
 
     # The feed follows the same #673 rule as per-PR healing: under a repo
@@ -1406,7 +1499,8 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
                                   stale_running_minutes=stale_after,
                                   feed=feed, feed_err=feed_err,
                                   other_feed_scopes=other_scopes,
-                                  feed_blind=blind)
+                                  feed_blind=blind,
+                                  excluded_events=excluded)
     prev_entries: dict[str, Any] = (previous or {}).get("prs", {}) or {}
     snapshot.write(SNAPSHOT_PREFIX, key,
                    {str(p.get("number")): snapshot.stamp(
@@ -1460,6 +1554,14 @@ def radar_state(options: dict | None = None) -> list[str]:
     raw_ref = options.get("default_branch")
     out.append("  default br: " + ("(resolved at report time)" if raw_ref is None
                                    else (str(raw_ref) or "(off)")))
+    try:
+        excluded = exclude_events(options.get(PR_EXCLUDE_OPTION))
+    except RadarError as exc:
+        out.append(f"  pr events : REFUSED — {exc}")
+    else:
+        out.append("  pr events : " + (f"all but {', '.join(excluded)} (pollers "
+                                       f"spawned from here)" if excluded
+                                       else "all (no pr_exclude_events)"))
 
     path = snapshot_path(filters, str(target) if target else "?")
     if target:

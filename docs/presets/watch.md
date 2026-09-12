@@ -645,6 +645,23 @@ The case that cost the most was not a PR: `master` sat red after a squash landed
 
 **Since [#2024](https://github.com/Digital-Process-Tools/claude-supertool/issues/2024) this row also spawns and heals the standing `gh-branch` poller** ([#1953](https://github.com/Digital-Process-Tools/claude-supertool/issues/1953), see "`gh-branch` — the default branch is a member, and now it is also pushed" below) exactly as this tier already spawns `github-pr-feed` — through the same `_watch` callable, so radar owns the death cap and the ledger. That closes [#2292](https://github.com/Digital-Process-Tools/claude-supertool/issues/2292)'s own question about *discovery*: once a bare `radar` (not `radar:--state`, which spawns nothing) has run once for a repo, the standing poller survives between ticks and pushes `went_not_green` the moment the default branch turns red, rather than that state only being read on the next `radar` call. `poller_ok` folds into this row's own `healthy`, a stray poller left on a renamed ref is named and never silently accepted, and a poller that is down, capped, unreachable-under-a-repo-target or blind on its last poll all print a `radar: WARNING` naming the exact gap.
 
+### `pr_exclude_events` — an event blacklist for the per-PR pollers
+
+The pollers this tier heals used to be forked with no filter: every event `sources/github-pr/events.json` declares, on every PR. `pr_exclude_events` names the keys to drop, and the poller's `only=` becomes every declared key minus those ([claude-oss#1499](https://github.com/Digital-Process-Tools/claude-oss/issues/1499)):
+
+```json
+{"ops": {"radar": {"radar_tiers": {"gh-prs": {"pr_exclude_events": ["comment_added", "checks_pending"]}}}}}
+```
+
+| `pr_exclude_events` | Meaning |
+|---|---|
+| absent, `[]` or `""` | no filter — the spawn is unchanged |
+| a list of event keys | the poller is forked with every other key |
+| a JSON-encoded string list | read as the list — the shape a `SUPERTOOL_`-prefixed op-config value takes on a subprocess env |
+| a key the source cannot emit | **refused**: `RadarError` naming the key and the valid vocabulary, before the first `gh` call, nothing healed. A typo silently dropped would be a filter the operator believes is on and is not |
+
+The board says so on its footer while the option is on, with the caveat that matters: **a `github-pr` poller already alive keeps the `only=` it was forked with.** The filter applies to pollers spawned after the option is set; `unwatch:github-pr:N` then a `radar` run re-forks `#N` with the new one. `radar:--state` prints the resolved exclusion (or the refusal) on its `pr events` row without spawning anything.
+
 ### `radar:--state` — looking without acting
 
 `radar` heals, and healing forks pollers. That made *looking* at this subsystem cost the same as acting on it, and the result was hours of not looking. `radar:--state` reads the resolved config, the snapshot on disk and the pid files, and calls nothing:
