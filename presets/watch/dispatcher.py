@@ -207,6 +207,15 @@ def cmd_reload(source: str, watcher_id: str) -> int:
     An untracked survivor on this slot is signalled too, for the same reason
     `unwatch` stops one -- a poller this channel cannot see is one it cannot
     tell has picked up the fix either.
+
+    This only re-imports `{source}`'s own `poller.py`. `dispatcher.py` itself
+    -- the shared back-off/retry/wait machinery every poller runs under
+    (`_retry_after_seconds`, `_wait_interruptible`, `MAX_RETRY_AFTER_SECONDS`,
+    the outer poll loop) -- was imported once by the running process at its
+    own spawn and is never swapped by this signal (#2518). A fix that lives
+    in `dispatcher.py` needs `unwatch` + `watch` to actually take effect; the
+    printed receipt below says so on every reload that lands on at least one
+    live PID.
     """
     for line in sourcepath.op_lines("watch"):
         print(f"watch: {line}")
@@ -260,6 +269,25 @@ def cmd_reload(source: str, watcher_id: str) -> int:
                   f"polling on today's code until then. A `{RELOAD_FAILED_EVENT}` "
                   f"event means the import failed and it is still on today's "
                   f"code; a `{RELOAD_EVENT}` event confirms the swap.")
+    if failures < len(pids):
+        # At least one PID was actually signalled -- the caveat below is
+        # about what THAT signal reaches, so it belongs here, after the
+        # signalling is known to have landed on somebody, not before it
+        # (#2518 self-review: printing it unconditionally, before this loop,
+        # meant it still rendered a description of "this signal" even when
+        # every PID had already exited and nothing was reached at all).
+        print(f"Note: this signal only re-imports {source}'s own poller.py in "
+              f"the running process -- dispatcher.py itself (the shared "
+              f"back-off/retry/wait machinery every poller runs under: "
+              f"_retry_after_seconds, _wait_interruptible, "
+              f"MAX_RETRY_AFTER_SECONDS, the outer poll loop) is already "
+              f"imported by that same process and is NOT swapped by this "
+              f"signal, no matter how many pollers it reaches. If the fix "
+              f"you are deploying lives in dispatcher.py rather than in "
+              f"{source}'s own poller.py, this reload will not pick it up -- "
+              f"{_st_hint.st_hint(f'unwatch:{source}:{watcher_id}')} then "
+              f"{_st_hint.st_hint(f'watch:{source}:{watcher_id}')} instead, "
+              f"which forks a fresh process and re-imports both.")
     if not info["scan_ok"]:
         print("Process scan unavailable -- only the tracked PID was "
               "considered, so an untracked poller for this id would not "

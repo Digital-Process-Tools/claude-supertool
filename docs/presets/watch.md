@@ -2134,6 +2134,23 @@ which happened as `watcher_reloaded` / `watcher_reload_failed`. It needs
 `SIGHUP`, so it has no effect on a platform without one; the fork/setsid
 poller model this whole preset relies on does not exist there either.
 
+**`dispatcher.py` itself is never one of the files this signal reaches**
+([#2518](https://github.com/Digital-Process-Tools/claude-supertool/issues/2518)).
+The reload only re-imports the *named source's* own `poller.py` in the
+already-running process; `dispatcher.py` — the shared back-off/retry/wait
+machinery every poller runs under, including `_retry_after_seconds`,
+`_wait_interruptible`, `MAX_RETRY_AFTER_SECONDS` and the outer poll loop
+itself — was imported once at that process's own spawn and stays exactly as
+it was. A fix that lives in `dispatcher.py` needs `unwatch:SOURCE:ID` then
+`watch:SOURCE:ID` to actually take effect, losing the baseline that `reload`
+exists to keep; a `reload` in that case reports success and swaps nothing
+relevant. `cmd_reload` now says this in its own printed receipt whenever the
+signal actually lands on at least one live PID -- unconditionally at that
+point, since it has no way to tell which file a pending fix actually lives
+in. It does not print when every PID for the slot had already exited before
+the signal reached it (nothing was reached, so there is nothing to caveat
+about).
+
 The fingerprint is coarse deliberately — one value for the whole
 `presets/watch/` tree rather than one per source file, since every source
 plugin shares `dispatcher.py`, `transport.py` and `naming.py`. The cost: a
