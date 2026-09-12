@@ -40,51 +40,11 @@ disagree. The pattern arrives via ENVIRON so its escapes are exactly what
 """
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
-from pathlib import Path
-
 import pytest
 
-REPO = Path(__file__).resolve().parents[1]
-INDEX = REPO / ".claude" / "jit-context" / "tools" / "00-manual" / "00-index.tsv"
-RULE = "supertool-no-cut.md"
-TAB = "\t"
-
-needs_awk = pytest.mark.skipif(
-    shutil.which("awk") is None,
-    reason="awk absent: no verdict is available, which is not the same as a pass")
-
-
-def _pattern():
-    """Column 2 of the live row naming the rule, tilde stripped."""
-    for raw in INDEX.read_text(encoding="utf-8").splitlines():
-        fields = raw.split(TAB)
-        if len(fields) >= 3 and fields[2] == RULE:
-            assert fields[1].startswith("~"), "{0} is a literal row".format(RULE)
-            return fields[1][1:]
-    raise AssertionError("no row for {0} in {1}".format(RULE, INDEX))
-
-
-def _awk_matches(pattern, subject):
-    """What pre-tool-hook.sh:311 does, less one step that cannot bite here.
-
-    The hook matches `jit_fold_latin1(tolower(full_command))` (built at :184)
-    against `jit_fold_latin1(pattern)`. The fold is omitted because every
-    subject in this file is ASCII, where it is the identity -- but the omission
-    is stated rather than left for a reader to assume it is not there. (The
-    `:137` cited by the three sibling test files is a comment, not the match.)
-    """
-    env = dict(os.environ, JIT_PAT=pattern, JIT_SUBJ=subject)
-    proc = subprocess.run(
-        ["awk", 'BEGIN { if (match(tolower(ENVIRON["JIT_SUBJ"]), '
-                'ENVIRON["JIT_PAT"])) print "MATCH"; else print "NO" }'],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
-    assert proc.returncode == 0, "awk refused the pattern: {0}".format(proc.stderr)
-    out = proc.stdout.strip()
-    assert out in ("MATCH", "NO"), "awk said {0!r}".format(out)
-    return out == "MATCH"
+from _jit_no_cut_awk import awk_matches as _awk_matches
+from _jit_no_cut_awk import needs_awk
+from _jit_no_cut_awk import pattern as _pattern
 
 
 # Assembled, never written literally: a line of this file that *began* with a
@@ -186,10 +146,5 @@ def test_the_index_row_and_the_frontmatter_agree():
     declares, and `version-sites.md` loses its second paths row -- so the
     committed index is partly hand-maintained. That is filed separately; it
     does not weaken this assertion, which is about one row's `match`."""
-    body = (REPO / ".claude" / "jit-context" / "tools" / "00-manual"
-            / RULE).read_text(encoding="utf-8")
-    declared = [ln[len("match:"):].strip() for ln in body.splitlines()
-                if ln.startswith("match:")]
-    assert declared, "no `match:` line in {0}".format(RULE)
-    assert declared[0] == "~" + _pattern(), (
-        "frontmatter and index row disagree; the next rebuild-tsv.sh run wins")
+    from _jit_no_cut_awk import assert_index_and_frontmatter_agree
+    assert_index_and_frontmatter_agree()
