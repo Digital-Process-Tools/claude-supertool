@@ -677,6 +677,53 @@ def read_capped(
     return b"".join(chunks)
 
 
+#: Query-parameter names, matched case-insensitively, that this repo's own
+#: callers or a future one could put a live credential into. `youtube/_yt.py`
+#: is the first (`query["key"] = api_key`, #227) -- every other credentialed
+#: client here sends its secret as a header instead, which never reaches a
+#: URL at all. Kept here rather than in `_secrets.py`: that module detects a
+#: secret by *shape* in text nobody handed it (a transcript), which is a
+#: guess; this one redacts by *position* in a URL this function itself is
+#: about to print, which is exact regardless of what the value looks like.
+_SENSITIVE_QUERY_PARAMS = frozenset({
+    "key", "api_key", "apikey", "access_token", "token", "secret",
+    "client_secret", "password", "auth",
+})
+
+
+def _scrub_query_secrets(url: str) -> str:
+    """Redact known credential-shaped query parameters before a URL is
+    disclosed on stderr (#2533).
+
+    The same-origin redirect NOTE below prints both the requested and the
+    answering URL, deliberately (see the module docstring) -- an operator
+    should not mistake a silently-followed hop for a call that went where it
+    was asked. That is safe for a header-carried credential, which never
+    appears in the URL. It is the leak itself for a caller that put the
+    credential in the query string instead: the NOTE fires on the success
+    path, inside this function, before any caller's own exception-handler
+    scrubbing ever gets a turn.
+
+    Applied generically, at the one place every credentialed caller's request
+    already passes through, rather than per-caller: a future integration that
+    repeats youtube's shape is covered without having to know this function
+    exists. Never raises on a malformed URL -- returns it unchanged rather
+    than block a disclosure that is otherwise working correctly.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.query:
+        return url
+    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    scrubbed = [
+        (k, "[REDACTED]" if k.lower() in _SENSITIVE_QUERY_PARAMS else v)
+        for k, v in pairs
+    ]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(scrubbed)))
+
+
 def urlopen(
     req: urllib.request.Request | str,
     timeout: int = 30,
@@ -706,7 +753,11 @@ def urlopen(
     Both URLs are printed with `!r`. The destination comes from a remote
     `Location` header, so it is attacker-chosen text on its way to a terminal;
     `repr` escapes the control characters that would otherwise let it rewrite the
-    lines around it.
+    lines around it. Both also go through `_scrub_query_secrets()` first (#2533):
+    a caller that puts a credential in the query string rather than a header
+    -- youtube/_yt.py's `key=` parameter is the first -- would otherwise have
+    it echoed here on every followed redirect, on the success path, with no
+    exception for a caller-level scrubber to catch.
 
     `timeout` keeps urllib's meaning: a per-socket-operation timeout. `deadline`
     is the overall wall clock in seconds, defaulting to `DEADLINE_FACTOR` times
@@ -731,7 +782,8 @@ def urlopen(
     if final and final != requested:
         print(
             f"NOTE: the request was redirected before it was answered: "
-            f"{requested!r} -> {final!r}. The response came from the second URL. "
+            f"{_scrub_query_secrets(requested)!r} -> {_scrub_query_secrets(final)!r}. "
+            f"The response came from the second URL. "
             f"The hop stayed on the same origin, so it was followed.",
             file=sys.stderr,
         )

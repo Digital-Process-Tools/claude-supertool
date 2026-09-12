@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import sys
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import SimpleNamespace
@@ -335,6 +336,62 @@ def test_a_permitted_redirect_is_still_disclosed(hop, capsys, monkeypatch) -> No
     assert "/api/elsewhere" in err, f"destination URL not named: {err!r}"
     assert FAKE_DEVTO_KEY not in err, "the disclosure must not echo the credential"
 
+
+
+@pytest.mark.parametrize(
+    "url,expect_redacted,expect_kept",
+    [
+        ("https://api.example.com/x?key=SECRET123", "key=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?KEY=SECRET123", "KEY=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?api_key=SECRET123&id=5", "api_key=%5BREDACTED%5D", "id=5"),
+        ("https://api.example.com/x?token=SECRET123", "token=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?q=hello&limit=10", None, "q=hello&limit=10"),
+        ("https://api.example.com/x", None, None),
+    ],
+)
+def test_scrub_query_secrets_redacts_known_params(url, expect_redacted, expect_kept) -> None:
+    out = _http._scrub_query_secrets(url)
+    assert "SECRET123" not in out
+    if expect_redacted is not None:
+        assert expect_redacted in out
+    if expect_kept is not None:
+        assert expect_kept in out
+
+
+def test_scrub_query_secrets_leaves_an_unparseable_url_unchanged() -> None:
+    """`urlsplit` raises `ValueError` on a malformed IPv6 host. This function
+    must fail closed to a no-op -- returning the original text -- rather than
+    let a URL it cannot parse crash the disclosure it is protecting."""
+    hostile = "https://[::1/x?key=SECRET123"
+    assert _http._scrub_query_secrets(hostile) == hostile
+
+
+def test_url_embedded_secret_is_scrubbed_from_the_redirect_note(hop, capsys) -> None:
+    """youtube/_yt.py is the first caller in this repo that puts a credential
+    in the URL's query string rather than in a header (`query["key"] =
+    api_key`, #2533) -- every other credentialed client here (hashnode,
+    devto, bluesky) sends its secret as a header, which the NOTE below never
+    echoes because the URL itself never carries it.
+
+    On a followed (same-origin) redirect, `urlopen()` deliberately discloses
+    both URLs on stderr so an operator does not mistake a silently-followed
+    hop for a call that went where it was asked -- see the module docstring.
+    That disclosure is fine for a header-based credential. It is the leak
+    itself when the credential rides in the URL, because the NOTE line is
+    printed on the success path, inside `urlopen()`, before any caller-level
+    `_scrub`-style exception handler ever gets a chance to run.
+    """
+    hop.front.redirect_to = hop.front_base + "/api/elsewhere"
+    secret = "AIzaFAKESECRETKEY00000000000000000"
+    url = f"{hop.front_base}/api/videos?key={secret}"
+    req = urllib.request.Request(url, method="GET")
+    with _http.urlopen(req, timeout=5) as resp:
+        resp.read()
+    err = capsys.readouterr().err
+    assert "redirected" in err, f"the redirect was not disclosed at all: {err!r}"
+    assert secret not in err, (
+        f"the URL-embedded secret leaked into the redirect NOTE: {err!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
