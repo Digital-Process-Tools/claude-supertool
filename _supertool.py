@@ -32665,17 +32665,29 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                         if "ops" not in raw_payload and [
                             k for k in raw_payload if k != "continue_on_error"
                         ]:
-                            # Mirror of the single-op-route misroute (#468): this
-                            # looks like one op's own fields (e.g. old/new/path),
-                            # not a batch wrapper — say so instead of silently
-                            # running zero ops.
-                            batch_ops = None  # signal: already set body
-                            body = (
-                                "ERROR: this payload has no 'ops' array — it looks "
-                                "like a single op's fields. Use 'OP:@file' (e.g. "
-                                "'edit:@file') for a single op, or wrap it as "
-                                '{"ops": [...]} for batch.\n'
-                            )
+                            if isinstance(raw_payload.get("op"), str) and raw_payload["op"]:
+                                # A dict carrying its own 'op' key is unambiguous
+                                # — it is one op's fields, not a mistyped batch
+                                # wrapper — so a batch of one runs it rather than
+                                # refusing (#1026 item 3). The `_BATCH_WRAPPER_KEYS`
+                                # check below is what still refuses a genuine
+                                # wrapper typo (e.g. misspelt continue_on_error
+                                # alongside a real 'ops' array); this branch never
+                                # reaches it because 'ops' is absent here.
+                                batch_ops = [raw_payload]
+                                continue_on_error = True
+                            else:
+                                # Mirror of the single-op-route misroute (#468): this
+                                # looks like one op's own fields (e.g. old/new/path),
+                                # not a batch wrapper — say so instead of silently
+                                # running zero ops.
+                                batch_ops = None  # signal: already set body
+                                body = (
+                                    "ERROR: this payload has no 'ops' array — it looks "
+                                    "like a single op's fields. Use 'OP:@file' (e.g. "
+                                    "'edit:@file') for a single op, or wrap it as "
+                                    '{"ops": [...]} for batch.\n'
+                                )
                         else:
                             _wrapper_unknown = sorted(
                                 k for k in raw_payload

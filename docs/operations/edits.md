@@ -444,6 +444,8 @@ a single unrecognised key was accepted as an unnamed positional, so
 
 Each write sub-op's fields (`old`/`new`/`content`/…) are taken **literally** — the structured payload bypasses the `:::` tokenizer and the shell-escape decoder, so content that itself contains `:::` or backslashes survives byte-for-byte, exactly as a standalone `edit:@file` call behaves. You never re-escape payload content for batch.
 
+A payload with no `"ops"` array but a string `"op"` key of its own — `{ "op": "git-status" }` — is unambiguous: it can only be one op's fields, so `batch:@file` runs it as a batch of one rather than refusing ([#1026](https://github.com/Digital-Process-Tools/claude-supertool/issues/1026)). A payload with neither `"ops"` nor `"op"` (a flat `old`/`new`/`path` document, say) is still refused and told to use `OP:@file` instead — that check runs first and is unaffected.
+
 ## Line endings
 
 `edit`, `replace`, `replace_lines` and `append` read the target without
