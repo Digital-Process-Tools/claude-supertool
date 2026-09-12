@@ -153,6 +153,7 @@ _WATCH = _HERE.parent
 sys.path.insert(0, str(_WATCH))
 import dispatcher  # noqa: E402,F401  (radar_state reads its source registry)
 import naming  # noqa: E402  (`flat_path` for the state directory it renders)
+import sourcepath  # noqa: E402  (where a source's files live -- one resolver, #2135)
 import transport  # noqa: E402
 
 sys.path.insert(0, str(_WATCH.parent))
@@ -279,9 +280,21 @@ PR_EXCLUDE_OPTION = "pr_exclude_events"
 
 
 def source_event_keys(source: str = SOURCE) -> list[str]:
-    """Every event key `sources/<source>/events.json` declares, in file order."""
-    path = _WATCH / "sources" / source / "events.json"
-    with open(path, encoding="utf-8") as f:
+    """Every event key `<source>/events.json` declares, in file order.
+
+    The source directory is resolved through `sourcepath.find` -- the one
+    door every watch op uses (#2135) -- never built here from a `"sources"`
+    segment of this file's own; `events.json` sits beside the `poller.py`
+    that resolver returns. A source it cannot find is a `RadarError`, not an
+    empty vocabulary: an empty list would make every exclusion "unknown" and
+    say so in words about the operator's config rather than about the lookup.
+    """
+    poller, _origin = sourcepath.find(source)
+    if poller is None:
+        raise RadarError(f"could not resolve watch source {source!r} to read "
+                         f"its events.json -- not shipped and not on "
+                         f"{sourcepath.PATH_ENV}")
+    with open(poller.parent / "events.json", encoding="utf-8") as f:
         return [str(e["key"]) for e in json.load(f).get("events", [])]
 
 
