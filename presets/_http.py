@@ -677,17 +677,29 @@ def read_capped(
     return b"".join(chunks)
 
 
-#: Query-parameter names, matched case-insensitively, that this repo's own
-#: callers or a future one could put a live credential into. `youtube/_yt.py`
-#: is the first (`query["key"] = api_key`, #227) -- every other credentialed
-#: client here sends its secret as a header instead, which never reaches a
-#: URL at all. Kept here rather than in `_secrets.py`: that module detects a
-#: secret by *shape* in text nobody handed it (a transcript), which is a
-#: guess; this one redacts by *position* in a URL this function itself is
-#: about to print, which is exact regardless of what the value looks like.
+#: Query-parameter names, matched case-insensitively and with `-`
+#: normalised to `_` (so `api-key` and `api_key` are one rule, not two), that
+#: this repo's own callers or a future one could put a live credential into.
+#: `youtube/_yt.py` is the first (`query["key"] = api_key`, #227) -- every
+#: other credentialed client here sends its secret as a header instead,
+#: which never reaches a URL at all. Kept here rather than in `_secrets.py`:
+#: that module detects a secret by *shape* in text nobody handed it (a
+#: transcript), which is a guess; this one redacts by *position* in a URL
+#: this function itself is about to print, which is exact regardless of
+#: what the value looks like.
+#:
+#: `id_token`/`access_token`/`refresh_token` are the OAuth2 implicit- and
+#: refresh-flow names; `session_token`/`csrf_token` are common ad-hoc
+#: session-auth query params; `api-key` is the hyphenated spelling several
+#: vendor APIs (Azure among them) use instead of `api_key`. None of this
+#: repo's current callers use any of these -- widened past `key` alone so
+#: the "a future integration is covered without knowing this function
+#: exists" claim below holds for more than the one literal spelling youtube
+#: happens to use (#2533 self-review).
 _SENSITIVE_QUERY_PARAMS = frozenset({
     "key", "api_key", "apikey", "access_token", "token", "secret",
-    "client_secret", "password", "auth",
+    "client_secret", "password", "auth", "id_token", "refresh_token",
+    "session_token", "csrf_token",
 })
 
 
@@ -718,7 +730,7 @@ def _scrub_query_secrets(url: str) -> str:
         return url
     pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
     scrubbed = [
-        (k, "[REDACTED]" if k.lower() in _SENSITIVE_QUERY_PARAMS else v)
+        (k, "[REDACTED]" if k.lower().replace("-", "_") in _SENSITIVE_QUERY_PARAMS else v)
         for k, v in pairs
     ]
     return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(scrubbed)))

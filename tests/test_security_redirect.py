@@ -345,6 +345,17 @@ def test_a_permitted_redirect_is_still_disclosed(hop, capsys, monkeypatch) -> No
         ("https://api.example.com/x?KEY=SECRET123", "KEY=%5BREDACTED%5D", None),
         ("https://api.example.com/x?api_key=SECRET123&id=5", "api_key=%5BREDACTED%5D", "id=5"),
         ("https://api.example.com/x?token=SECRET123", "token=%5BREDACTED%5D", None),
+        # Hyphenated spelling (Azure-style `api-key`) and OAuth2 param names
+        # (`id_token`, `refresh_token`, `session_token`, `csrf_token`) are
+        # common credential-shaped query params this repo has no caller for
+        # yet -- widening coverage past the one name (`key`) youtube actually
+        # uses, so the "generic, future-caller" claim in the docstring holds
+        # for more than one literal spelling (#2533 self-review).
+        ("https://api.example.com/x?api-key=SECRET123", "api-key=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?id_token=SECRET123", "id_token=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?refresh_token=SECRET123", "refresh_token=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?session_token=SECRET123", "session_token=%5BREDACTED%5D", None),
+        ("https://api.example.com/x?csrf_token=SECRET123", "csrf_token=%5BREDACTED%5D", None),
         ("https://api.example.com/x?q=hello&limit=10", None, "q=hello&limit=10"),
         ("https://api.example.com/x", None, None),
     ],
