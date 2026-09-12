@@ -143,6 +143,16 @@ _ABSENT = {
     "hashnode_comments": _NO_CLI, "hashnode_reply": _NO_CLI,
     "hashnode_react": _NO_CLI, "hashnode_status_since": _NO_CLI,
 
+    # --- presets/youtube.json (#227) ----------------------------------------
+    # Same reasoning as bluesky/devto/hashnode above: the YouTube Data API v3
+    # has no first-party CLI client (unlike `gh`/`glab`), so there is no raw
+    # invocation these three ops supersede -- `curl` against the raw REST
+    # endpoint is not a first-party command line client and every other
+    # HTTP-API-only preset in this file is recorded with the same reason
+    # rather than a curl mapping.
+    "youtube_search": _NO_CLI, "youtube_read": _NO_CLI,
+    "youtube_list": _NO_CLI,
+
     # --- presets/slack.json -------------------------------------------------
     "slack_publish": _NO_CLI,
     "slack_authorization": _SUPERTOOL_OWN + " (#2035) -- it resolves supertool's "
