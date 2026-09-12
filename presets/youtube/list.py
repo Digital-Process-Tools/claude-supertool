@@ -40,14 +40,26 @@ def parse_channel_ref(raw: str) -> tuple[str, str]:
     raw = raw.strip()
     if raw.startswith("http"):
         path = urlparse(raw).path.strip("/")
-        if path.startswith("channel/"):
-            return "id", path.split("/", 1)[1]
-        if path.startswith("@"):
-            return "forHandle", path
+        # A URL copied from a browser tab carries a trailing segment this
+        # preset never asked for -- /channel/UCabc123/videos,
+        # /@handle/about -- so only the first path segment is ever the
+        # channel/handle identifier; everything after it is stripped (#227
+        # self-review: the un-stripped form silently fails the
+        # channels.list lookup for the whole channel, not just its /videos
+        # tab).
+        first, _, _rest = path.partition("/")
+        if first == "channel":
+            _, _, second = path.partition("/")
+            channel_id, _, _rest2 = second.partition("/")
+            return "id", channel_id
+        if first.startswith("@"):
+            return "forHandle", first
         if "/" in path:
             # /c/NAME or /user/NAME -- legacy custom URLs carry no stable ID;
-            # best-effort as a handle lookup.
-            return "forHandle", "@" + path.split("/", 1)[1]
+            # best-effort as a handle lookup, first segment only.
+            _, _, rest = path.partition("/")
+            name, _, _rest2 = rest.partition("/")
+            return "forHandle", "@" + name
         return ("forHandle", "@" + path) if path else ("forHandle", "")
     if raw.startswith("UC") and len(raw) == 24:
         return "id", raw

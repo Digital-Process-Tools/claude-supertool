@@ -1025,9 +1025,16 @@ def test_the_glyph_scan_reports_what_it_cannot_verify() -> None:
         and computed_print_sites(ast.parse(path.read_text(encoding="utf-8")))
     ]
     names = sorted(str(p.relative_to(ROOT)) for p in unpinned_with_computed)
-    assert len(unpinned_with_computed) == 39, (
+    # 39 -> 42 (#227): presets/youtube/{search,list,read}.py each print a
+    # computed render() the same way presets/bluesky/{search,list,read}.py
+    # already do, and none of the three bluesky siblings call
+    # use_utf8_stdout() either -- so this mirrors the existing sibling
+    # preset's own choice rather than deviating from it, per this test's
+    # own instruction that the pin is a decision for each entry point's
+    # author, not one this test makes for all of them at once.
+    assert len(unpinned_with_computed) == 42, (
         f"{len(unpinned_with_computed)} unpinned entry points now have a "
-        "print() call whose argument is not a literal (was 39 when this was "
+        "print() call whose argument is not a literal (was 42 when this was "
         "written) -- update this count if the change is deliberate, or "
         "investigate why it moved if it is not:\n  " + "\n  ".join(names)
     )

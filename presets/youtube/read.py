@@ -46,8 +46,12 @@ def parse_video_id(arg: str) -> str:
 def render(video: dict, comments: list[dict], comments_note: str, inline_n: int) -> str:
     snip = video.get("snippet") or {}
     stats = video.get("statistics") or {}
-    title = snip.get("title") or "?"
-    channel = snip.get("channelTitle") or "?"
+    # channelTitle/title/authorDisplayName are all free text chosen by a
+    # channel owner or commenter -- an unstripped newline reaches column 0
+    # of a new output line and can forge a fake row/section boundary (#227
+    # self-review).
+    title = (snip.get("title") or "?").replace("\n", " ")
+    channel = (snip.get("channelTitle") or "?").replace("\n", " ")
     date = (snip.get("publishedAt") or "").split("T")[0]
     description = snip.get("description") or ""
     head = (
@@ -66,7 +70,7 @@ def render(video: dict, comments: list[dict], comments_note: str, inline_n: int)
             top = (c.get("snippet") or {}).get("topLevelComment") or {}
             csnip = top.get("snippet") or {}
             text = (csnip.get("textDisplay") or "").replace("\n", " ")[:200]
-            author = csnip.get("authorDisplayName") or "?"
+            author = (csnip.get("authorDisplayName") or "?").replace("\n", " ")
             cid = top.get("id") or "?"
             cblock.append(f"  [id={cid}] {author}: {text}")
         comments_section = "\n".join(cblock)

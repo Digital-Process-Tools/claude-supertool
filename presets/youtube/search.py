@@ -37,7 +37,10 @@ def render(query: str, items: list[dict]) -> str:
         vid = (it.get("id") or {}).get("videoId") or "?"
         snip = it.get("snippet") or {}
         title = (snip.get("title") or "?").replace("\n", " ")
-        channel = snip.get("channelTitle") or "?"
+        # channelTitle is free text a channel owner chooses, same as title
+        # above -- an unstripped newline reaches column 0 of a new output
+        # line and can forge a fake row boundary (#227 self-review).
+        channel = (snip.get("channelTitle") or "?").replace("\n", " ")
         date = (snip.get("publishedAt") or "").split("T")[0]
         url = f"https://www.youtube.com/watch?v={vid}"
         out.append(f"- {date} {title} — {channel} [{url}]")
