@@ -46,9 +46,19 @@ if (!sdkResolves()) {
   );
   // `inherit` on stderr so npm's own diagnosis reaches the operator, and
   // "ignore" on stdout so not one byte of it can reach the protocol stream.
+  //
+  // `shell: true` because on Windows the executable on PATH is `npm.cmd`,
+  // and Node cannot spawn a `.cmd` there without a shell -- not even by
+  // naming `npm.cmd` explicitly, which throws EINVAL regardless of PATH.
+  // (This is a documented Node/libuv limitation on Windows, not fixable by
+  // resolving the right executable name.) The args below are a fixed,
+  // static list with no spaces or shell metacharacters, so the unescaped-
+  // argument concatenation that makes `shell: true` risky in general (and
+  // that Node warns about under DEP0190) does not apply here.
   const npm = spawnSync("npm", ["install", "--omit=dev", "--no-audit", "--no-fund"], {
     cwd: HERE,
     stdio: ["ignore", "ignore", "inherit"],
+    shell: true,
   });
   const failed =
     npm.error !== undefined || npm.status !== 0 || !sdkResolves();
