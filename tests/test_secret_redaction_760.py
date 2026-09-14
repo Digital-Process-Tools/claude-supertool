@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PRESET_DIR = REPO_ROOT / "presets" / "claude-log"
@@ -137,7 +138,9 @@ class TestDetectorMatches:
         out, n = _secrets.redact("curl -H 'Authorization: Bearer sk-test-1234567890abcd' https://api.example.com")
         assert n >= 1
         assert "sk-test-1234567890abcd" not in out
-        assert "curl" in out and "https://api.example.com" in out
+        assert "curl" in out
+        urls = [tok for tok in out.split() if tok.startswith(("http://", "https://"))]
+        assert any(urlparse(u).hostname == "api.example.com" for u in urls)
 
     def test_github_pat(self) -> None:
         out, n = _secrets.redact("git push https://ghp_0123456789abcdefghijklmnopqrstuvwxyz@github.com/x/y")
