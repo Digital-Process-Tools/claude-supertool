@@ -44,6 +44,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main, tool_fault, skipped
+from spawnable import argv0
 from linebreaks import lf_line_of_v8_line
 
 TIMEOUT_S = 30
@@ -388,7 +389,7 @@ def check_block(start_line: int, content: str, html_file: str) -> dict | None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(padded)
         try:
-            r = subprocess.run(["node", "--check", temp_path],
+            r = subprocess.run([argv0("node"), "--check", temp_path],
                                 capture_output=True, text=True, timeout=TIMEOUT_S,
                                 encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired:

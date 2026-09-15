@@ -85,6 +85,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import guard_main, required, required_but_absent, skipped, tool_fault
+from spawnable import argv0
 
 TOOL = "gitleaks"
 
@@ -159,7 +160,7 @@ def main() -> None:
     os.chmod(workdir, 0o700)
     report = os.path.join(workdir, "report.json")
     try:
-        cmd = [TOOL, "detect", "--no-git", "--redact", "--no-banner",
+        cmd = [argv0(TOOL), "detect", "--no-git", "--redact", "--no-banner",
                "--source", file, "--report-format", "json",
                "--report-path", report]
         try:

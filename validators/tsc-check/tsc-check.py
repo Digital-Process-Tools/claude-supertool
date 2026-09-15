@@ -43,6 +43,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from pkg_paths import attribute
 from refusal import absent, guard_main
+from spawnable import argv0
 from linebreaks import split_lines
 
 TOOL = "tsc-check"
@@ -196,7 +197,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["tsc", "--noEmit", "--skipLibCheck", "--pretty", "false",
+            [argv0("tsc"), "--noEmit", "--skipLibCheck", "--pretty", "false",
              contained_target(file)],
             capture_output=True,
             text=True,

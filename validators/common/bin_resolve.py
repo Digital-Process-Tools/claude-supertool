@@ -43,6 +43,32 @@ def _is_executable(path: str) -> bool:
     )
 
 
+def _spawnable(name: str) -> str:
+    """What `subprocess` can actually launch for `name` (#2540).
+
+    `shutil.which()` consults PATHEXT and answers about `prettier.cmd`;
+    `CreateProcess` appends only `.exe` when it searches PATH and cannot
+    find that file, so an adapter that probed the name and spawned the name
+    raised `FileNotFoundError` on every Windows install with the tool
+    present. Measured on a windows runner in
+    `tests/test_windows_cmd_spawn_2540.py`: the resolved path runs, the bare
+    name does not.
+
+    A value that is already an executable file is returned BYTE-IDENTICAL
+    and never routed through `which()`. On Python 3.12 `shutil.which` was
+    rewritten to resolve an explicit path as `os.path.join(dirname,
+    basename)`, so the forward-slash normalisation #2176 and #2249 perform
+    above comes back with a native separator spliced in before the filename
+    (`C:/Program Files/glab/glab.exe` -> `C:/Program Files/glab\\glab.exe`).
+    Measured on the windows 3.12 leg and no other: 3.9 through 3.11 return
+    the argument verbatim. Such a path was already spawnable anyway, `.cmd`
+    included -- only a bare NAME needs the PATH search this fixes.
+    """
+    if os.path.isfile(name) and os.access(name, os.X_OK):
+        return name
+    return shutil.which(name) or name
+
+
 def resolve_bin_cmd(raw: str, default: str) -> list[str]:
     """Turn a `_BIN` env var's raw string into an argv-prefix list.
 
@@ -61,10 +87,13 @@ def resolve_bin_cmd(raw: str, default: str) -> list[str]:
     candidate = raw.replace("\\", "/") if os.name == "nt" else raw
 
     if _is_executable(candidate):
-        return [candidate]
+        return [_spawnable(candidate)]
 
     parts = shlex.split(candidate, posix=True)
-    return parts or [default]
+    if parts:
+        parts[0] = _spawnable(parts[0])
+        return parts
+    return [default]
 
 
 def describe_unresolved(raw: str, resolved: str) -> str:

@@ -55,6 +55,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main
+from spawnable import argv0
 from linebreaks import split_lines
 
 TOOL = "mypy"
@@ -106,7 +107,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["mypy", "--output", "json", "--no-error-summary",
+            [argv0("mypy"), "--output", "json", "--no-error-summary",
              "--no-color-output", "--cache-dir", os.devnull, "--", file],
             capture_output=True,
             text=True,

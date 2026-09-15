@@ -811,6 +811,14 @@ _SPAWN_NAMES = frozenset({"run", "call", "check_call", "check_output", "Popen"})
 #: binary name is not refused as if it were an attack.
 _GIT_ARGV0 = frozenset({"git_bin", "git"})
 
+#: The one call the head may be wrapped in (#2540). `argv0(x)` returns
+#: `shutil.which(x) or x`, so it resolves a name and cannot substitute a
+#: different one -- on Windows it is the difference between running git and
+#: `FileNotFoundError`. Unwrapped for exactly one argument and only when that
+#: argument is itself a git spelling: `argv0(rm_bin)` still fires, and the
+#: must-fire control below pins that.
+_ARGV0_WRAPPER = "argv0"
+
 
 def _deletion_aliases(tree: ast.Module) -> "set[str]":
     """Local names bound to a deletion primitive by a from-import.
@@ -874,6 +882,14 @@ def _lock_deletion_routes(src: str) -> "list[str]":
         head = None
         if isinstance(argv, ast.List) and argv.elts:
             first = argv.elts[0]
+            # `argv0(git_bin)` resolves the name it is handed and can return
+            # nothing else, so unwrap it and judge the argument (#2540).
+            if (isinstance(first, ast.Call)
+                    and isinstance(first.func, ast.Name)
+                    and first.func.id == _ARGV0_WRAPPER
+                    and len(first.args) == 1
+                    and not first.keywords):
+                first = first.args[0]
             head = (first.id if isinstance(first, ast.Name)
                     else first.value if isinstance(first, ast.Constant)
                     else None)
@@ -954,6 +970,12 @@ def test_no_lock_is_ever_deleted_by_the_adapter() -> None:
                           + chr(10) + "subprocess.run('rm -f ' + p, shell=True)"),
     ("a bare spawn name with a list argv", "from subprocess import run"
                                            + chr(10) + "run(['rm', p])"),
+    ("argv0() around something that is not git (#2540)",
+     "import subprocess" + chr(10)
+     + "subprocess.run([argv0('rm'), '-f', p])"),
+    ("argv0() with a second argument is not the wrapper we unwrap (#2540)",
+     "import subprocess" + chr(10)
+     + "subprocess.Popen([argv0(git_bin, other), *args])"),
     ("git spawn that deletes via a subcommand is NOT covered -- see the "
      "docstring; this row asserts the shell keyword, not the subcommand",
      "import subprocess" + chr(10)
@@ -976,6 +998,10 @@ def test_the_lock_guard_fires_on_every_shape_it_claims(label: str, src: str) -> 
      + "subprocess.Popen([git_bin, *args], cwd=d)"),
     ("a git spawn by literal name",
      "import subprocess" + chr(10) + "subprocess.run(['git', 'status'])"),
+    ("the adapter's git spawn through argv0(), which resolves and nothing "
+     "else (#2540)",
+     "import subprocess" + chr(10)
+     + "subprocess.Popen([argv0(git_bin), *args], cwd=d)"),
     ("prose naming index.lock",
      '"""We deliberately do not remove .git/index.lock here."""'),
     ("terminate and kill, which are not deletions",

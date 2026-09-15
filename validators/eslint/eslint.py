@@ -65,6 +65,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import guard_main, required, required_but_absent, skipped, tool_fault
 from npx_absent import is_npx_absent
+from spawnable import argv0
 
 TOOL = "eslint"
 
@@ -131,11 +132,11 @@ def _decline(file: str, reason: str, dur_ms: int) -> None:
 def _resolve_cmd() -> list:
     """argv prefix for eslint: global first, then a project-local install."""
     if shutil.which(TOOL):
-        return [TOOL]
+        return [argv0(TOOL)]
     if shutil.which("npx"):
         # `--no-install` so a missing eslint stays a missing eslint rather
         # than becoming a silent network fetch inside a post-edit validator.
-        return ["npx", "--no-install", TOOL]
+        return [argv0("npx"), "--no-install", TOOL]
     return []
 
 

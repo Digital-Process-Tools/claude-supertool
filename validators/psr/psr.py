@@ -23,6 +23,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import guard_main
+from spawnable import argv0
 
 
 def emit(obj: dict) -> None:
@@ -73,7 +74,7 @@ def main() -> None:
         return
 
     cmd = [
-        psr_bin,
+        argv0(psr_bin),
         f"--standard={psr_standard}",
         f"--warning-severity={psr_severity}",
         f"--extensions={psr_extensions}",
