@@ -106,3 +106,68 @@ def get(endpoint: str, api_key: str, params: dict[str, Any], timeout: int = 15) 
         return json.loads(raw)
     except json.JSONDecodeError as e:
         raise YouTubeAPIError(endpoint, f"could not parse response as JSON: {e}") from e
+
+
+def _format_oauth_http_error(e: urllib.error.HTTPError) -> str:
+    """HTTP error text for a token-authenticated call (#227 write ops).
+
+    Separate from `_format_http_error` because the same status codes mean
+    different things on this route and the remedies are different commands.
+    403 on a key-authenticated GET is usually quota; on an authorised write it
+    is usually the scope or a comment-disabled video, and telling somebody to
+    check their quota there sends them to the wrong console page.
+    """
+    body = e.read(ERROR_BODY_BYTES).decode("utf-8", errors="replace")
+    if e.code == 401:
+        return ("401 Unauthorized (the access token was rejected -- the grant "
+                f"may have been revoked; re-run youtube_auth): {body[:300]}")
+    if e.code == 403:
+        return ("403 Forbidden (missing youtube.force-ssl scope, comments "
+                "disabled on this video, or a quota/rate limit): "
+                f"{body[:300]}")
+    if e.code == 404:
+        return f"404 Not Found (no such video, or it is private): {body[:300]}"
+    return f"HTTP {e.code} {e.reason}: {body[:300]}"
+
+
+def authorized(endpoint: str, token: str, params: dict[str, Any], *,
+               method: str = "GET", body: "dict[str, Any] | None" = None,
+               timeout: int = 20) -> dict[str, Any]:
+    """Call the Data API with an OAuth2 bearer token instead of an API key.
+
+    Used by both halves of a write: the `POST` that publishes, and the `GET`
+    that reads the result back afterwards. The token never appears in the URL
+    -- unlike the API key, which travels as a query parameter and is why
+    `_scrub` exists -- so nothing here needs redacting out of an error body.
+
+    Raises `YouTubeAPIError` on every failure, the same contract as `get`.
+    """
+    url = f"{API_BASE}/{endpoint}"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    headers = {"Authorization": f"Bearer {token}"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            raw = read_capped(resp).decode("utf-8")
+    except RedirectRefused as e:
+        raise YouTubeAPIError(endpoint, str(e)) from e
+    except (ResponseTooLarge, DeadlineExceeded) as e:
+        raise YouTubeAPIError(endpoint, str(e)) from e
+    except urllib.error.HTTPError as e:
+        raise YouTubeAPIError(endpoint, _format_oauth_http_error(e)) from e
+    except urllib.error.URLError as e:
+        raise YouTubeAPIError(endpoint, f"network error: {e.reason}") from e
+    except http.client.HTTPException as e:
+        raise YouTubeAPIError(
+            endpoint, f"incomplete response: {type(e).__name__}: {e}") from e
+    if not raw.strip():
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise YouTubeAPIError(endpoint, f"could not parse response as JSON: {e}") from e

@@ -104,8 +104,20 @@ def _call_kind(node: ast.Call) -> Tuple[str, str]:
     if name not in ("open", "fdopen"):
         return "", ""
     # os.open(path, flags) — a raw fd, no codec involved.
+    # webbrowser.open(url) — opens a browser, not a file (#227).
+    #
+    # Qualified by the MODULE the attribute hangs off, not by the receiver's
+    # type, which is the same evidence `os.open` is excluded on and the reason
+    # this can be trusted: `import webbrowser; webbrowser.open(...)` is a fact
+    # about which function is called, while "this looks like a URL" would be a
+    # guess. #766 excluded `OpenerDirector.open(req, timeout=...)` by the
+    # keyword it names instead, which cannot reach this one -- `webbrowser.open`
+    # is called with a single positional argument and names no keyword at all,
+    # so it read as a text-mode open with an absent mode and got flagged as a
+    # read. A codec defect reported in a line that opens no file is the
+    # confident-report-about-something-unchecked this scan exists to prevent.
     if (is_attr and isinstance(func.value, ast.Name)
-            and func.value.id == "os" and name == "open"):
+            and func.value.id in ("os", "webbrowser") and name == "open"):
         return "", ""
     if any(kw.arg is not None and kw.arg not in _OPEN_KEYWORDS for kw in node.keywords):
         return "", ""

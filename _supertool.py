@@ -4057,8 +4057,13 @@ def _dropped_tokens_refusal(
     return chr(10).join(lines) + chr(10)
 
 #: Preset ops that name a path and predate the declaration (#1287). **This set
-#: only ever shrinks.** It is not a policy — it is a debt register: 31 shipped
-#: PRESET ops name a path, 12 declare a boundary (#1796 added `gh-job` and
+#: only ever shrinks.** It is not a policy — it is a debt register: 32 shipped
+#: PRESET ops name a path, 13 declare a boundary (#227 added `youtube_comment`,
+#: the same `{"args": []}` shape as the ops below it -- its `file://PATH` sits
+#: inside a pipe-separated field, not in an argument slot, so the containment
+#: that matters is `safe_resolve_body_path`. `bluesky_publish` is the identical
+#: shape sitting in the register, which is the difference a grandfather clause
+#: makes and not a difference in the ops; #1796 added `gh-job` and
 #: `gl-job` to the declared side, both `"paths": {"args": []}` — the `gl-api`
 #: precedent, since PATH there names an artifact's own path or a GitLab API
 #: route rather than anything on this filesystem; #532 added `worktree`, the
