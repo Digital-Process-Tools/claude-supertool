@@ -12,6 +12,13 @@ the same gap PR #2538 closed on the Node side, where ``spawnSync("npm")``
 failed with ``ENOENT`` for exactly this reason. These tests are what makes
 it measured, on the platform that has it, in CI.
 
+**One of these four was filed wrong and the first windows leg corrected it.**
+#2540 claimed that naming the `.cmd` in full does not help either, carried
+across from #2538's `EINVAL` on the Node side. In Python it runs: CreateProcess
+launches a `.bat`/`.cmd` given a path to one, it just will not find one when it
+searches PATH. So the bare name is the whole defect and `which()`'s own return
+value is the whole fix. The issue body has been corrected.
+
 **The gate asks the filesystem, it does not read the platform's name.**
 ``tests/_symlink.py`` is the precedent: ``skipif(os.name == "nt")`` and its
 four siblings hardcode a verdict about a platform, so a runner that behaves
@@ -85,38 +92,55 @@ def test_spawning_the_bare_name_fails_even_though_which_found_it(
         subprocess.run([TOOL], capture_output=True, timeout=30)
 
 
-def test_naming_the_cmd_in_full_does_not_rescue_it(cmd_shim_on_path) -> None:
-    """Passing which()'s own return value is not the fix.
+def test_naming_the_cmd_in_full_is_the_whole_fix(cmd_shim_on_path) -> None:
+    """Passing which()'s own return value runs the shim. This is the fix.
 
-    The obvious repair -- spawn the resolved path instead of the bare name --
-    does not work either: CreateProcess cannot execute a .cmd however it is
-    named. PR #2538 reports the same dead end from Node, where the explicit
-    `npm.cmd` spelling raised EINVAL rather than running. A fix for #2540 has
-    to go through a shell or through `cmd /c`, and this is why.
+    #2540 was filed claiming the opposite -- that CreateProcess cannot
+    execute a .cmd however it is named, so a fix had to go through a shell.
+    That was carried across from PR #2538, which reports exactly that dead
+    end from Node: the explicit `npm.cmd` spelling raised EINVAL there.
+
+    It does not transfer to Python, and the first run of this file on a
+    windows leg is what said so -- this test asserted `pytest.raises(OSError)`
+    and failed with `DID NOT RAISE`. CreateProcess launches a .bat or .cmd
+    given a path to it; what it will not do is find one, because it appends
+    only `.exe` when it searches PATH. The bare name is the entire defect.
+
+    So the repair for all seven adapters is to spawn the string `which()`
+    already returned instead of the name that was passed to it. No shell, no
+    quoting surface, no `cmd /c`, and argv stays a list.
+
+    43 is the shim's own exit code, so it can only arrive here if the shim
+    actually ran -- this doubles as the positive control for the two
+    assertions above, which are otherwise equally satisfied by a platform
+    that spawns nothing at all.
     """
     if cmd_shim_on_path is None:
         pytest.skip(
             f"this platform does not resolve a bare `{TOOL}` to `{TOOL}.cmd` "
             "through PATHEXT, so the #2540 disagreement cannot arise here"
         )
-    with pytest.raises(OSError):
-        subprocess.run([str(cmd_shim_on_path)], capture_output=True, timeout=30)
+    r = subprocess.run([str(cmd_shim_on_path)], capture_output=True, timeout=30)
+    assert r.returncode == 43, (
+        "the shim did not run, so the two assertions above are about a "
+        f"platform that spawns nothing at all: exit {r.returncode}"
+    )
 
 
-def test_cmd_c_reaches_the_shim_and_returns_its_own_exit_code(
-        cmd_shim_on_path) -> None:
-    """The positive control, and the shape a fix can take.
+def test_cmd_c_also_works_but_is_not_needed(cmd_shim_on_path) -> None:
+    """The route #2540 proposed, kept as the record of a rejected option.
 
-    Without this the three tests above all pass on a platform where nothing
-    can be spawned at all, which is the absence-read-as-a-finding defect this
-    repository keeps having. 43 is the shim's own exit code: it can only
-    arrive here if the shim actually ran.
+    `cmd /c <resolved path>` does reach the shim. It is simply unnecessary
+    now that the test above shows the resolved path alone is enough, and an
+    extra process in every validator spawn is a cost with nothing bought.
 
-    `cmd /c <resolved path>` rather than `shell=True`, because these argv
-    lists carry a caller-supplied file path and `subprocess.run(list,
-    shell=True)` concatenates unescaped on Windows -- a path with a space or
-    an `&` in it would become shell syntax. #2538 could use `shell: true`
-    safely because its argv is a fixed static list; #2540's is not.
+    Kept rather than deleted because the next reader will have the same idea
+    #2538 gave me, and one skipped test on darwin is cheaper than rediscovering
+    this on a windows leg. What must never come back is `shell=True`: these
+    adapters' argv lists carry a caller-supplied file path, and
+    `subprocess.run(list, shell=True)` concatenates unescaped on Windows, so a
+    path holding a space or an `&` becomes shell syntax. #2538 could use
+    `shell: true` safely because its argv is a fixed static list; #2540's is not.
     """
     if cmd_shim_on_path is None:
         pytest.skip(
