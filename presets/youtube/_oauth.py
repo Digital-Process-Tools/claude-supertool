@@ -35,6 +35,15 @@ last access token and its expiry. The access token is short-lived (~1h) and
 refreshed in place; the refresh token is the credential that matters and is
 what `check_token_file_mode` guards. Nothing here is ever printed: the token
 file path is reported, the token is not.
+
+**The 0600 is a POSIX claim and only a POSIX claim.** On a filesystem that
+does not enforce the mode bits -- Windows, where CPython synthesises `0o666`
+for every file and `os.chmod` cannot change it -- the mode says nothing about
+who can read this, and what protects it is the user profile's ACL, which this
+tool can neither read nor set with the standard library. `check_token_file_mode`
+says so on stderr there rather than passing silently or refusing outright
+(#227); the refusal it used to give would have made every write op on Windows
+exit 2 blaming the operator's permissions.
 """
 from __future__ import annotations
 

@@ -13,12 +13,17 @@ and one that it allowed also passes when nothing is guarded at all.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from _preset_loader import load_preset_module
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "presets"))
+import _publish_safety  # noqa: E402
 
 
 def _load(name: str):
@@ -139,9 +144,14 @@ def test_a_corrupt_log_is_cannot_tell_and_never_ok(config_home: Path) -> None:
 
 
 def test_the_log_is_written_0600(config_home: Path) -> None:
+    """Where the bits mean anything. Gated on a capability probe rather than
+    a platform name -- Windows reports 0o666 for every file and `os.chmod`
+    cannot change it, so asserting 0o600 there tests the OS, not this code.
+    """
+    if not _publish_safety._mode_bits_are_enforced():
+        pytest.skip("this filesystem does not enforce POSIX mode bits")
     sentinel.record(op="youtube_comment", video_id="v", comment_id="c",
                     url="u", verification="verified")
-    import os
     mode = os.stat(config_home / "sent.jsonl").st_mode & 0o777
     assert mode == 0o600, oct(mode)
 
@@ -271,8 +281,14 @@ def test_an_expired_token_is_refreshed(
 
 def test_the_token_file_is_0600_from_creation(config_home: Path) -> None:
     """Not chmod-ed after the write: on a shared machine the gap between
-    creating a world-readable file and tightening it is the vulnerability."""
-    import os
+    creating a world-readable file and tightening it is the vulnerability.
+
+    Gated on the probe, like the log above. Where the bits are not enforced
+    the mode is not a claim about anything and the credential is protected
+    by the profile ACL instead, which this tool cannot read.
+    """
+    if not _publish_safety._mode_bits_are_enforced():
+        pytest.skip("this filesystem does not enforce POSIX mode bits")
     oauth._write_token_file({"refresh_token": "r"})
     mode = os.stat(config_home / "oauth_token.json").st_mode & 0o777
     assert mode == 0o600, oct(mode)
@@ -489,3 +505,64 @@ def test_main_honours_the_disclosure_opt_out(
             ["body"]["snippet"]["topLevelComment"]["snippet"]["textOriginal"])
     assert sent == "nice work"
     assert "(disclosure: suppressed)" in capsys.readouterr().out
+
+
+# --- the Windows arm, reproduced on every platform -----------------------
+
+@pytest.fixture()
+def bits_not_enforced(monkeypatch: pytest.MonkeyPatch):
+    """Make every mode check behave as it does on Windows.
+
+    Forced rather than waited for. CI found this on four windows legs and
+    nowhere else: `check_token_file_mode` refused any file with `mode &
+    0o077`, and Windows reports `0o666` for every file, so it exited 2 on
+    every credential it was ever handed. Eight tests in this file died of
+    it. A regression test that only one platform in twelve can run is a
+    regression test that finds the next one the same expensive way.
+    """
+    for mod in _module_aliases("_publish_safety", _publish_safety):
+        monkeypatch.setattr(mod, "_mode_bits_are_enforced", lambda: False)
+
+
+def test_a_token_file_is_usable_where_mode_bits_are_not_enforced(
+        config_home: Path, bits_not_enforced, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    """The write path must WORK there, not merely fail politely."""
+    oauth._write_token_file({
+        "client_id": "cid", "refresh_token": "r", "access_token": "live",
+        "expires_at": time.time() + 3600, "scope": oauth.SCOPE})
+    os.chmod(oauth.TOKEN_PATH, 0o666)
+
+    assert oauth.get_access_token() == "live"
+    assert "could not verify" in capsys.readouterr().err, (
+        "an unverifiable credential must say so -- passing silently is the "
+        "absence-read-as-clean defect, and refusing is what broke Windows")
+
+
+def test_the_client_secret_is_readable_where_mode_bits_are_not_enforced(
+        config_home: Path, bits_not_enforced) -> None:
+    """The same arm on the other file `_oauth` mode-checks. Two call sites,
+    and a fix that reached only one would have moved the exit 2 rather than
+    removed it."""
+    (config_home / "client_secret.json").write_text(
+        json.dumps({"installed": {"client_id": "cid", "client_secret": "s"}}),
+        encoding="utf-8")
+    os.chmod(config_home / "client_secret.json", 0o666)
+    assert oauth.load_client_secret() == ("cid", "s")
+
+
+def test_a_loose_credential_is_still_refused_where_bits_are_enforced(
+        config_home: Path) -> None:
+    """The must-fire half. Without it the two tests above are satisfied by a
+    check that never refuses anything, which is the opposite defect and the
+    one the guard exists for.
+    """
+    if not _publish_safety._mode_bits_are_enforced():
+        pytest.skip("this filesystem does not enforce POSIX mode bits")
+    oauth._write_token_file({
+        "client_id": "cid", "refresh_token": "r", "access_token": "live",
+        "expires_at": time.time() + 3600, "scope": oauth.SCOPE})
+    os.chmod(oauth.TOKEN_PATH, 0o644)
+    with pytest.raises(SystemExit) as e:
+        oauth.get_access_token()
+    assert e.value.code == 2

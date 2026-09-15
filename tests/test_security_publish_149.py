@@ -12,6 +12,8 @@ them via monkeypatch to exercise strict mode.
 from __future__ import annotations
 
 import os
+import os
+import stat
 import sys
 from pathlib import Path
 
@@ -135,7 +137,26 @@ class TestConfirmGate:
 
 
 class TestTokenFileMode:
+    """Three states, and the third was found by CI on Windows (#227).
+
+    `test_rejects_world_readable` used to carry no gate and passed on
+    Windows for the wrong reason: every file there reports `0o666`, so the
+    refusal fired whatever the `chmod` did, and the test could not tell a
+    working guard from one that refuses everything. It refused everything.
+    Nothing noticed because the function had no production caller until
+    #227, which would have made the YouTube write ops exit 2 on every
+    Windows machine.
+
+    The gate below is a capability probe rather than `sys.platform ==
+    "win32"` -- the same reasoning `tests/_symlink.py` sets out, and the
+    same probe the function itself now uses to decide.
+    """
+
     def test_rejects_world_readable(self, tmp_path, capsys):
+        """MUST FIRE, where the bits mean something."""
+        if not _publish_safety._mode_bits_are_enforced():
+            pytest.skip("this filesystem does not enforce POSIX mode bits, so "
+                        "0o644 is not a fact about who can read the file")
         tok = tmp_path / "tok"
         tok.write_text("SECRET")
         tok.chmod(0o644)
@@ -144,15 +165,61 @@ class TestTokenFileMode:
         err = capsys.readouterr().err
         assert "loose permissions" in err
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows chmod(0o600) is a no-op — permission bits are not enforced",
-    )
-    def test_accepts_owner_only(self, tmp_path):
+    def test_a_loose_mode_is_a_warning_where_the_bits_are_not_enforced(
+            self, tmp_path, capsys, monkeypatch):
+        """The third state, exercised on EVERY platform.
+
+        Forcing the probe rather than waiting for a Windows runner: this is
+        the arm that decides whether the feature works there at all, and a
+        test only one of twelve legs can reach is a test that finds this
+        the way CI just did.
+        """
+        monkeypatch.setattr(_publish_safety, "_mode_bits_are_enforced",
+                            lambda: False)
+        tok = tmp_path / "tok"
+        tok.write_text("SECRET")
+        tok.chmod(0o644)
+        _publish_safety.check_token_file_mode(tok)  # must NOT raise
+        err = capsys.readouterr().err
+        assert "could not verify" in err, (
+            "an unverifiable credential must say so; silence here is the "
+            "absence-read-as-clean defect")
+        assert "UNKNOWN" in err
+        assert "loose permissions" not in err, (
+            "this is not a finding about the file's permissions -- blaming "
+            "the operator for a fact about the platform sends them to "
+            "`chmod` on an OS that has none")
+
+    def test_accepts_owner_only(self, tmp_path, capsys):
+        """MUST NOT FIRE, on any platform.
+
+        Ungated on purpose, unlike the old `skipif`: a 0o600 file is a pass
+        everywhere, because the tightness check runs before the probe. That
+        is what keeps the warning above from reaching a file that is
+        already fine.
+        """
         tok = tmp_path / "tok"
         tok.write_text("SECRET")
         tok.chmod(0o600)
         _publish_safety.check_token_file_mode(tok)  # no raise
+        if _publish_safety._mode_bits_are_enforced():
+            assert capsys.readouterr().err == "", (
+                "a tight file must produce no diagnostic at all")
+
+    def test_the_probe_agrees_with_the_filesystem(self, tmp_path):
+        """Positive control for the probe itself.
+
+        Everything above branches on `_mode_bits_are_enforced()`, so a probe
+        stuck on one answer would make one arm vacuous and the other
+        unreachable without either going red.
+        """
+        tok = tmp_path / "tok"
+        tok.write_text("x")
+        tok.chmod(0o600)
+        survived = stat.S_IMODE(os.stat(tok).st_mode) == 0o600
+        assert _publish_safety._mode_bits_are_enforced() == survived, (
+            "the probe disagrees with what this filesystem just did to a "
+            "real chmod")
 
     def test_missing_file_noop(self, tmp_path):
         # No raise — caller surfaces the right error.

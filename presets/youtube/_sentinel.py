@@ -134,7 +134,9 @@ def record(*, op: str, video_id: str, comment_id: str, url: str,
         "verification": verification,
     }
     # 0600 at creation: this file records what the account published and when,
-    # which is a behavioural profile even though it holds no credential.
+    # which is a behavioural profile even though it holds no credential. On a
+    # filesystem that does not enforce the bits (Windows) this is a no-op and
+    # the file inherits the profile's ACL -- see `_oauth`'s docstring.
     fd = os.open(str(LOG_PATH), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, sort_keys=True) + "\n")
