@@ -53,6 +53,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main, skipped, tool_fault
+from spawnable import argv0
 
 TOOL = "ruff"
 
@@ -173,7 +174,7 @@ def _would_be_checked(file: str) -> bool | None:
     instead.
     """
     try:
-        r = subprocess.run([TOOL, "check", "--no-cache", "--force-exclude",
+        r = subprocess.run([argv0(TOOL), "check", "--no-cache", "--force-exclude",
                             "--show-files", "--", file],
                            capture_output=True, text=True, timeout=TIMEOUT_S,
                            encoding="utf-8", errors="replace")
@@ -207,7 +208,7 @@ def main() -> None:
     # both invocations -- ruff with no positional path reports nothing, the
     # scope probe then sees no surviving path, and the adapter emits `skipped`
     # blaming an exclude that is not there.
-    cmd = [TOOL, "check", "--output-format", "json", "--no-cache",
+    cmd = [argv0(TOOL), "check", "--output-format", "json", "--no-cache",
            "--force-exclude", "--quiet", "--", file]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,

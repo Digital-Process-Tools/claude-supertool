@@ -66,6 +66,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, guard_main
+from spawnable import argv0
 
 TOOL = "git-status"
 INSTALL_HINT = ("git not found on PATH — the working-tree delta for this file "
@@ -344,7 +345,7 @@ def main() -> None:
             raise _NoAnswer(full_args, timed_out)
         try:
             proc = subprocess.Popen(
-                [git_bin, *full_args],
+                [argv0(git_bin), *full_args],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=file_dir, text=True, encoding="utf-8", errors="replace",
             )

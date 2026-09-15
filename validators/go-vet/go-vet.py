@@ -48,6 +48,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from pkg_paths import attribute
 from refusal import absent, guard_main, skipped, tool_fault
+from spawnable import argv0
 from linebreaks import split_lines
 
 TOOL = "go-vet"
@@ -210,7 +211,7 @@ def main() -> None:
         return
 
     try:
-        proc = subprocess.run([BINARY, "vet", "."], capture_output=True,
+        proc = subprocess.run([argv0(BINARY), "vet", "."], capture_output=True,
                               text=True, timeout=TIMEOUT, cwd=pkg_dir,
                               encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:

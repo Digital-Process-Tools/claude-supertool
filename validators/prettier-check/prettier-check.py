@@ -20,6 +20,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import guard_main, skipped
+from spawnable import argv0
 
 TOOL = "prettier-check"
 
@@ -114,7 +115,7 @@ def _is_ignored(file: str, prettier_bin: str, flags: list,
     floor here would spend time the registration does not have.
     """
     try:
-        r = subprocess.run([prettier_bin, "--file-info", contained_target(file)] + flags,
+        r = subprocess.run([argv0(prettier_bin), "--file-info", contained_target(file)] + flags,
                            capture_output=True, text=True,
                            timeout=budget,
                            encoding="utf-8", errors="replace")
@@ -165,7 +166,7 @@ def main() -> None:
         flags += ["--config", prettier_config]
     if prettier_ignore_path:
         flags += ["--ignore-path", prettier_ignore_path]
-    cmd = [prettier_bin, "--check"] + flags + ["--", file]
+    cmd = [argv0(prettier_bin), "--check"] + flags + ["--", file]
 
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_S, encoding="utf-8", errors="replace")

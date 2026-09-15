@@ -52,6 +52,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import guard_main, required, required_but_absent, skipped, tool_fault
+from spawnable import argv0
 
 TOOL = "shellcheck"
 
@@ -137,7 +138,7 @@ def main() -> None:
         return
 
     try:
-        r = subprocess.run([TOOL, "-f", "json", "--", file], capture_output=True,
+        r = subprocess.run([argv0(TOOL), "-f", "json", "--", file], capture_output=True,
                            text=True, timeout=TIMEOUT_S, encoding="utf-8",
                            errors="replace")
     except FileNotFoundError:

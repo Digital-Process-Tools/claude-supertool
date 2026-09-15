@@ -24,6 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from linebreaks import split_lines
 from refusal import absent, guard_main, tool_fault
+from spawnable import argv0
 
 TOOL = "terraform-check"
 
@@ -131,7 +132,7 @@ def main() -> None:
         return
 
     try:
-        r = subprocess.run(["terraform", "fmt", "-check", "-diff", contained_target(file)],
+        r = subprocess.run([argv0("terraform"), "fmt", "-check", "-diff", contained_target(file)],
                            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         # `which` said yes and exec said no — a PATH entry that vanished

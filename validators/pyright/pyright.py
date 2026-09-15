@@ -47,6 +47,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main, skipped
+from spawnable import argv0
 
 TOOL = "pyright"
 INSTALL_HINT = ("pyright not found on PATH — this file was NOT type-checked "
@@ -103,7 +104,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["pyright", "--outputjson", contained_target(file)],
+            [argv0("pyright"), "--outputjson", contained_target(file)],
             capture_output=True,
             text=True,
             timeout=60, encoding="utf-8", errors="replace",

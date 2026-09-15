@@ -51,6 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, guard_main, skipped, tool_fault  # noqa: E402
+from spawnable import argv0  # noqa: E402
 
 TOOL = "new-file-lint"
 
@@ -460,7 +461,7 @@ def main() -> None:
                      int((time.time() - start) * 1000)))
         return
 
-    cmd = ["ruff", "check", "--output-format", "json", "--no-cache",
+    cmd = [argv0("ruff"), "check", "--output-format", "json", "--no-cache",
            "--force-exclude", "--quiet", "--extend-select",
            ",".join(extra_rules), "--", file]
     try:

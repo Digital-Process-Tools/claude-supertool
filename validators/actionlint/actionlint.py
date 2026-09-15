@@ -27,6 +27,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main
+from spawnable import argv0
 from linebreaks import split_lines
 from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
                           anchor_miss_message as _anchor_miss_message)
@@ -164,7 +165,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["actionlint", "-no-color", "-oneline", "--", file],
+            [argv0("actionlint"), "-no-color", "-oneline", "--", file],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",

@@ -35,6 +35,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main, skipped, tool_fault
+from spawnable import argv0
 from linebreaks import split_lines
 
 TOOL = "cargo-check"
@@ -134,7 +135,7 @@ def _workspace_root(crate_root: Path,
     """
     runner = run or subprocess.run
     try:
-        r = runner(["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        r = runner([argv0("cargo"), "metadata", "--no-deps", "--format-version", "1"],
                    capture_output=True, text=True, timeout=30,
                    cwd=str(crate_root), encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
@@ -398,7 +399,7 @@ def main() -> None:
 
     try:
         r = subprocess.run(
-            ["cargo", "check", "--message-format=short", "--quiet"],
+            [argv0("cargo"), "check", "--message-format=short", "--quiet"],
             capture_output=True, text=True, timeout=120,
             cwd=str(crate_root), encoding="utf-8", errors="replace",
         )
