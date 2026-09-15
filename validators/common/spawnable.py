@@ -39,6 +39,7 @@ class closed.
 """
 from __future__ import annotations
 
+import os
 import shutil
 
 
@@ -58,6 +59,26 @@ def spawnable(name: str) -> "str | None":
     return shutil.which(name)
 
 
+def _already_a_path(name: str) -> bool:
+    """Is `name` an executable file on its own, needing no PATH search?
+
+    Never send one of those through `which()`. On Python 3.12 `shutil.which`
+    was rewritten to resolve even an explicit path as
+    ``os.path.join(os.path.dirname(cmd), os.path.basename(cmd))``, so a
+    forward-slash-normalised Windows path comes back with a native separator
+    spliced in before the filename:
+    ``C:/Program Files/glab/glab.exe`` -> ``C:/Program Files/glab\\glab.exe``.
+    Measured on the windows 3.12 leg, and on no other leg: 3.9 through 3.11
+    return the argument verbatim, which is why this cost eight tests on one
+    of twelve legs and none locally.
+
+    That rewriting would undo the separator normalisation #2176 and #2249
+    exist to get right, and it buys nothing: a path that resolves here was
+    already spawnable, `.cmd` included.
+    """
+    return os.path.isfile(name) and os.access(name, os.X_OK)
+
+
 def argv0(name: str) -> str:
     """The spawnable form of `name`, or `name` unchanged when it is absent.
 
@@ -71,5 +92,11 @@ def argv0(name: str) -> str:
     `except FileNotFoundError` arm reachable and reporting exactly what it
     reports today -- a tool that disappeared between the gate and the spawn
     is still an absent tool, and that arm already says so.
+
+    A value that is already an executable path is returned byte-identical;
+    see `_already_a_path` for the 3.12 `shutil.which` rewrite that makes
+    that explicit rather than incidental.
     """
+    if _already_a_path(name):
+        return name
     return shutil.which(name) or name
