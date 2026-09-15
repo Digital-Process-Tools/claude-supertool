@@ -12,7 +12,6 @@ them via monkeypatch to exercise strict mode.
 from __future__ import annotations
 
 import os
-import os
 import stat
 import sys
 from pathlib import Path
