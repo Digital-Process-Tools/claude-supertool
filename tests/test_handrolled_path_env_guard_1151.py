@@ -53,7 +53,7 @@ NL = chr(10)
 #:
 #: Both current entries were read and cleared by hand on 2026-08-09:
 #:
-#:  * `test_encoding_seam.py:659` -- the spawn is inside a nested `_run_parent`
+#:  * `test_encoding_seam.py:671` -- the spawn is inside a nested `_run_parent`
 #:    closing over an `env` bound in the enclosing test body. Resolving it would
 #:    mean reading an outer scope from an inner one, which is exactly the
 #:    cross-scope resolution that false-positived #692 and got the first scanner
@@ -80,7 +80,7 @@ NL = chr(10)
 #:    keys that pin git's identity, config and prompting away from the
 #:    developer's own, so PATH inherits.
 DECLARED_UNRESOLVED = [
-    "test_encoding_seam.py:659 [unresolved] "
+    "test_encoding_seam.py:671 [unresolved] "
     "env= expression could not be evaluated by this scanner",
     "test_git_worktrees_unpushed_1496.py:107 [unresolved] "
     "env= expression could not be evaluated by this scanner",
