@@ -94,6 +94,14 @@ def test_a_missing_dependency_that_cannot_be_installed_says_so_by_name(
     # spelling is written beside it -- without it the launcher finds no npm
     # at all, which is a different arm of the same failure and would pass
     # this test for the wrong reason.
+    #
+    # Writing the .cmd was not enough on its own, and this comment claimed
+    # otherwise until #2538. `spawnSync` without a shell goes through
+    # CreateProcess, which cannot execute a .cmd at all, so on Windows the
+    # launcher never reached the stand-in and this test passed through the
+    # ENOENT arm -- exactly the wrong reason the comment above set out to
+    # rule out. The `npm exited 127` assertion below is the positive control
+    # that says the stand-in ran; it was red on Windows before #2538.
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     npm = fake_bin / "npm"
@@ -130,6 +138,19 @@ def test_a_missing_dependency_that_cannot_be_installed_says_so_by_name(
     )
     assert "install.sh" in proc.stderr or "npm install" in proc.stderr, (
         "the failure names no remedy: " + proc.stderr[-400:]
+    )
+    # The positive control (#2538). Every assertion above is satisfied by a
+    # launcher that never ran npm at all: "npm could not be started (ENOENT)"
+    # fails loudly, names the remedy and writes nothing to stdout, so all
+    # three pass while the arm under test is unreached. This one separates
+    # the two -- the stand-in's own exit code can only appear if the spawn
+    # actually reached it.
+    assert "npm exited 127" in proc.stderr, (
+        "the launcher never reached the stand-in npm, so the arm this test "
+        "exercises did not run. On Windows that is the .cmd shim case: "
+        "spawnSync/CreateProcess cannot execute a .cmd without a shell, and "
+        "the failure arrives as ENOENT before npm is started (#2538). "
+        "stderr was: " + proc.stderr[-400:]
     )
     assert proc.stdout == "", (
         "the launcher wrote to stdout, which is the JSON-RPC stream: "
