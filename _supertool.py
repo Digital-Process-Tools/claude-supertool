@@ -6956,6 +6956,15 @@ def _has_outer_wrapped_unbounded_group(pattern: str) -> bool:
     ANYWHERE inside (at any nesting depth), and refuse only if the character
     immediately after that matching `)` is `+` or `*`.
 
+    #2535 (gate-3 release-audit round 2): after resolving one group, the scan
+    used to jump straight past it (`i = j`), so a nested group buried inside
+    an UNQUANTIFIED outer group -- e.g. `(x(a+)+y)`, where the outer `( ... )`
+    has no trailing `+`/`*` of its own but the inner `(a+)` does -- was never
+    independently examined for its own trailing quantifier. The scan now
+    advances one character at a time instead, so every `(` in the pattern,
+    at any depth, gets its own matching-close-paren-plus-trailing-quantifier
+    check, not only the outermost one at each position.
+
     Deliberately loose, like the check it replaces: character classes
     (`[...]`) are skipped so a literal `+`/`*`/`(`/`)` inside one is never
     mistaken for a quantifier or a grouping paren, and a backslash-escaped
@@ -7011,7 +7020,7 @@ def _has_outer_wrapped_unbounded_group(pattern: str) -> bool:
                 j += 1
             if has_unbounded and j < n and pattern[j] in "+*":
                 return True
-            i = j
+            i += 1
             continue
         i += 1
     return False
