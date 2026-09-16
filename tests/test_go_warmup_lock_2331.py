@@ -437,6 +437,79 @@ def test_two_racing_calls_still_serialize_when_contention_raises_permission_erro
         % max_active)
 
 
+def test_a_transient_exists_check_miss_is_rechecked_before_falling_back(
+        tmp_path: Path, monkeypatch) -> None:
+    """Auditor finding on the #2551 fix itself: a single `lock_path.exists()
+    == False` reading cannot be trusted to mean "genuinely never created" --
+    Windows can report a lock file mid-unlink (delete-pending) as briefly
+    absent during the same narrow window `os.open()` itself races against,
+    which is the exact cause the `PermissionError` handling exists for. A
+    caller must recheck before concluding the create is unusable, not treat
+    one missing reading as proof and run `fn()` immediately while a holder
+    is mid-release."""
+    lock_path = tmp_path / "go_warmup.lock"
+
+    real_exists = lock_mod.Path.exists
+    exists_calls = []
+
+    def _flaky_exists(self):
+        if self == lock_path:
+            exists_calls.append(1)
+            # First reading: "gone" (delete-pending). Every reading after
+            # that: really there -- the holder never actually released.
+            return len(exists_calls) > 1
+        return real_exists(self)
+
+    monkeypatch.setattr(lock_mod.Path, "exists", _flaky_exists)
+
+    def _boom(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(lock_mod.os, "open", _boom)
+
+    called = []
+    result = lock_mod.serialize_once(
+        tmp_path, "go_warmup", lambda: called.append(1) or "ran", 0.3)
+
+    assert result == "ran"
+    assert called == [1]
+    assert len(exists_calls) >= 2, (
+        "fell back to fn() after a single exists() reading instead of "
+        "rechecking -- exactly the delete-pending race the recheck exists "
+        "to close")
+
+
+def test_an_exists_check_that_itself_raises_is_treated_as_contention_not_a_crash(
+        tmp_path: Path, monkeypatch) -> None:
+    """Auditor finding on the #2551 fix itself: `Path.exists()` swallows
+    most `OSError`s internally, but `PermissionError`
+    (`ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION`) is not in its
+    ignore-list -- a delete-pending lock file can make `os.stat()` itself
+    raise on Windows, so a bare `lock_path.exists()` call inside the new
+    disambiguation branch can propagate an unhandled `PermissionError`
+    straight out of `serialize_once` instead of taking either documented
+    path. An `exists()` call that cannot tell must be treated as
+    contention (safe direction: wait, never crash), not surface the
+    exception to the caller."""
+    def _boom_open(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    def _boom_exists(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(lock_mod.os, "open", _boom_open)
+    monkeypatch.setattr(lock_mod.Path, "exists", _boom_exists)
+
+    called = []
+    # Must not raise -- must fall back to running fn() itself once the
+    # per-call timeout is reached, exactly like the other contention paths.
+    result = lock_mod.serialize_once(
+        tmp_path, "go_warmup", lambda: called.append(1) or "ran", 0.2)
+
+    assert result == "ran"
+    assert called == [1]
+
+
 def test_shared_worker_root_strips_the_popen_gw_segment() -> None:
     class _Factory:
         def getbasetemp(self):
