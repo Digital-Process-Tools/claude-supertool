@@ -5,7 +5,7 @@
       "safety": "acts",
       "cmd": "{python} {path}watch/dispatcher.py watch {args}",
       "timeout": 15,
-      "description": "Spawn a background poller for SOURCE:ID. Optional :only=ev1,ev2 filters which events emit notifications. PID file: /tmp/supertool-watch-{SOURCE}__{ID}.pid",
+      "description": "Spawn a background poller for SOURCE:ID. Optional :only=ev1,ev2 filters which events emit notifications. Desktop (macOS) notifications are OFF by default (#2544) -- set SUPERTOOL_WATCH_DESKTOP=1, or watch_desktop: true under ops.watch/ops.radar, to opt in; SUPERTOOL_WATCH_NO_DESKTOP=1 always wins over it. PID file: /tmp/supertool-watch-{SOURCE}__{ID}.pid",
       "syntax": "watch:SOURCE:ID[:only=event1,event2]"
     },
     "unwatch": {

@@ -1651,26 +1651,41 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | Consumer health (JSON) | `{sock_path}.health.json` | Written by the consumer, not by a poller: its own count of lines read, forwarded and dropped, re-stamped on a 10s heartbeat. What `channel:health` reads |
 | Refusal marker (JSON) | `{sock_path}.refused.json` | Written by a rival consumer that lost this socket ([#550](https://github.com/Digital-Process-Tools/claude-supertool/issues/550)) on its way out — pid, reason, timestamp. The bound consumer clears it the instant it (re)binds, so what survives is evidence from *this* run. `channel:health` renders it as a `refused` line and `subscription()` reads it too ([#2133](https://github.com/Digital-Process-Tools/claude-supertool/issues/2133), below) |
 | Received receipt (JSON) | `{sock_path}.received.json` | Written by `channel:received:N` — a session's own report of how many events it has received, compared against `forwarded` ([#2150](https://github.com/Digital-Process-Tools/claude-supertool/issues/2150), below). The only sidecar here written from the receiving side rather than the forwarder's |
-| macOS osascript | system notification center | Desktop ping on terminal status / error |
+| macOS osascript | system notification center | Desktop ping on most status changes -- **off unless you opt in (#2544)** |
 
-**Silencing the desktop ping without cutting the wire (#2170).** `only=event1,event2`
-filters what a poller emits at all, so narrowing it to quiet the desktop
-equally starves the socket and the status file — the wrong knob for an
-operator who wants every event reaching `claude-channel` and none of them on
-screen. `SUPERTOOL_WATCH_NO_DESKTOP=1` is the dedicated opt-out, read once in
-`desktop_notify` before its `shutil.which` probe: it stops only the macOS
-notification. The equivalent `.supertool.json` op-config key is
-`watch_no_desktop: true`, set under `ops.watch` and/or `ops.radar` (whichever
-op actually spawns the poller you want quiet) — any non-reserved key in an
-op's config block reaches its subprocess as a `SUPERTOOL_`-prefixed
-environment variable (see "Extra config keys as environment variables" in
-`docs/contributing.md` for the general mechanism), and a JSON boolean arrives
-stringified lowercase.
-`watches` and `radar` both state the opt-out through `channel_disclosure()`
-rather than going quiet about it — a silenced desktop is a stated
-configuration, not an absence you have to explain by process of elimination
-against "nothing has happened" or "macOS ate it" (misattributed to Script
-Editor, which is what actually made this worth fixing).
+**Off by default, opt in explicitly (#2544).** Before this, every poller
+pushed a macOS notification on most status changes, undisclosed by
+`help:watch`/`help:radar`, firing on success as often as on failure, and
+undoable only by killing and respawning whatever was already running.
+`SUPERTOOL_WATCH_DESKTOP=1` is the opt-in, read once in `desktop_notify`
+before its `shutil.which` probe: with it unset (the default) `desktop_notify`
+never shells out to `osascript`, regardless of platform. The equivalent
+`.supertool.json` op-config key is `watch_desktop: true`, set under
+`ops.watch` and/or `ops.radar` (whichever op actually spawns the poller you
+want pinging) — any non-reserved key in an op's config block reaches its
+subprocess as a `SUPERTOOL_`-prefixed environment variable (see "Extra config
+keys as environment variables" in `docs/contributing.md` for the general
+mechanism), and a JSON boolean arrives stringified lowercase.
+
+**Silencing the desktop ping without cutting the wire (#2170)** still exists
+for the operator who *did* opt in. `only=event1,event2` filters what a
+poller emits at all, so narrowing it to quiet the desktop equally starves the
+socket and the status file — the wrong knob for an operator who wants every
+event reaching `claude-channel` and none of them on screen.
+`SUPERTOOL_WATCH_NO_DESKTOP=1` (`watch_no_desktop: true` under
+`ops.watch`/`ops.radar`, the same export mechanism) stops only the macOS
+notification, and it **always wins over the opt-in**: an operator who already
+set it keeps getting silence no matter what `SUPERTOOL_WATCH_DESKTOP` says —
+the existing key means "never", and a key that means never must not be
+overridable by one that means "yes please".
+`watches` and `radar` both state a desktop configuration that departs from
+the default -- ON when opted in, OFF when opted out -- through
+`channel_disclosure()` rather than going quiet about it. The default itself
+(neither knob set) stays silent: since #2544 flipped it to off, silence now
+means exactly one thing (off, nothing configured), the same way it used to
+mean exactly one thing (on) before the flip -- a line on every render
+regardless of configuration was tried and reverted (#2560) because it broke
+every board/banner test asserting silence on a healthy default render.
 
 Override the socket path with the `SUPERTOOL_WATCH_SOCK` env var — set it to
 the **same** value on every poller and on the Phase 2 `claude-channel`
