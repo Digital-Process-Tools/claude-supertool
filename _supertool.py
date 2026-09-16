@@ -6779,6 +6779,10 @@ def _pattern_gate(pattern: str) -> Tuple[str, str, str]:
     guard that drifts, the same way the rewrite and the saturation refusal
     once did (#1344).
     """
+    if len(pattern) > 1000:
+        return pattern, (
+            f"ERROR: pattern too long ({len(pattern)} > 1000 chars)\n"
+        ), ""
     if _has_outer_wrapped_unbounded_group(pattern):
         return pattern, (
             "ERROR: pattern contains nested unbounded quantifiers "
