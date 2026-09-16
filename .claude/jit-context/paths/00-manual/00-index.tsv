@@ -1,13 +1,16 @@
 changelog.d/	changelog-d.md
 docs/	docs-index.md
 .github/workflows/	github-workflows.md
+tests/_go_warmup_lock\.py	go-warmup-lock-hot-file.md
 .claude/jit-context/	jit-context.md
 (^|/)\.oss\.json$	oss-lane-patterns.md
 \.claude/jit-context/(paths|tools|vocabulary)/01-oss/	oss-owned-jit-layer.md
 presets/git/	presets-git.md
 presets/github/	presets-github.md
 presets/gitlab/	presets-gitlab.md
+presets/.*\.json	presets-json-description-length.md
 presets/watch/	presets-watch.md
+/scratchpad/	scratchpad-collisions.md
 tests/	tests-suite.md
 validators/	validators.md
 .claude-plugin/|pyproject.toml	version-sites.md

@@ -41,3 +41,23 @@ git remote set-url origin https://github.com/Digital-Process-Tools/claude-supert
 A single-platform red is usually real, not a flake: the running score is 10 genuine to 2 flakes, and the platform you write on is the one that cannot see its own constraint. Read the log before re-running; a re-run costs the same call and destroys the evidence.
 
 The best discriminator on a red leg is **which tests passed on it** — `2 failed, 4793 passed` tells you the product is not disarmed and the fault is in the fixtures.
+
+# Three more ways a local run answers the wrong question
+
+**An empty heredoc into `pytest` is not a no-op.** `python3 -m pytest ... <<'EOF'` with nothing
+scoping it (no `-k`, no path) silently runs the **whole suite** (#1165, ~1m42s lost). If the intent
+is a placeholder step, skip the pytest invocation entirely.
+
+**`monkeypatch.setattr(sys, "stdout", ...)` inside a pytest *fixture* is silently undone before the
+test body runs** — pytest re-enters its own capture per phase, so a patch set during setup is gone
+by the call phase. `capsys.disabled()` does not fix it either. Patch inside the test function body
+itself (#2256, ~30 minutes lost to two wrong hypotheses first).
+
+**A bare `ruff check <path>` does not reproduce `lint-new` CI** — `pyproject.toml` mutes F401/F841/
+F541 repo-wide, but `.github/scripts/lint_new_files.py` re-enables them for touched files. Reproduce
+CI exactly: `python3 -X utf8 .github/scripts/lint_new_files.py --base origin/master` (#2360, two
+CI round-trips lost without it).
+
+**cp1252 does not crash on an em dash.** Check the glyph against `tests/test_encoding_seam.py`'s
+own cp1252-vs-cp437 split before picking a codepage for a crash regression test — cp1252 is safe
+for —/…/•/·, only →/★/↳ raise on it (#2256).

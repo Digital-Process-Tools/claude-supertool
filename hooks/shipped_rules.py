@@ -93,6 +93,18 @@ NOT_SHIPPED = {
         "PreToolUse hook does not carry. Shipped as a plain note it would be "
         "re-injected on every gh-prs / gl-mrs / radar call, which is the "
         "silence-with-a-token-cost #1413 declined to add.",
+    "json-set-no-append.md":
+        "its mode is `once,remind`, and once-per-session needs state a "
+        "PreToolUse hook does not carry -- the same measurement "
+        "`op-defaults-that-narrow.md` records above. Shipped as a plain note "
+        "it would be re-injected on every json-set call in every repository, "
+        "most of which have no report-JSON append workflow to warn about.",
+    "worktree-reuse-ahead-behind.md":
+        "its mode is `once,remind`, same reason. It also names this "
+        "repository's own dispatch pattern (a lane reusing a worktree/branch "
+        "across a multi-issue bundle) rather than a fact true of supertool "
+        "generally -- a repo with no such dispatch loop would get a note "
+        "about a workflow it does not run.",
 }
 
 #: Where both layers keep their rules, relative to a tree root.
