@@ -40,25 +40,60 @@ TRAP_D = REPO_ROOT / "trap.d"
 # `...` template segment, ...) now live in `_local_path_scan.py`, shared with
 # #2440's whole-artifact sweep so the same pattern is not maintained twice
 # (the drift `_repo_walk.py`'s own docstring warns about, for the identical
-# reason). Behaviour here is unchanged: every hit not in that allowlist.
+# reason). The set of files fed through it changed with #2568 (see
+# `_scan_fragments` below): every hit not in that allowlist, but README.md
+# is scanned separately from the fragment-count discriminator -- it is
+# still checked for a leaked path, just not counted as a fragment.
+
+
+def _scan_fragments(trap_dir):
+    """Return (readme_found, fragment_paths) for a trap.d-shaped directory.
+
+    #2568: the old guard pinned a floor ("at least 5 files") to tell a
+    working scan apart from a broken one -- but `curate_route_threshold`
+    (#2561, #2565) is now allowed to drain trap.d/ to zero fragments on
+    purpose, and a legitimately-empty directory renders identically to a
+    directory a broken glob or a typo'd pattern silently stopped seeing.
+    `README.md` is tracked, never a fragment, and never removed by a curate
+    pass, so its presence in the scan is the discriminator: found ->
+    the glob mechanism works, whatever it found beside it is the truth;
+    missing -> the scan itself cannot be trusted, regardless of count.
+
+    `fragments` deliberately excludes README.md only for the *count* this
+    discriminator answers for -- it is not a claim that README.md is exempt
+    from the local-path-leak check itself. `test_no_local_home_paths_in_trap_d`
+    below still scans README.md's own text via `scanned`, the un-filtered
+    list, precisely because README.md ships to every plugin install exactly
+    like a fragment does (self-review, #2568: two independent reviewers
+    flagged an earlier draft that silently dropped README.md out of the
+    leak check while narrowing the fragment count)."""
+    scanned = sorted(trap_dir.glob("*.md"))
+    readme = trap_dir / "README.md"
+    readme_found = readme in scanned
+    fragments = [path for path in scanned if path != readme]
+    return readme_found, fragments
 
 
 def test_no_local_home_paths_in_trap_d():
-    """Every trap.d/*.md fragment, scanned fresh (glob, not a hardcoded
-    filename list) -- new fragments land here constantly and each one ships
-    to every plugin install unredacted."""
-    scanned = sorted(TRAP_D.glob("*.md"))
-    # #2426 self-review (oss:auditor spawn): a directory rename or a typo'd
-    # glob pattern would make this loop run zero times and the assertion
-    # below pass vacuously -- "verified clean" and "verified nothing" must
-    # not render the same way. Pin a floor rather than an exact count, since
-    # new fragments land here constantly.
-    assert len(scanned) >= 5, (
-        f"trap.d/*.md scanned {len(scanned)} file(s) -- expected at least "
-        "5 (the count present when this guard was written). A near-zero "
-        "count means the glob stopped finding fragments, not that they "
-        "are clean."
+    """Every trap.d/*.md file, scanned fresh (glob, not a hardcoded filename
+    list) -- new fragments land here constantly and each one, README.md
+    included, ships to every plugin install unredacted."""
+    readme_found, _fragments = _scan_fragments(TRAP_D)
+    # #2568: README.md missing from the scan means the glob mechanism itself
+    # is broken (directory rename, typo'd pattern, ...) -- "verified clean"
+    # and "verified nothing" must not render the same way. Zero fragments
+    # beside a found README.md is a legitimately drained directory, not a
+    # broken scan, so the fragment *count* is no longer asserted against.
+    # This does not exempt README.md's own text from the leak check below --
+    # the offender loop deliberately re-scans the un-filtered `scanned` list,
+    # not `_fragments`, so README.md's own content is still checked.
+    assert readme_found, (
+        "trap.d/*.md did not find README.md -- the glob mechanism itself "
+        "looks broken. README.md is tracked and never a fragment, so its "
+        "absence from this scan means the scan cannot be trusted, whatever "
+        "count it reports."
     )
+    scanned = sorted(TRAP_D.glob("*.md"))
     offenders = {}
     for path in scanned:
         text = path.read_text(encoding="utf-8")
@@ -66,7 +101,7 @@ def test_no_local_home_paths_in_trap_d():
         if hits:
             offenders[path.name] = hits
     assert not offenders, (
-        "trap.d/ fragment(s) carry a literal local machine path that ships "
+        "trap.d/ file(s) carry a literal local machine path that ships "
         f"to every plugin install: {offenders}. Redact to a descriptive "
         "placeholder (<worktree-NNNN>, <main-clone>, ...) per #2279's own "
         "precedent."
@@ -149,3 +184,53 @@ def test_scanner_fires_on_dash_flattened_scratchpad_shape(tmp_path):
     )
     hits = _local_path_hits(planted.read_text(encoding="utf-8"))
     assert hits == ["-Users-exampleuser-"]
+
+
+def test_scan_fragments_detects_broken_glob(tmp_path):
+    """Positive control for #2568's discriminator: a directory missing
+    README.md must report readme_found=False -- a broken scan must not
+    render identically to a directory legitimately drained to zero."""
+    readme_found, fragments = _scan_fragments(tmp_path)
+    assert readme_found is False
+    assert fragments == []
+
+
+def test_scan_fragments_passes_on_legitimately_drained_directory(tmp_path):
+    """The exact case #2568 fixes: trap.d/ drained to zero fragments by a
+    curate pass (PR #2567) must not be mistaken for a broken scan."""
+    (tmp_path / "README.md").write_text("# trap.d\n", encoding="utf-8")
+    readme_found, fragments = _scan_fragments(tmp_path)
+    assert readme_found is True
+    assert fragments == []
+
+
+def test_scan_fragments_still_finds_real_fragments_beside_readme(tmp_path):
+    """README.md is excluded from the fragment list it also proves the
+    glob works for -- a real fragment beside it is still scanned."""
+    (tmp_path / "README.md").write_text("# trap.d\n", encoding="utf-8")
+    (tmp_path / "9999.example.md").write_text("note\n", encoding="utf-8")
+    readme_found, fragments = _scan_fragments(tmp_path)
+    assert readme_found is True
+    assert [path.name for path in fragments] == ["9999.example.md"]
+
+
+def test_readme_content_is_still_scanned_for_leaked_paths(tmp_path):
+    """#2568 self-review (Explore + oss:auditor spawns, converged
+    independently): an earlier draft excluded README.md from the fragment
+    *count* by dropping it from the offender loop too, so a local path
+    leaked inside README.md itself -- which ships to every plugin install
+    exactly like a fragment does -- would have gone unflagged forever.
+    Positive control: plant a leak in a README.md-only directory and drive
+    the guard's own offender-collection logic (not `_scan_fragments`, which
+    only answers the count question) against it."""
+    (tmp_path / "README.md").write_text(
+        "see /Users/exampleuser/notes for context\n", encoding="utf-8"
+    )
+    scanned = sorted(tmp_path.glob("*.md"))
+    offenders = {}
+    for path in scanned:
+        text = path.read_text(encoding="utf-8")
+        hits = _local_path_hits(text)
+        if hits:
+            offenders[path.name] = hits
+    assert offenders == {"README.md": ["/Users/exampleuser/"]}
