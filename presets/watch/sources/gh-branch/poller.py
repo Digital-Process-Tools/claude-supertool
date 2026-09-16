@@ -189,7 +189,12 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool, bool]:
     though: `poll()`, below, can itself downgrade a `NO_RUN` this function
     *did* return into `UNKNOWN` when the same sha previously had confirmed
     runs (#2333) -- a second, poll()-level finding this function never
-    produces on its own and knows nothing about.
+    produces on its own and knows nothing about. `poll()` can also go the
+    other way (#2537): an `UNKNOWN` this function *did* return, because
+    `has_unread_jobs` is set, can itself be discarded (reverted to the
+    previous poll's state) or have its sentence rewritten to a persistence
+    finding, under the same guard -- this function's own UNKNOWN, once
+    returned, is not necessarily what a consumer of `poll()` ends up seeing.
     """
     sha, age, err = branch._head_commit(ref)
     if err:
@@ -386,28 +391,35 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             sentence = ""
         elif confirmed_streak == UNKNOWN_CONFIRM_STREAK:
             branch_state = UNKNOWN
+            # Worded as "most recently, because X" rather than "the last N
+            # fetches were all X" (self-review finding, #2537): `raw_needs_
+            # guard` folds two independent failure boundaries -- an empty
+            # `gh run list` and a missing `gh run view --json jobs` -- into
+            # one streak, so a streak that crosses the threshold need not be
+            # homogeneous. A poll that read NO_RUN followed by one that read
+            # a job-list miss reaches this same branch, and the ONLY thing
+            # known for certain about every one of the N polls is that none
+            # of them established a leg count -- claiming they all failed
+            # the same way is a claim this streak counter cannot back up.
             if raw_is_unread_jobs:
-                # The job-list twin of the sentence below (#2537) -- worded
-                # for "a fetch for this run's jobs did not answer" rather
-                # than "the run list came back empty", since those are what
-                # actually happened and a reader sent to re-run the wrong
-                # command wastes the round trip this op exists to save.
                 sentence = (
                     f"{UNKNOWN} — a previous poll confirmed runs on "
-                    f"{sha[:7]}; the job list for the same commit did not "
-                    f"come back on the last {UNKNOWN_CONFIRM_STREAK} "
-                    f"fetches. The job list of a concluded run does not "
+                    f"{sha[:7]}; {UNKNOWN_CONFIRM_STREAK} consecutive polls "
+                    f"for the same commit have now failed to establish a "
+                    f"leg count, most recently because the job list did not "
+                    f"come back. The job list of a concluded run does not "
                     f"disappear either, so this is read as a fetch that did "
                     f"not answer rather than the run losing its job "
                     f"history. Original reading: {sentence}")
             else:
                 sentence = (
-                    f"{UNKNOWN} — a previous poll confirmed runs on {sha[:7]}; "
-                    f"the last {UNKNOWN_CONFIRM_STREAK} fetches for the same "
-                    f"commit came back empty. Runs on a concluded commit do not "
-                    f"disappear, so this is read as a fetch that did not answer "
-                    f"rather than the commit losing its run history. Original "
-                    f"reading: {sentence}")
+                    f"{UNKNOWN} — a previous poll confirmed runs on "
+                    f"{sha[:7]}; {UNKNOWN_CONFIRM_STREAK} consecutive polls "
+                    f"for the same commit have now come back with an empty "
+                    f"run list, most recently. Runs on a concluded commit "
+                    f"do not disappear, so this is read as a fetch that did "
+                    f"not answer rather than the commit losing its run "
+                    f"history. Original reading: {sentence}")
         # else: confirmed_streak > UNKNOWN_CONFIRM_STREAK -- trust the raw
         # read straight through. For `raw_is_no_run` that surfaces the real
         # `no_run`; for `raw_is_unread_jobs` `branch_state` is already

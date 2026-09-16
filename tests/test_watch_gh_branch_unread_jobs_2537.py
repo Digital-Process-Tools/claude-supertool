@@ -96,7 +96,17 @@ def test_a_fresh_sha_whose_first_poll_misses_a_job_list_still_fires_unknown() ->
     control" section: a job-list miss on a SHA this poller has never seen
     before is not a flap to ride out -- there is no prior confirmed reading
     to regress from, so it must fire `unknown` for real, on the very first
-    poll."""
+    poll.
+
+    Weak as evidence for the #2537 widening specifically (self-review
+    finding): `sha != prev_sha` alone bypasses the whole guard block via
+    `sha_repeated`, the same pre-existing mechanism the #2333 NO_RUN case
+    already relies on, so this test passes even with `raw_is_unread_jobs`
+    entirely disabled -- it is required by the issue's own contract, not
+    proof the widening fires correctly. `test_a_single_isolated_job_list_
+    miss_on_a_confirmed_sha_fires_nothing` and `test_persistent_job_list_
+    miss_surfaces_unknown_exactly_once`, both keyed on a REPEATED sha, are
+    what actually exercise `raw_is_unread_jobs`."""
     state = {"branch_state": poller.GREEN, "sha": "deadbeef", "ref": "master",
               "lookup": poller.LOOKUP_OK}
     events, new_state = _unread_poll(state, sha="fresh123")
@@ -128,6 +138,35 @@ def test_persistent_job_list_miss_surfaces_unknown_exactly_once() -> None:
     events, state = _unread_poll(state)
     assert events == [], events
     assert state["branch_state"] == poller.UNKNOWN, state
+
+
+def test_a_mixed_streak_sentence_does_not_overclaim_a_uniform_cause() -> None:
+    """Self-review finding (#2537): `raw_needs_guard` folds an empty run
+    list (`NO_RUN`) and a missing job list (`UNKNOWN` + `has_unread_jobs`)
+    into ONE streak, so the two consecutive polls that cross the threshold
+    need not share a cause. A first cut of this fix worded the threshold
+    sentence as "the last N fetches ... came back empty" / "... did not come
+    back", which overclaims when the streak is mixed: this reproduces one
+    NO_RUN poll followed by one job-list-miss poll on the same confirmed
+    sha, and checks the emitted sentence does not assert every one of the
+    two polls failed the same way."""
+    state = {"branch_state": poller.GREEN, "sha": "ac56a9f", "ref": "master",
+              "lookup": poller.LOOKUP_OK}
+    with mock.patch.object(
+            poller, "_snapshot",
+            return_value=_snap(poller.NO_RUN,
+                                "NO RUN — zero workflow runs on ac56a9f",
+                                sha="ac56a9f")):
+        events, state = poller.poll(state, _ctx())
+    assert events == [], events
+
+    events, state = _unread_poll(state)
+    assert len(events) == 1, events
+    sentence = events[0]["payload"]["sentence"]
+    assert "the last 2 fetches" not in sentence, sentence
+    assert "came back empty" not in sentence, sentence
+    assert "did not come back on the last" not in sentence, sentence
+    assert "job list" in sentence, sentence
 
 
 def test_an_unreconciled_unknown_never_enters_the_guard() -> None:
