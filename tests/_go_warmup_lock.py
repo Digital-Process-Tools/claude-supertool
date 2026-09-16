@@ -160,6 +160,20 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
                 # itself, bounded by the same `deadline` every other wait
                 # on this path already uses, instead of trusting one more
                 # snapshot read of `exists()`.
+                # This retries out to the full `deadline` rather than
+                # failing fast, on purpose (#2553 self-review): there is no
+                # way to distinguish "the lock_dir is genuinely unusable
+                # forever" from "it is free right now and about to be
+                # grabbed by someone else" without spending the same
+                # patience a real contention case gets. A caller whose
+                # lock_dir is genuinely broken now waits its whole
+                # `timeout_s` before falling back to `fn()` instead of the
+                # old ~0.1s -- real call sites pass `GO_WARMUP_S` (minutes,
+                # scaled by `platform_factor()`) as `timeout_s`, so this is
+                # a real latency cost for that case. It is the price of
+                # closing the race rather than an oversight: the old fast
+                # fail was fast because it was wrong, not because it was
+                # cheap to be right.
                 while fd is None and time.time() < deadline:
                     time.sleep(0.05)
                     try:
