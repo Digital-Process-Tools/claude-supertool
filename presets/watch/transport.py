@@ -1604,6 +1604,33 @@ def _probe_ps_scan() -> bool:
     return _ran(("ps",)) != 0
 
 
+def _labelled_with_path(tokens: list[str]) -> tuple[str | None, str, str, str] | None:
+    """`_labelled`'s own match, plus the dispatcher-path token it matched on.
+
+    Same four-tokens-in-sequence contract as `_labelled` below (which is now a
+    thin wrapper over this). The extra element is the raw argv token that
+    ended in `DISPATCHER_TAIL` — for a poller forked from an installed plugin
+    copy this is the path `.../dpt-plugins/supertool/<version>/presets/watch/
+    dispatcher.py`, and `_version_from_dispatcher_path` reads the version back
+    out of it (#2529). Kept as a separate function rather than widening
+    `_labelled`'s own return shape, because `_labelled`'s three-tuple contract
+    is asserted by exact equality in `tests/test_poller_argv_label_571.py` and
+    `tests/test_watch_channel_scoped_labels_1514.py`, and widening it would
+    break both for callers that never wanted the path.
+    """
+    for i, tok in enumerate(tokens):
+        if not tok.replace("\\", "/").endswith(DISPATCHER_TAIL):
+            continue
+        if i + 3 < len(tokens) and tokens[i + 1] == POLL_SUBOP:
+            channel = None
+            for extra in tokens[i + 4:]:
+                if extra.startswith(CHANNEL_PREFIX):
+                    channel = extra[len(CHANNEL_PREFIX):]
+                    break
+            return channel, tokens[i + 2], tokens[i + 3], tok
+    return None
+
+
 def _labelled(tokens: list[str]) -> tuple[str | None, str, str] | None:
     """The (channel, source, id) an argv announces, or None for a non-poller.
 
@@ -1618,17 +1645,93 @@ def _labelled(tokens: list[str]) -> tuple[str | None, str, str] | None:
     on evidence that is not there — which is the same shape as the four rows
     the issue was filed against, arriving from the opposite direction.
     """
-    for i, tok in enumerate(tokens):
-        if not tok.replace("\\", "/").endswith(DISPATCHER_TAIL):
-            continue
-        if i + 3 < len(tokens) and tokens[i + 1] == POLL_SUBOP:
-            channel = None
-            for extra in tokens[i + 4:]:
-                if extra.startswith(CHANNEL_PREFIX):
-                    channel = extra[len(CHANNEL_PREFIX):]
-                    break
-            return channel, tokens[i + 2], tokens[i + 3]
-    return None
+    label = _labelled_with_path(tokens)
+    if label is None:
+        return None
+    channel, source, watcher_id, _path = label
+    return channel, source, watcher_id
+
+
+#: `.../<version>/presets/watch/dispatcher.py` -- the shape an installed
+#: plugin-cache copy's own path takes (`~/.claude/plugins/cache/dpt-plugins/
+#: supertool/<version>/...`), matched on the trailing component only so it
+#: also fires against a differently-rooted cache directory. Backslash and
+#: forward-slash both normalised before matching, same as `_labelled` above,
+#: for a poller forked on Windows (#2529).
+_DISPATCHER_VERSION_RE = re.compile(
+    r"[\\/](\d+\.\d+\.\d+)[\\/]presets[\\/]watch[\\/]dispatcher\.py$"
+)
+
+
+def _version_from_dispatcher_path(path: str) -> str | None:
+    """The plugin-cache version embedded in a poller's own dispatcher.py path.
+
+    `None` is a real answer, not a failure: a poller run from a plain
+    checkout (this repo's own worktrees, `pip install -e`, a hand-run clone)
+    has no version directory in that position at all, and that is "cannot
+    tell" rather than "no version" (#2529).
+    """
+    match = _DISPATCHER_VERSION_RE.search(path.replace("\\", "/"))
+    return match.group(1) if match else None
+
+
+_INSTALLED_VERSION_RE = re.compile(r'^VERSION\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def installed_version() -> tuple[str | None, str]:
+    """This install's own `_supertool.VERSION`, read off the file on disk.
+
+    Read rather than imported: `transport.py` is loaded standalone by this
+    preset's own tests via `importlib.util.spec_from_file_location`, with no
+    package context that would make a real `import _supertool` resolve — and
+    the thing this is compared against (a foreign poller's argv path) is
+    already read the same plain-filesystem way, so both readings stay
+    symmetric rather than one going through machinery the other cannot.
+
+    Three states, like every other read in this module: `(version, "")` on
+    success; `(None, why)` when `_supertool.py` could not be found or read;
+    `(None, why)` when it was read but carried no `VERSION = "..."` line.
+    `None` must never render as "current" — the caller compares by string
+    equality, which already refuses to treat `None` as matching anything.
+    """
+    root = Path(__file__).resolve().parent.parent.parent / "_supertool.py"
+    try:
+        text = root.read_text(encoding="utf-8")
+    except (OSError, ValueError) as err:
+        return None, f"could not read {root} ({type(err).__name__})"
+    match = _INSTALLED_VERSION_RE.search(text)
+    if not match:
+        return None, f"no VERSION assignment found in {root}"
+    return match.group(1), ""
+
+
+def foreign_version_disclosure(versions: list[str | None], installed: str | None) -> str:
+    """One clause naming what version(s) a foreign channel's labelled pollers
+    run, against what this install answers right now (#2529).
+
+    `versions` is one entry per pid on that channel (`None` where that pid's
+    own path carried no version). `installed` is `installed_version()`'s own
+    answer, or `None` when that could not be determined either.
+
+    Three answers, never collapsed into each other:
+    * every pid that named a version agrees on one -> that version, compared
+      against `installed`
+    * they disagree -> every distinct version seen, so a mixed fleet is not
+      reported as a single (wrong) number
+    * none of them could be read -> said plainly, not silence
+    """
+    seen = sorted({v for v in versions if v})
+    if not seen:
+        return "version not determined from its argv"
+    if len(seen) > 1:
+        return f"running mixed supertool versions ({', '.join(seen)})"
+    version = seen[0]
+    if installed is None:
+        return (f"running supertool {version} (installed version could not "
+                f"be determined)")
+    if version == installed:
+        return f"running supertool {version} (matches installed)"
+    return f"running supertool {version} (installed: {installed})"
 
 
 def scan_poller_pids() -> tuple[dict[tuple[str, str], list[int]], bool]:
@@ -1685,15 +1788,21 @@ def empty_census(scan_ok: bool) -> dict[str, Any]:
     a literal four-key dict copied into five files is five places for a fifth
     bucket to be forgotten.
     """
-    return {"mine": {}, "other": {}, "unknown": {}, "scan_ok": scan_ok}
+    return {"mine": {}, "other": {}, "unknown": {}, "other_versions": {},
+            "scan_ok": scan_ok}
 
 
 def poller_census() -> dict[str, Any]:
     """All three of `_labelled`'s answers, from one `ps`. Read-only.
 
     Keys: `mine` and `unknown` are {(source, id): [pid, ...]}; `other` is
-    {channel token: {(source, id): [pid, ...]}}; `scan_ok` is whether the scan
-    ran at all.
+    {channel token: {(source, id): [pid, ...]}}; `other_versions` is
+    {channel token: [version-or-None, ...]}, one entry per pid on that
+    channel, the plugin-cache version parsed out of its own argv path
+    (`_version_from_dispatcher_path`, #2529) -- `mine` and `unknown` carry no
+    such key because only a foreign channel's fleet is ever rendered against
+    "installed" (`_foreign_poller_lines`); `scan_ok` is whether the scan ran
+    at all.
 
     `scan_poller_pids` is this function's `mine` bucket and nothing else, which
     is the contract every *acting* caller needs and #1514 argued for at length.
@@ -1720,12 +1829,13 @@ def poller_census() -> dict[str, Any]:
     mine_key = channel_key()
     mine: dict[tuple[str, str], list[int]] = {}
     other: dict[str, dict[tuple[str, str], list[int]]] = {}
+    other_versions: dict[str, list[str | None]] = {}
     unknown: dict[tuple[str, str], list[int]] = {}
     for pid, tokens in rows:
-        label = _labelled(tokens)
+        label = _labelled_with_path(tokens)
         if label is None:
             continue
-        channel, source, watcher_id = label
+        channel, source, watcher_id, path = label
         slot = (source, watcher_id)
         if channel is None:
             # A poller started before the channel token existed. It may be on
@@ -1736,13 +1846,16 @@ def poller_census() -> dict[str, Any]:
             mine.setdefault(slot, []).append(pid)
         else:
             other.setdefault(channel, {}).setdefault(slot, []).append(pid)
+            other_versions.setdefault(channel, []).append(
+                _version_from_dispatcher_path(path))
     for bucket in (mine, unknown):
         for pids in bucket.values():
             pids.sort()
     for slots in other.values():
         for pids in slots.values():
             pids.sort()
-    return {"mine": mine, "other": other, "unknown": unknown, "scan_ok": True}
+    return {"mine": mine, "other": other, "unknown": unknown,
+            "other_versions": other_versions, "scan_ok": True}
 
 
 def channel_dirs() -> tuple[dict[str, str], str, str]:
