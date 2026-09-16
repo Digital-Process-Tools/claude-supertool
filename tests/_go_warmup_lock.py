@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 import warnings
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -84,6 +85,63 @@ def _exists_or_assume_so(path: Path) -> bool:
         return path.exists()
     except OSError:
         return True
+
+
+def _lock_dir_usable(lock_dir: Path) -> bool:
+    """Answer, with essentially zero patience spent, whether `lock_dir`
+    itself can be written to at all -- independent of whether the specific
+    lock file for this `name` is currently held (#2556).
+
+    Probes with a filename nothing else in this process, or any other, will
+    ever ask to create: a `uuid4` under this process's own pid. Because the
+    probe name is unique, `os.open(..., O_CREAT | O_EXCL, ...)` on it can
+    never collide with a real holder's lock file or with the Windows
+    delete-pending window `_exists_or_assume_so` exists to tolerate (#2551)
+    -- nobody else knows this filename, so nobody else can be holding it.
+    An `OSError` here almost always means the directory itself is unusable
+    (missing, unwritable, wrong permissions), never "someone else has this
+    one file open"; there is no exception-type ambiguity of *that* kind
+    left to resolve, unlike the real lock file's own create attempt. It can
+    still be a one-off hiccup unrelated to `lock_dir`'s own writability (a
+    transient AV scan touching the just-created probe file, the same
+    Windows phenomenon `tests/conftest.py` names for a different lock) --
+    this function cannot tell that apart from a genuinely broken directory,
+    so it reports it (self-review, auditor) rather than swallowing it the
+    way #2551's original absence-recheck bug did, and answers `False`
+    either way: the caller's contract is "never fails, always falls back to
+    `fn()` safely", so treating an unreadable probe result as `unusable` is
+    the same safe direction `_exists_or_assume_so` already takes for the
+    read side of this same ambiguity.
+    """
+    probe_path = lock_dir / (".serialize_once_probe_%d_%s" % (
+        os.getpid(), uuid.uuid4().hex))
+    try:
+        fd = os.open(str(probe_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError as exc:
+        warnings.warn(
+            "serialize_once's lock_dir probe could not create %s: %s -- "
+            "treating lock_dir as unusable" % (probe_path, exc),
+            stacklevel=2)
+        return False
+    try:
+        os.close(fd)
+    except OSError as exc:
+        # Closing a handle this process itself just opened should never
+        # fail, but the same transient interference the comment above
+        # names could still hit it -- caught rather than left to propagate
+        # out of a function whose whole contract is "never raises"
+        # (self-review, auditor).
+        warnings.warn(
+            "serialize_once's lock_dir probe could not close its own "
+            "handle on %s: %s -- treating lock_dir as unusable" % (
+                probe_path, exc),
+            stacklevel=2)
+        return False
+    try:
+        probe_path.unlink()
+    except OSError:
+        pass
+    return True
 
 
 def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
@@ -160,20 +218,23 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
                 # itself, bounded by the same `deadline` every other wait
                 # on this path already uses, instead of trusting one more
                 # snapshot read of `exists()`.
-                # This retries out to the full `deadline` rather than
-                # failing fast, on purpose (#2553 self-review): there is no
-                # way to distinguish "the lock_dir is genuinely unusable
-                # forever" from "it is free right now and about to be
-                # grabbed by someone else" without spending the same
-                # patience a real contention case gets. A caller whose
-                # lock_dir is genuinely broken now waits its whole
-                # `timeout_s` before falling back to `fn()` instead of the
-                # old ~0.1s -- real call sites pass `GO_WARMUP_S` (minutes,
-                # scaled by `platform_factor()`) as `timeout_s`, so this is
-                # a real latency cost for that case. It is the price of
-                # closing the race rather than an oversight: the old fast
-                # fail was fast because it was wrong, not because it was
-                # cheap to be right.
+                #
+                # But writability of `lock_dir` itself is not ambiguous the
+                # way a single absent lock file is, and answering it costs
+                # nothing close to a full `deadline`: a probe create of a
+                # unique throwaway filename (`_lock_dir_usable`) can never
+                # collide with a real holder's lock file, so any `OSError`
+                # from it means the directory is unusable, full stop, with
+                # no race left to lose (#2556). Ask that first -- a caller
+                # whose `lock_dir` is genuinely broken then falls back to
+                # `fn()` immediately instead of waiting out the whole
+                # `timeout_s` real call sites pass as `GO_WARMUP_S`
+                # (minutes, scaled by `platform_factor()`). Only once the
+                # directory itself is confirmed usable does this retry the
+                # specific lock file out to `deadline`, which is the
+                # genuine "racing a holder" case #2553 fixed.
+                if not _lock_dir_usable(lock_dir):
+                    return fn()
                 while fd is None and time.time() < deadline:
                     time.sleep(0.05)
                     try:

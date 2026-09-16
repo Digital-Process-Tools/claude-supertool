@@ -235,6 +235,34 @@ def test_an_unwritable_lock_dir_falls_back_to_running_fn(
     assert called == [1]
 
 
+def test_an_unwritable_lock_dir_falls_back_fast_even_with_a_long_timeout(
+        tmp_path: Path, monkeypatch) -> None:
+    """#2556: the retry loop #2555 added (to disambiguate "the holder just
+    released the lock" from "lock_dir is unusable") is bounded by the same
+    `deadline` a genuine contention wait uses, and real call sites pass
+    `GO_WARMUP_S` -- minutes, scaled by `platform_factor()` -- as
+    `timeout_s`. A `lock_dir` that is genuinely unusable must fall back to
+    `fn()` in well under a second, not wait out that whole deadline: this
+    uses a 3s `timeout_s` (short enough to keep the test fast) and asserts
+    the fallback lands in a small fraction of it, which is the same
+    disproportion a minutes-scale real deadline would show."""
+    def _boom(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(lock_mod.os, "open", _boom)
+    called = []
+    start = time.monotonic()
+    result = lock_mod.serialize_once(
+        tmp_path, "go_warmup", lambda: called.append(1) or "ran", 3.0)
+    elapsed = time.monotonic() - start
+    assert result == "ran"
+    assert called == [1]
+    assert elapsed < 0.5, (
+        "an unusable lock_dir waited %.2fs against a 3.0s timeout -- the "
+        "fallback should be near-instant once lock_dir's own writability "
+        "is probed, not paced by the contention retry loop" % elapsed)
+
+
 def test_a_holder_near_its_own_timeout_budget_is_not_reclaimed_as_abandoned(
         tmp_path: Path, monkeypatch) -> None:
     """#2401: the staleness check age-compares an existing lock file's mtime
@@ -462,8 +490,19 @@ def test_a_transient_exists_check_miss_is_rechecked_before_falling_back(
 
     monkeypatch.setattr(lock_mod.Path, "exists", _flaky_exists)
 
-    def _boom(*args, **kwargs):
-        raise PermissionError(13, "Permission denied")
+    real_open = lock_mod.os.open
+
+    def _boom(path, *args, **kwargs):
+        # Only the specific lock file is mid-unlink (delete-pending) on the
+        # real Windows race this simulates -- the directory itself is
+        # otherwise perfectly writable. #2556's probe opens a distinct
+        # throwaway filename precisely so it is unaffected by *this* file's
+        # delete-pending state; booming every open regardless of filename
+        # would misrepresent that as the whole directory being unusable,
+        # which is not the condition under test here.
+        if str(path) == str(lock_path):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr(lock_mod.os, "open", _boom)
 
@@ -508,8 +547,15 @@ def test_the_absence_recheck_keeps_waiting_past_one_beat_before_giving_up(
             return len(exists_calls) > 3
         return real_exists(self)
 
-    def _boom(*args, **kwargs):
-        raise PermissionError(13, "Permission denied")
+    real_open = lock_mod.os.open
+
+    def _boom(path, *args, **kwargs):
+        # Same reasoning as the sibling test above: only the specific lock
+        # file is delete-pending here, not the whole directory, so #2556's
+        # probe (a distinct throwaway filename) must still succeed.
+        if str(path) == str(lock_path):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr(lock_mod.Path, "exists", _flaky_exists)
     monkeypatch.setattr(lock_mod.os, "open", _boom)
