@@ -38,13 +38,19 @@ def test_check_pass(tmp_path: Path) -> None:
 
 
 def test_check_fail() -> None:
-    supertool._CONFIG = {"ops": {"fail": {"cmd": "exit 1"}}}
+    # `{arg}` consumes the path `op_check` always forwards -- a placeholder-
+    # free `cmd` would now refuse that token instead of silently dropping it
+    # (#1532), so this fixture must actually reach for its one token.
+    supertool._CONFIG = {"ops": {"fail": {
+        "cmd": "{python} -c " + repr("import sys; sys.exit(1)") + " {arg}"}}}
     out = supertool.op_check("fail", "dummy.php")
     assert "FAIL" in out
 
 
 def test_check_timeout() -> None:
-    supertool._CONFIG = {"ops": {"slow": {"cmd": "sleep 10", "timeout": 1}}}
+    supertool._CONFIG = {"ops": {"slow": {
+        "cmd": "{python} -c " + repr("import time; time.sleep(10)")
+               + " {arg}", "timeout": 1}}}
     out = supertool.op_check("slow", "dummy.php")
     assert "FAIL" in out
     assert "timeout" in out

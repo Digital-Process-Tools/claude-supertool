@@ -17,11 +17,16 @@ its caller read the receipt as a dry run.
     supertool 'probe_arg:all:dry'   ->  PASS  argv= ['all']          # 'dry' gone
     supertool 'probe_args:all:dry'  ->  PASS  argv= ['all', 'dry']
     supertool 'probe_none:all:dry'  ->  PASS  argv= []               # both gone
+                                     # (#1532 now refuses this line instead)
 
-The third line is out of scope and stays as it is — a placeholder-free `cmd`
-never claimed to take an argument, so its receipt cannot read as a flag that
-was honoured, and refusing there reaches 15 tests across 6 files plus every
-`check:PRESET:PATH` whose entry takes no path. Filed separately.
+The third line was out of scope when this file was written — a placeholder-
+free `cmd` never claimed to take an argument, so its receipt could not read as
+a flag that was honoured, and refusing there was priced at 15 tests across 6
+files plus every `check:PRESET:PATH` whose entry takes no path. Filed
+separately as #1532 and closed here: `_unconsumed_arg_tokens` now refuses that
+line too (measured population is 4 shipped ops, not the 15 test call sites —
+those were tests handing a throwaway token to a placeholder-free `cmd` on
+purpose, not a real calling convention, and are fixed rather than exempted).
 
 **Preset ops take the same route** — `_resolve_custom_op`, one substitution
 pass. Zero shipped presets write `{file}` (grep over 160 preset files); before
@@ -149,6 +154,20 @@ class TestTheDroppedTokenIsRefused:
         assert out.startswith("ERROR:"), out
         assert RAN not in out, out
 
+    def test_a_placeholder_free_template_refuses_every_token_too(
+            self, tmp_path: Path) -> None:
+        """#1532 — `probe_none:all` used to run as `argv == []`, silently.
+
+        No placeholder means nothing in `parts[1:]` can ever reach the
+        subprocess, so the token is unconsumed just as surely as the single-
+        placeholder case above, not merely out of scope for it.
+        """
+        entry = {"cmd": "{python} " + _echo(tmp_path)}
+        out = _run(entry, ["all"])
+        assert out.startswith("ERROR:"), out
+        assert RAN not in out, "the op ran with the token silently dropped"
+        assert "all" in out, out
+
 
 class TestWhatMustKeepRunning:
     def test_args_receives_every_token(self, tmp_path: Path) -> None:
@@ -175,19 +194,15 @@ class TestWhatMustKeepRunning:
         out = _run(entry, [])
         assert RAN in out, out
 
-    def test_a_template_with_no_argument_placeholder_is_left_alone(
+    def test_a_template_with_no_argument_placeholder_still_runs_with_no_args(
             self, tmp_path: Path) -> None:
-        """`probe_none:all` reaches the script as `argv == []`, and runs.
+        """`probe_none:` (no extra tokens) reaches the script as `argv == []`.
 
-        Deliberate, and the boundary of this fix. Such an op never claimed to
-        take an argument, so no part of its receipt can read as a flag that was
-        honoured — the specific harm #873 is about. Refusing here would also be
-        a far wider net: 15 tests across 6 files hand a throwaway token to a
-        placeholder-free `cmd`, and `op_check` forwards its path to whatever
-        entry was named. Worth doing, filed separately, not ridden in here.
+        A placeholder-free `cmd` never claimed to take an argument, so a call
+        that hands it none is unremarkable and must still run.
         """
         entry = {"cmd": "{python} " + _echo(tmp_path)}
-        out = _run(entry, ["all"])
+        out = _run(entry, [])
         assert RAN in out, out
 
     def test_a_trailing_empty_token_is_not_dropped_text(
@@ -226,8 +241,8 @@ class TestTheHelperItself:
         ("x {dir}", ["a", "b", "c"], ["b", "c"]),
         ("x {arg}", ["a", "b"], ["b"]),
         ("x", [], []),
-        ("x", ["a"], []),
-        ("x", ["a", "b"], []),
+        ("x", ["a"], ["a"]),
+        ("x", ["a", "b"], ["a", "b"]),
         ("x {arg}", ["a", ""], []),
         ("x {arg}", ["a", "", "b"], ["", "b"]),
     ])
