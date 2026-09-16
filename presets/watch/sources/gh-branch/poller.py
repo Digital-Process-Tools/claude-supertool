@@ -135,15 +135,28 @@ _EVENT_FOR_STATE = {
 UNKNOWN_CONFIRM_STREAK = 2
 
 
-def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool]:
-    """`(state, sentence, sha, repo, error, has_failed_leg)` for the named ref,
-    right now.
+def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool, bool]:
+    """`(state, sentence, sha, repo, error, has_failed_leg, has_unread_jobs)`
+    for the named ref, right now.
 
     `has_failed_leg` is structural, never text-derived: `bool(_red_workflows(
     selected, legs))`, the same check `verdict()` itself makes before it ever
     builds a sentence. It is meaningful only when `state == branch.NOT_GREEN`
     -- `False` on every other path, including the error paths below, where
     there is no leg data to have an opinion about.
+
+    `has_unread_jobs` is the same idea, one cause over (#2537): `bool(
+    branch._unread_workflows(legs))`, structural again rather than text-
+    derived, meaningful only when `state == branch.UNKNOWN` -- `False`
+    everywhere else, including the *other* way `verdict()` reaches UNKNOWN
+    (an unreconciled tally, where every job list did come back). `poll()`
+    below needs this to widen the #2333 direction guard to a missing job
+    list on an otherwise-established commit, not only to a raw-empty run
+    list: a job list this poller already confirmed once does not disappear
+    either, and without this flag `poll()` has no way to tell "the fetch for
+    this run's jobs did not answer" apart from "the read squared but the
+    reconciliation did not" -- only the first is a fetch failure worth
+    riding out.
 
     `repo` is `branch._repo_identity()`'s own `nameWithOwner` -- gh's own
     base-repo resolution, which honours `remote.<name>.gh-resolved` -- the
@@ -176,15 +189,20 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool]:
     though: `poll()`, below, can itself downgrade a `NO_RUN` this function
     *did* return into `UNKNOWN` when the same sha previously had confirmed
     runs (#2333) -- a second, poll()-level finding this function never
-    produces on its own and knows nothing about.
+    produces on its own and knows nothing about. `poll()` can also go the
+    other way (#2537): an `UNKNOWN` this function *did* return, because
+    `has_unread_jobs` is set, can itself be discarded (reverted to the
+    previous poll's state) or have its sentence rewritten to a persistence
+    finding, under the same guard -- this function's own UNKNOWN, once
+    returned, is not necessarily what a consumer of `poll()` ends up seeing.
     """
     sha, age, err = branch._head_commit(ref)
     if err:
-        return "", "", "", "", err, False
+        return "", "", "", "", err, False, False
     runs, err = branch._run_list(ref)
     if err or runs is None:
         return ("", "", sha, "", err or "ERROR: gh run list returned nothing readable",
-                False)
+                False, False)
 
     selected = branch.runs_on_sha(runs, sha)
     _prev_sha, prev_names = branch.previous_head(runs, sha)
@@ -202,7 +220,7 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool]:
 
     repo, _default_ref, repo_err = branch._repo_identity()
     if repo_err:
-        return "", "", sha, "", repo_err, False
+        return "", "", sha, "", repo_err, False, False
     marker, _shortfall = branch._reconcile(repo, selected, fetched)
     scope, _scope_lines, _unresolved = branch.scope_for(
         repo, sha, selected, age_secs=age, grace=branch._GRACE)
@@ -220,12 +238,17 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool]:
     # itself, off the structured data, so nothing a workflow's name says can
     # change the answer.
     has_failed_leg = bool(branch._red_workflows(selected, legs))
-    return state, sentence, sha, repo, "", has_failed_leg
+    # Same idea, one cause over (#2537): structural, off the same `legs`
+    # this call already read, never a substring scan over `sentence` --
+    # `verdict()`'s own UNKNOWN sentence interpolates workflow names too.
+    has_unread_jobs = bool(branch._unread_workflows(legs))
+    return state, sentence, sha, repo, "", has_failed_leg, has_unread_jobs
 
 
 def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     ref = str(ctx["id"])
-    branch_state, sentence, sha, repo, error, has_failed_leg = _snapshot(ref)
+    (branch_state, sentence, sha, repo, error, has_failed_leg,
+     has_unread_jobs) = _snapshot(ref)
 
     if error:
         # Three answers, not two -- same shape as `github-pr`'s `_fetch`
@@ -301,8 +324,23 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # direction-guard and streak bookkeeping below rather than falling
     # outside both.
     raw_is_no_run = branch_state in (NO_RUN, NO_RUN_STALE)
+    # #2537: the same direction problem, one read deeper. `branch._jobs_for()`
+    # can fail to answer for one run's job list on a commit whose runs this
+    # poller already confirmed to exist -- `verdict()` renders that straight
+    # through as UNKNOWN, never as NO_RUN, so it reached the channel on the
+    # very first miss, before the guard below ever got a chance to look at
+    # it. `has_unread_jobs` (from `_snapshot`) is what tells this UNKNOWN
+    # apart from the *other* way `verdict()` reaches UNKNOWN -- an
+    # unreconciled tally, where every job list did come back and there is
+    # nothing here to ride out.
+    raw_is_unread_jobs = branch_state == UNKNOWN and has_unread_jobs
+    # Either raw reading feeds the one guard below -- a job list that did
+    # not come back and a run list that did not come back are the same
+    # class of absence, one API call apart, and #2333's argument ("the read
+    # can fail, the history cannot") applies to both without change.
+    raw_needs_guard = raw_is_no_run or raw_is_unread_jobs
 
-    # Direction guard (#2333, cadence fixed by #2436): runs on a concluded
+    # Direction guard (#2333, cadence fixed by #2436, widened by #2537): runs on a concluded
     # commit do not disappear -- only the read of them can fail. Observed
     # live: `went_green` -> `no_run` -> `went_green`, same SHA, 36 seconds
     # apart, while `gh-branch` run cold seconds after the middle event
@@ -346,24 +384,49 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # UNKNOWN_CONFIRM_STREAK` -- is trusted and surfaces as the real
     # `no_run`, exactly as a second consecutive read did before this fix,
     # only one poll later.
-    if raw_is_no_run and sha_repeated and prev_confirmed_runs:
+    if raw_needs_guard and sha_repeated and prev_confirmed_runs:
         confirmed_streak = prev_no_run_streak + 1
         if confirmed_streak < UNKNOWN_CONFIRM_STREAK:
             branch_state = prev_state
             sentence = ""
         elif confirmed_streak == UNKNOWN_CONFIRM_STREAK:
             branch_state = UNKNOWN
-            sentence = (
-                f"{UNKNOWN} — a previous poll confirmed runs on {sha[:7]}; "
-                f"the last {UNKNOWN_CONFIRM_STREAK} fetches for the same "
-                f"commit came back empty. Runs on a concluded commit do not "
-                f"disappear, so this is read as a fetch that did not answer "
-                f"rather than the commit losing its run history. Original "
-                f"reading: {sentence}")
+            # Worded as "most recently, because X" rather than "the last N
+            # fetches were all X" (self-review finding, #2537): `raw_needs_
+            # guard` folds two independent failure boundaries -- an empty
+            # `gh run list` and a missing `gh run view --json jobs` -- into
+            # one streak, so a streak that crosses the threshold need not be
+            # homogeneous. A poll that read NO_RUN followed by one that read
+            # a job-list miss reaches this same branch, and the ONLY thing
+            # known for certain about every one of the N polls is that none
+            # of them established a leg count -- claiming they all failed
+            # the same way is a claim this streak counter cannot back up.
+            if raw_is_unread_jobs:
+                sentence = (
+                    f"{UNKNOWN} — a previous poll confirmed runs on "
+                    f"{sha[:7]}; {UNKNOWN_CONFIRM_STREAK} consecutive polls "
+                    f"for the same commit have now failed to establish a "
+                    f"leg count, most recently because the job list did not "
+                    f"come back. The job list of a concluded run does not "
+                    f"disappear either, so this is read as a fetch that did "
+                    f"not answer rather than the run losing its job "
+                    f"history. Original reading: {sentence}")
+            else:
+                sentence = (
+                    f"{UNKNOWN} — a previous poll confirmed runs on "
+                    f"{sha[:7]}; {UNKNOWN_CONFIRM_STREAK} consecutive polls "
+                    f"for the same commit have now come back with an empty "
+                    f"run list, most recently. Runs on a concluded commit "
+                    f"do not disappear, so this is read as a fetch that did "
+                    f"not answer rather than the commit losing its run "
+                    f"history. Original reading: {sentence}")
         # else: confirmed_streak > UNKNOWN_CONFIRM_STREAK -- trust the raw
-        # NO_RUN read straight through, surfacing the real `no_run`.
+        # read straight through. For `raw_is_no_run` that surfaces the real
+        # `no_run`; for `raw_is_unread_jobs` `branch_state` is already
+        # UNKNOWN with `verdict()`'s own original sentence, which is exactly
+        # what "trust it" means here -- nothing to change.
 
-    no_run_streak = (prev_no_run_streak + 1) if (raw_is_no_run and sha_repeated) else 0
+    no_run_streak = (prev_no_run_streak + 1) if (raw_needs_guard and sha_repeated) else 0
 
     events: list[dict] = []
     # `""` never equals a real state, so this fires on the very first

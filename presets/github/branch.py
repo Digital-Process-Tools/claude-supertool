@@ -960,6 +960,19 @@ def undispatched_lines(undispatched: list, age_secs: object = None,
     return lines
 
 
+def _unread_workflows(legs: dict) -> list:
+    """Names of the runs `verdict()` reads as UNKNOWN because their job list
+    did not come back -- pulled out of `verdict()` (mirroring `_red_workflows`
+    below, #2355) so `gh-branch`'s watch poller can ask "did any job list
+    simply not come back" without re-deriving the check from a rendered
+    sentence (the same substring-scan trap `_red_workflows`'s own docstring
+    warns about) and without conflating it with the *other* UNKNOWN cause in
+    `verdict()` -- an unreconciled tally, where every job list already came
+    back and the doubt is about the reconciliation, not the fetch (#2537).
+    """
+    return sorted(n for n, v in legs.items() if v is None)
+
+
 def _red_workflows(selected: dict, legs: dict) -> list:
     """Names of the runs `verdict()` reads as failed -- a leg gone red, or the
     run's own conclusion gone red with no leg to blame it on.
@@ -1023,7 +1036,7 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
 
     short = sha[:7] if sha else "?"
 
-    unread = sorted(n for n, v in legs.items() if v is None)
+    unread = _unread_workflows(legs)
     if unread:
         return (UNKNOWN, f"{UNKNOWN} — the job "
                          f"{_agrees(len(unread), 'list', 'lists')} for "
