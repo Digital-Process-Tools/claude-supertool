@@ -610,6 +610,12 @@ def _foreign_poller_lines(census: dict) -> list[str]:
     total += sum(len(p) for p in unknown.values())
     out = [f"the process scan also saw {total} labelled poller(s) that this "
            f"board may not list or stop:"]
+    # #2529: read fresh, not once per channel — the census this render was
+    # built from already paid for the `ps` scan, and this is a plain file
+    # read against `_supertool.py` on disk, cheap enough not to memoize
+    # across a `for` loop that in practice runs a handful of times.
+    installed, _installed_why = transport.installed_version()
+    other_versions = census.get("other_versions", {})
     for channel, slots in sorted(other.items()):
         count = sum(len(pids) for pids in slots.values())
         if channel in dirs:
@@ -621,7 +627,10 @@ def _foreign_poller_lines(census: dict) -> list[str]:
         else:
             where = (f"no state directory under "
                      f"{naming.flat_path(naming.BASE_DIR)} hashes to it")
-        out.append(f"  {count} on channel {_untrusted.flat(channel)}, {len(slots)} slot(s) — {where}")
+        version_line = transport.foreign_version_disclosure(
+            other_versions.get(channel, []), installed)
+        out.append(f"  {count} on channel {_untrusted.flat(channel)}, "
+                   f"{len(slots)} slot(s) — {where}, {version_line}")
     if unknown:
         count = sum(len(pids) for pids in unknown.values())
         out.append(f"  {count} whose channel cannot be told from their argv "

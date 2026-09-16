@@ -42,6 +42,7 @@ sys.path.insert(0, str(_ROOT / "presets"))
 
 import channel  # noqa: E402
 import naming  # noqa: E402
+import ratelimit  # noqa: E402  (#2528 -- the DISAGREEMENT line, below)
 import transport  # noqa: E402
 # `dispatcher` is a contested basename -- `presets/worktree/dispatcher.py`
 # claims it too (#726, #532) -- so it is loaded by absolute path instead of a
@@ -439,3 +440,45 @@ def test_the_no_op_row_flattens_its_name_like_the_row_it_stands_in_for(
             f"a no-op row's name forged a block header:\n{out}")
     assert "\r" not in out
     assert "ok (no-op)" in out
+
+
+# ---------------------------------------------------------------------------
+# 10. presets/watch/ratelimit.py's DISAGREEMENT line (#2528)
+# ---------------------------------------------------------------------------
+
+def _fleet_rate_limit(remaining=4800, limit=5000):
+    return {"core": {"remaining": remaining, "limit": limit,
+                     "reset_iso": "2026-09-11T17:00:00Z"}}
+
+
+@pytest.mark.parametrize("sep", SEPARATORS)
+def test_the_rate_limit_disagreement_line_cannot_carry_a_pollers_id_to_a_second_row(
+        sep) -> None:
+    """A poller's own `(source, id, error)` (#2525) is exactly as untrusted
+    as every other field this file already covers -- an embedded separator
+    in any of the three must not put text on a second board line.
+
+    Not a new class of defect: `ratelimit.py` already routes all three
+    through `_untrusted.flat()` (a same-PR regression test in
+    `tests/test_watch_ratelimit_budget_2509.py` pins one fixed newline
+    already). What was missing is this file's own coverage of the surface,
+    parametrized across every separator the rest of this file checks and
+    covering all three of `(source, id, error)`, not only `error`.
+    """
+    lines = ratelimit.render_budget_lines(
+        _fleet_rate_limit(), "", projected=200.0, counts={"gh-branch": 1},
+        active_errors=[(f"gh-branch{sep}{FORGED}", f"33952{sep}{FORGED}",
+                        f"ERROR: rate limit{sep}{FORGED}")])
+    disagreement = next(line for line in lines if "DISAGREEMENT" in line)
+    _assert_single_line(disagreement, "render_budget_lines() DISAGREEMENT")
+
+
+def test_the_rate_limit_disagreement_line_still_shows_an_ordinary_id_byte_for_byte(
+) -> None:
+    """Must-fire control: flattening must be invisible on the ordinary
+    (source, id) pair every real poller sends."""
+    lines = ratelimit.render_budget_lines(
+        _fleet_rate_limit(), "", projected=200.0, counts={"gh-branch": 1},
+        active_errors=[("gh-branch", "33952", "ERROR: rate limit exceeded")])
+    disagreement = next(line for line in lines if "DISAGREEMENT" in line)
+    assert "gh-branch:33952" in disagreement, disagreement

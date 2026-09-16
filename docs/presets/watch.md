@@ -3435,11 +3435,13 @@ So the scan now returns all three buckets (`transport.poller_census`), and `watc
 
 ```
 watches: the process scan also saw 564 labelled poller(s) that this board may not list or stop:
-watches:   564 on channel 43b6d3f23b71, 5 slot(s) — state dir /tmp/supertool-watch-fdavid-dvsi-5535f2d5
+watches:   564 on channel 43b6d3f23b71, 5 slot(s) — state dir /tmp/supertool-watch-fdavid-dvsi-5535f2d5, running supertool 0.57.0 (installed: 0.60.0)
 watches:   2 whose channel cannot be told from their argv (started before the channel token existed), 2 slot(s)
 watches: `unwatch` here reaches only this channel's slots. To act on another channel's, run `watches` under the SUPERTOOL_WATCH_NAME that derives its state dir.
 No watchers on this channel. None recorded as lost either.
 ```
+
+**The trailing `running supertool ...` clause is #2529**, not part of #1881's own fix: a foreign channel's own pollers carry the plugin-cache version they forked from right in their own argv path, so the disclosure names it against what this install answers for itself today, without any new cross-channel read. Three states there too — every pid agreeing, disagreeing, or none of them naming a version at all (a plain checkout, not a plugin-cache layout) — never a comparison stated on evidence that is not there.
 
 **No SOURCE or ID is printed, deliberately.** Naming one is what invites `unwatch:SOURCE:ID` against a slot this channel does not own, and removing that offer is the whole of #1514. A count is a disclosure; a row is a handle.
 
