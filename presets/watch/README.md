@@ -140,7 +140,7 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | -------------------- | -------------------------------------------------------------------- | ---------------------------------------------------- |
 | UDS socket (NDJSON)  | Live event stream — Phase 2 channel consumer reads this              | `/tmp/supertool-watch.sock`                          |
 | Status file (JSON)   | Last-known state for the `watches` op + offline inspection           | `/tmp/supertool-watch-{source}__{id}.state.json`     |
-| macOS osascript      | Desktop notification on terminal status (human-facing)               | system notification center                           |
+| macOS osascript      | Desktop notification on most status changes (human-facing) -- **off by default (#2544)**, opt in with `SUPERTOOL_WATCH_DESKTOP=1` | system notification center                           |
 
 **The socket path is overridable, and it must match on both ends.** Set
 `SUPERTOOL_WATCH_SOCK` to redirect where a poller writes — it must be set to

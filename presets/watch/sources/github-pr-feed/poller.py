@@ -146,6 +146,77 @@ def _dispatcher() -> ModuleType:
     return _dispatcher_module
 
 
+_radar_module: ModuleType | None = None
+_gh_prs_tier_module: ModuleType | None = None
+_pr_only_cache: list[str] | None = None
+
+
+def _radar() -> ModuleType:
+    """Lazy load of `radar.py`, for `read_tiers()` -- the one place
+    `SUPERTOOL_RADAR_TIERS` (set into every poller's environment by whatever
+    forked it, radar included) is decoded back into native types."""
+    global _radar_module
+    if _radar_module is None:
+        _radar_module = _load("feed_watch_radar", _WATCH_DIR / "radar.py")
+    return _radar_module
+
+
+def _gh_prs_tier() -> ModuleType:
+    """Lazy load of the `gh-prs` radar tier, for `poller_only()` /
+    `exclude_events()` / `PR_EXCLUDE_OPTION` -- the one owner of the
+    `pr_exclude_events` blacklist (claude-oss#1499). Loaded here rather than
+    reimplemented so both forkers of a per-PR poller -- `heal()` and this
+    source's own `spawn_watcher` -- resolve the same list from the same
+    function (claude-oss#2536)."""
+    global _gh_prs_tier_module
+    if _gh_prs_tier_module is None:
+        _gh_prs_tier_module = _load("feed_watch_gh_prs_tier",
+                                    _WATCH_DIR / "tiers" / "gh_prs.py")
+    return _gh_prs_tier_module
+
+
+def pr_only() -> list[str]:
+    """The `only=` every per-PR poller this source forks should carry.
+
+    Computed from `SUPERTOOL_RADAR_TIERS`, which is present in this process's
+    own environment exactly when radar forked it -- `poller_env()` copies the
+    whole environment into every poller it execs, radar's `pr_exclude_events`
+    included, the same channel every other piece of tier config already
+    travels through. A feed started by hand (`watch:github-pr-feed:...`) has
+    no such variable set, `read_tiers()` then answers `{}`, and this resolves
+    to `[]` -- today's unfiltered behaviour, unchanged, exactly as the issue
+    asks ("a feed forked by hand with no list keeps today's behaviour").
+
+    Cached for the life of the process: the environment a running process
+    holds cannot change under it regardless of where the value came from, so
+    re-deriving on every discovery would answer the same question every time
+    at the cost of decoding the tier config again -- and a per-PR poller
+    already alive keeps whatever `only=` it was forked with either way
+    (`heal`'s own docstring), so this source's pollers are held to the same
+    rule.
+
+    A malformed `pr_exclude_events` -- caught and refused loudly by radar
+    itself before anything is spawned (`radar_report`'s own early refusal) --
+    falls back to `[]` here rather than raising: this source's job is
+    discovering PRs, not re-validating a config radar already validated once,
+    and a discovery loop going down over a config problem is worse than it
+    forking a per-PR poller with no filter, which is exactly today's
+    behaviour.
+    """
+    global _pr_only_cache
+    if _pr_only_cache is not None:
+        return _pr_only_cache
+    try:
+        tiers, _problems = _radar().read_tiers()
+        tier = _gh_prs_tier()
+        opts = tiers.get("gh-prs") or {}
+        excluded = tier.exclude_events(opts.get(tier.PR_EXCLUDE_OPTION))
+        _pr_only_cache = tier.poller_only(excluded)
+    except Exception:
+        _pr_only_cache = []
+    return _pr_only_cache
+
+
 def resolve_filters(scope: str) -> dict[str, str] | None:
     """`gh-prs`-vocabulary filters for a scope string, or `None` on an unknown
     token -- see the module docstring for why this vocabulary is narrower
@@ -285,10 +356,10 @@ def terminal_coverage(number: str, watched: set[str], spawned: bool = False) -> 
     visible and cheap, rather than an ending nobody reports at all.
     """
     if spawned:
-        # Spawned here with an unfiltered poller (see spawn_watcher), so the
-        # filter is known without waiting a tick for the new poller to
-        # publish it.
-        only: list[str] | None = []
+        # Spawned here with the resolved `pr_only()` filter (see
+        # spawn_watcher), so the filter is known without waiting a tick for
+        # the new poller to publish it.
+        only: list[str] | None = pr_only()
     elif number in watched:
         only = watcher_only(number)
     else:
@@ -302,7 +373,7 @@ def terminal_coverage(number: str, watched: set[str], spawned: bool = False) -> 
 
 def spawn_watcher(number: str) -> bool:
     try:
-        return bool(_dispatcher()._spawn_poller("github-pr", number, []))
+        return bool(_dispatcher()._spawn_poller("github-pr", number, pr_only()))
     except OSError:
         return False
 

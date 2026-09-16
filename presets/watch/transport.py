@@ -5,8 +5,10 @@ Pollers emit events through three transports:
   Phase 2 channel server. Silent when no listener bound.
 - Status file at /tmp/supertool-watch-{source}-{id}.state.json — last-known
   state so `watches` op can render it without scanning processes.
-- macOS osascript desktop notification — human-facing ping on terminal/error.
-  No-op on non-macOS.
+- macOS osascript desktop notification — a human-facing ping on most status
+  changes for a poller that opted in (#2544; off by default -- see
+  DESKTOP_ENV below), not only on terminal states or errors. No-op on
+  non-macOS.
 
 All writers swallow errors. A watcher must never die because a transport
 hiccupped.
@@ -909,6 +911,28 @@ def reap_dead_pidfile(source: str, watcher_id: str) -> int:
 #: repo's own defect class, applied to itself.
 NO_DESKTOP_ENV = "SUPERTOOL_WATCH_NO_DESKTOP"
 
+#: The opt-in (#2544). Desktop notifications used to default to on for every
+#: poller, undisclosed by `help:watch`/`help:radar`, firing on success as
+#: often as on failure, and undoable only by killing and respawning whatever
+#: was already running -- four reasons, recorded in full on the issue, to
+#: flip the default rather than add a fifth knob beside it. `NO_DESKTOP_ENV`
+#: stays exactly as it was: an operator who already opted out keeps getting
+#: silence, and it wins when both are set -- see `desktop_notify_enabled`.
+DESKTOP_ENV = "SUPERTOOL_WATCH_DESKTOP"
+
+
+def _env_flag(name: str, env: dict[str, str] | None) -> bool:
+    """The truthy-spelling reading every boolean env knob here shares.
+
+    `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive) count; unset, `""`,
+    `"0"` and `"false"` do not. Matches `presets/git/diff._plain()`'s reading
+    of `SUPERTOOL_PLAIN`, the closest existing boolean env knob, and the
+    lowercase `json.dumps` stringification a `.supertool.json` op-config
+    boolean arrives as (`docs/contributing.md`).
+    """
+    src = os.environ if env is None else env
+    return (src.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
     """Whether the operator opted the desktop transport out.
@@ -925,15 +949,31 @@ def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
     reading of `SUPERTOOL_PLAIN` -- the closest existing boolean env knob --
     so the same word means the same thing across both.
     """
-    src = os.environ if env is None else env
-    return (src.get(NO_DESKTOP_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
+    return _env_flag(NO_DESKTOP_ENV, env)
+
+
+def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
+    """Whether `desktop_notify` should actually shell out (#2544).
+
+    Off unless asked for: `False` unless `SUPERTOOL_WATCH_DESKTOP` (or its
+    `.supertool.json` twin `watch_desktop: true` under `ops.watch`/
+    `ops.radar`) reads truthy by `desktop_notify_disabled`'s own rule. `NO`
+    wins when both are set -- `SUPERTOOL_WATCH_NO_DESKTOP` means "never",
+    and a key that means never must not be overridable by one that means
+    "yes please" (the issue's own wording); an operator who already opted out
+    keeps getting silence regardless of what the opt-in says.
+    """
+    if desktop_notify_disabled(env):
+        return False
+    return _env_flag(DESKTOP_ENV, env)
 
 
 def desktop_notify(title: str, message: str) -> None:
-    """Fire-and-forget macOS notification. No-op elsewhere, or when opted out."""
+    """Fire-and-forget macOS notification. No-op elsewhere, or when not opted
+    in (`desktop_notify_enabled`) -- off by default since #2544."""
     if sys.platform != "darwin":
         return
-    if desktop_notify_disabled():
+    if not desktop_notify_enabled():
         return
     if not shutil.which("osascript"):
         return

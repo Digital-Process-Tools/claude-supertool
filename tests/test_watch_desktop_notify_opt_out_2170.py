@@ -110,7 +110,66 @@ def test_false_and_zero_are_not_opted_out(monkeypatch):
     assert transport.desktop_notify_disabled() is False
 
 
-# --- desktop_notify itself: must-not-fire, paired with must-fire ------------
+# --- the opt-in predicate (#2544) --------------------------------------------
+
+def test_unset_is_not_enabled(monkeypatch):
+    monkeypatch.delenv(transport.DESKTOP_ENV, raising=False)
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    assert transport.desktop_notify_enabled() is False
+
+
+def test_hand_exported_desktop_1_enables(monkeypatch):
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    assert transport.desktop_notify_enabled() is True
+
+
+def test_config_exported_lowercase_true_enables(monkeypatch):
+    """The generic op-config-to-env export stringifies a JSON bool with
+    `json.dumps`, so a `.supertool.json` `watch_desktop: true` (under
+    `ops.watch`/`ops.radar`) would arrive here as the string "true"."""
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "true")
+    assert transport.desktop_notify_enabled() is True
+
+
+def test_false_and_zero_do_not_enable(monkeypatch):
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "false")
+    assert transport.desktop_notify_enabled() is False
+    monkeypatch.setenv(transport.DESKTOP_ENV, "0")
+    assert transport.desktop_notify_enabled() is False
+
+
+def test_no_wins_over_yes(monkeypatch):
+    monkeypatch.setenv(transport.NO_DESKTOP_ENV, "1")
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    assert transport.desktop_notify_enabled() is False
+
+
+# --- desktop_notify itself: off by default (#2544), on only when opted in ---
+
+def test_default_unset_desktop_notify_does_not_shell_out(monkeypatch):
+    """Off unless asked for (#2544): with neither knob set, the ping must not
+    fire -- this is the flipped default itself, not the pre-existing opt-out."""
+    calls = _osascript_calls(monkeypatch)
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.delenv(transport.DESKTOP_ENV, raising=False)
+    transport.desktop_notify("t", "m")
+    assert calls == [], "unset means off by default; osascript must not run"
+
+
+def test_opted_in_desktop_notify_shells_out(monkeypatch):
+    """The positive control for the test above: on the same darwin/osascript
+    fixture, with the opt-in set, the ping fires. Without this, the silence
+    test could be passing because nothing here fires at all -- the #2544
+    warning about deleting the feature silently."""
+    calls = _osascript_calls(monkeypatch)
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    transport.desktop_notify("t", "m")
+    assert len(calls) == 1, "expected exactly one osascript invocation"
+
 
 def test_opted_out_desktop_notify_does_not_shell_out(monkeypatch):
     calls = _osascript_calls(monkeypatch)
@@ -119,14 +178,14 @@ def test_opted_out_desktop_notify_does_not_shell_out(monkeypatch):
     assert calls == [], "opted out, so osascript must not run"
 
 
-def test_not_opted_out_desktop_notify_still_shells_out(monkeypatch):
-    """The positive control for the test above: on the same darwin/osascript
-    fixture, with the knob unset, the ping still fires. Without this, the
-    silence test could be passing because nothing here fires at all."""
+def test_opted_out_wins_over_opted_in(monkeypatch):
+    """NO must win over yes (#2544): an operator who already silenced this
+    keeps getting silence, no matter what the opt-in says."""
     calls = _osascript_calls(monkeypatch)
-    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.NO_DESKTOP_ENV, "1")
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
     transport.desktop_notify("t", "m")
-    assert len(calls) == 1, "expected exactly one osascript invocation"
+    assert calls == [], "opted out must win even though opted in was also set"
 
 
 # --- emit_event: the wire is unaffected by the opt-out ----------------------
@@ -164,10 +223,41 @@ def test_opted_out_still_emits_to_the_socket(monkeypatch, tmp_path):
 
 
 @needs_socket
-def test_not_opted_out_notifies_and_still_emits(monkeypatch, tmp_path):
-    """Positive control for the test above: unset, both transports fire."""
+def test_unset_by_default_still_emits_without_notifying(monkeypatch, tmp_path):
+    """The default-off half: with neither knob set, the socket still carries
+    the event but osascript does not run -- the flipped default must not
+    starve the wire, only the ping."""
     calls = _osascript_calls(monkeypatch)
     monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.delenv(transport.DESKTOP_ENV, raising=False)
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
+    sock_path = _short_sock_path()
+    monkeypatch.setattr(transport, "SOCK_PATH", sock_path)
+
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(sock_path)
+    srv.listen(1)
+    try:
+        transport.emit_event(
+            "gh-pr", "1", "checks_failed", {"x": 1},
+            notify_title="title", notify_message="message",
+        )
+        conn, _ = srv.accept()
+        data = conn.recv(4096)
+    finally:
+        srv.close()
+        os.unlink(sock_path)
+
+    assert data, "the socket must receive the event regardless of the desktop default"
+    assert calls == [], "osascript must not run with neither knob set"
+
+
+@needs_socket
+def test_opted_in_notifies_and_still_emits(monkeypatch, tmp_path):
+    """Positive control for the test above: opted in, both transports fire."""
+    calls = _osascript_calls(monkeypatch)
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
     sock_path = _short_sock_path()
     monkeypatch.setattr(transport, "SOCK_PATH", sock_path)
@@ -187,7 +277,7 @@ def test_not_opted_out_notifies_and_still_emits(monkeypatch, tmp_path):
         os.unlink(sock_path)
 
     assert data, "the socket must receive the event"
-    assert len(calls) == 1, "osascript must have run when not opted out"
+    assert len(calls) == 1, "osascript must have run when opted in"
 
 
 # --- the disclosure: watches/radar must state the opt-out, not go quiet -----
