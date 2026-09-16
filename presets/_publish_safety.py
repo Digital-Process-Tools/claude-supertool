@@ -17,10 +17,12 @@ env var > project `.supertool.json` > default (strict).
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -373,21 +375,85 @@ def apply_disclosure(body: str, *, max_len: Optional[int] = None) -> tuple[str, 
 
 # --- token file mode check -----------------------------------------------
 
-def check_token_file_mode(path: Path) -> None:
-    """Exit cleanly if a credential file is group/world-readable.
+@functools.lru_cache(maxsize=1)
+def _mode_bits_are_enforced() -> bool:
+    """Does this filesystem keep the permission bits `chmod` is handed?
 
-    Mirrors `ssh`'s refusal to use an insecure key. Caller passes a Path —
+    Asked of the filesystem, once per process, rather than read off
+    `os.name`. Windows is the platform that answers no today -- CPython
+    synthesises `0o666` (or `0o444` when the read-only attribute is set)
+    for every file and `os.chmod` cannot change that -- but the question
+    worth asking is about the filesystem in front of us, not its vendor:
+    `tests/_symlink.py` spends its whole docstring on what a hardcoded
+    platform name costs, and a FAT volume mounted under Linux gives the
+    same answer for the same reason.
+
+    A probe file in the system temp directory, not next to the credential:
+    creating and chmod-ing a scratch file inside somebody's `~/.config`
+    every time a token is read is a side effect a checker has no business
+    having.
+    """
+    try:
+        fd, probe = tempfile.mkstemp()
+    except OSError:
+        return False
+    os.close(fd)
+    try:
+        os.chmod(probe, 0o600)
+        return stat.S_IMODE(os.stat(probe).st_mode) == 0o600
+    except OSError:
+        return False
+    finally:
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
+
+
+def check_token_file_mode(path: Path) -> None:
+    """Refuse a credential file other users can read. Three states (#227).
+
+    Mirrors `ssh`'s refusal to use an insecure key. Caller passes a Path --
     we no-op if the file doesn't exist (caller surfaces the right error).
+
+    The third state is the one this grew. `mode & 0o077` is evidence only
+    where the filesystem enforces those bits; where it does not, EVERY file
+    reads as `0o666` and this function refused every credential it was ever
+    shown. That was dormant until #227 gave it its first production caller,
+    and it would have made the YouTube write ops exit 2 on every Windows
+    machine -- a refusal blaming the operator's permissions for a fact about
+    the platform, with `chmod 600` as the printed remedy on an OS that has
+    no `chmod`.
+
+    So: tight is a pass on any platform; loose where the bits are enforced
+    is the refusal it always was; loose where they are NOT enforced is
+    `could not verify` -- said on stderr, not silently, because the
+    credential really is unverified and pretending otherwise is the
+    absence-read-as-clean defect. It does not refuse, because refusing
+    would disable the feature rather than protect anything: on Windows the
+    file is protected by the user profile's ACL, which this tool can
+    neither read nor set with the standard library.
     """
     try:
         st = os.stat(path)
     except OSError:
         return
     mode = stat.S_IMODE(st.st_mode)
-    if mode & 0o077:
+    if not mode & 0o077:
+        return
+    if not _mode_bits_are_enforced():
         sys.stderr.write(
-            f"ERROR: token file {path} has loose permissions ({oct(mode)}).\n"
-            f"  Tighten with: chmod 600 {path}\n"
-            f"  (Other users on this machine can currently read your token.)\n"
+            f"WARNING: could not verify the permissions on {path} -- this "
+            f"filesystem reports {oct(mode)} for every file and does not "
+            "enforce POSIX mode bits, so whether other users can read this "
+            "credential is UNKNOWN rather than fine. On Windows it is the "
+            "user profile's ACL that protects it, which this tool cannot "
+            "read.\n"
         )
-        sys.exit(2)
+        return
+    sys.stderr.write(
+        f"ERROR: token file {path} has loose permissions ({oct(mode)}).\n"
+        f"  Tighten with: chmod 600 {path}\n"
+        f"  (Other users on this machine can currently read your token.)\n"
+    )
+    sys.exit(2)

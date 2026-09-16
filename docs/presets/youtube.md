@@ -1,10 +1,10 @@
 # youtube
 
-Discovery ops for YouTube via the Data API v3 -- search for videos, read one's
-metadata plus its top comments, and list a channel's uploads. API-key auth
-only: this slice does not implement the OAuth2 write ops (`youtube_comment`,
-`youtube_reply`, `youtube_like`, `youtube_status_since`) the original request
-also described -- see "Scope" below.
+Discovery and engagement ops for YouTube via the Data API v3 -- search for
+videos, read one's metadata plus its top comments, list a channel's uploads,
+and post one comment. The read ops use an API key; `youtube_comment` writes as
+the authorised user over OAuth2. `youtube_reply`, `youtube_like` and
+`youtube_status_since` are not implemented -- see "Scope" below.
 
 ## Requires
 
@@ -23,6 +23,8 @@ also described -- see "Scope" below.
 | `youtube_search` | `youtube_search:QUERY[\|N]` | Videos matching the query: title, channel, publish date, watch URL |
 | `youtube_read` | `youtube_read:VIDEO_ID_OR_URL` | Video title, channel, stats, top N inline comments (with comment IDs) |
 | `youtube_list` | `youtube_list:CHANNEL[\|N]` | A channel's uploads: title, publish date, watch URL per video |
+| `youtube_auth` | `youtube_auth[:status]` | Runs the one-time OAuth2 consent flow, or reports what is cached |
+| `youtube_comment` | `youtube_comment:VIDEO_ID_OR_URL\|TEXT_OR_file://PATH[\|force][\|force-dup]` | Posts one top-level comment, then reads it back and reports whether it could confirm it |
 
 `N` defaults to `SUPERTOOL_DEFAULT_LIMIT` (10), same env knob as `bluesky_list`/`bluesky_search`. `youtube_read`'s inline comment count is `SUPERTOOL_INLINE_COMMENTS` (5), same knob `bluesky_read` uses for inline replies.
 
@@ -48,6 +50,81 @@ Preset JSON: `presets/youtube.json`. Helper scripts: `presets/youtube/` -- `sear
 
 Every call goes through `presets/youtube/_yt.py::get()`, which in turn goes through `presets/_http.py`'s shared opener -- so the API key travels only in the query string of a same-origin request and is redacted out of any error text before it reaches an exception message, and no bare `urllib.request.urlopen(` call site was introduced (`tests/test_security_redirect.py::test_no_bare_urlopen_call_sites_remain_under_presets` sweeps for exactly that). See [contributing.md](../contributing.md#http-requests-go-through-presets_httppy).
 
-## Scope: read ops only
+## Writing a comment
 
-[#227](https://github.com/Digital-Process-Tools/claude-supertool/issues/227), the issue this preset implements, proposed seven ops and an OAuth2 write path (`youtube_comment`, `youtube_reply`, `youtube_like`, `youtube_status_since`) alongside the three read ops here, but its own "Implementation order" section proposes splitting the work into two pull requests -- read ops first, API-key only, "low blast radius" in its own words, with the OAuth2 flow, an audit log and a rate cap for the write ops to follow behind their own review. This preset implements only the first half. A follow-up issue covers the write ops, their OAuth2 token cache, and the audience-match/rate-limit guardrails the original issue also describes for them.
+`youtube_comment` needs OAuth2, not an API key: `commentThreads.insert` acts as
+a user. Set it up once.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/apis/credentials),
+   Create credentials -> OAuth client ID -> **Desktop app**, on the project that
+   already has the YouTube Data API v3 enabled.
+2. Download the JSON and save it as `~/.config/youtube/client_secret.json`.
+3. `supertool 'youtube_auth'` -- this opens a consent page pointed at a loopback
+   port on 127.0.0.1 and stores a refresh token at
+   `~/.config/youtube/oauth_token.json`, mode 0600.
+4. `supertool 'youtube_auth:status'` to confirm. It answers in three states:
+   AUTHORISED, NOT AUTHORISED, and **CANNOT TELL** for a cache that will not
+   parse -- which is not the same claim as never having authorised, and has a
+   different remedy.
+
+`youtube_auth` is a separate op rather than something `youtube_comment` triggers
+on demand. A write op that can open a browser and block for five minutes hangs a
+non-interactive session with no output, and that failure looks exactly like a
+slow API. An absent token is a refusal naming `youtube_auth` instead.
+
+The flow uses PKCE (RFC 7636) and checks the `state` parameter on the way back.
+A Desktop-app client secret ships on the user's machine and is not secret in the
+sense the name suggests, and the loopback port is reachable by any local process.
+
+### A 2xx is not visibility
+
+This is the part worth reading twice. YouTube holds or shadow-bans programmatic
+comments **silently** -- the insert returns 200, the resource comes back with an
+id, and nobody else ever sees it. So `youtube_comment` does not report success on
+the write. It reads the comment back afterwards and prints one of three verdicts:
+
+| `read-back:` | Means |
+|----|----|
+| `verified` | Read back, and the text matches what was sent |
+| `MISMATCH` | Read back, and the text does **not** match |
+| `could-not-verify` | The read-back itself failed, or returned no such thread |
+
+`could-not-verify` is not a pass and does not render like one. And `verified` is
+only a claim about what *this account* can see: the account that posted a held
+comment can generally still read it. Confirm in a logged-out browser before
+believing a comment landed. The op says so in its own output.
+
+### Guardrails
+
+Three, and each one refuses rather than warns. Two of them take **different**
+override tokens, passed as trailing fields in either order: `|force` confirms
+the publish, `|force-dup` overrides the sentinel. One does not grant the other.
+They shared a single `|force` in the first draft, which left the duplicate guard
+off on every invocation that actually published, since `|force` is what an
+operator has to pass to publish at all.
+
+- **Confirmation.** No `|force` and no `no_publish_confirm`, no publish. Shared
+  with every other publishing op through `presets/_publish_safety.py`. `|force`
+  buys this and nothing else.
+- **One comment per video, 5 writes per hour.** Recorded in
+  `~/.config/youtube/sent.jsonl` (0600). The cap is #227's number and is not
+  derived from quota: 50 units a comment against 10,000 a day would allow 200,
+  and the number that matters is the one the spam classifier watches. A log that
+  exists and **cannot be read** is `cannot-tell`, which is treated as a refusal --
+  an unreadable log is not an empty one, and this preset has no delete op, so an
+  unknown is the one state where doing nothing is clearly right. A *missing* log
+  is a real answer and is fine: nothing was written yet. Overridden by
+  `|force-dup`, which is a separate token for exactly this reason.
+- **Authorship disclosure.** `[AI-generated]` is appended unless
+  `no_publish_disclosure` is set, and the output says `(disclosure: suppressed)`
+  when it was not.
+
+`youtube_comment` costs 50 quota units for the insert plus 1 for the read-back.
+
+## Scope: the other write ops
+
+[#227](https://github.com/Digital-Process-Tools/claude-supertool/issues/227), the issue this preset implements, proposed seven ops. Five exist: the three read ops, plus `youtube_auth` and `youtube_comment`. `youtube_reply` (`comments.insert`), `youtube_like` (`videos.rate`) and `youtube_status_since` are not written yet.
+
+They are held back on purpose rather than left half-done. The OAuth2 cache and the rate cap are where this preset is most likely to be wrong, and they are wrong in a way that is expensive to discover -- a shadow-banned account, or a token that silently stops refreshing an hour after a session ends. One write op proves both against the real API first. The three remaining ops are then argv and an endpoint each: they reuse `_oauth.get_access_token`, `_yt.authorized`, `_sentinel` and `_publish_safety` unchanged, and no new machinery is expected for them.
+
+`youtube_status_since` is the odd one of the three -- it reads rather than writes, but over *own* videos, which needs the same OAuth2 grant. It is grouped here for the credential, not for the blast radius.

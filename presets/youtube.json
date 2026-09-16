@@ -1,5 +1,5 @@
 {
-  "description": "YouTube discovery via the Data API v3 (search/read/list, API key only, no OAuth2 writes yet -- #227).",
+  "description": "YouTube discovery and engagement via the Data API v3 (search/read/list on an API key; youtube_comment writes as the authorised user over OAuth2 -- #227).",
   "requires": "python",
   "ops": {
     "youtube_search": {
@@ -27,6 +27,23 @@
       "description": "Read video title + channel + stats + top N inline comments (with comment IDs). Accepts a bare video ID or a watch/youtu.be/shorts/embed URL. A video with comments disabled degrades to a note rather than failing.",
       "syntax": "youtube_read:VIDEO_ID_OR_URL",
       "example": "youtube_read:https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    },
+    "youtube_auth": {
+      "safety": "acts",
+      "cmd": "{python} {path}youtube/auth.py {args}",
+      "timeout": 330,
+      "description": "One-time OAuth2 browser flow for the write ops: opens a loopback consent page and caches a refresh token at ~/.config/youtube/oauth_token.json (0600). `youtube_auth:status` reports what is cached without touching the network, in three states -- AUTHORISED, NOT AUTHORISED, and CANNOT TELL for a cache that will not parse.",
+      "syntax": "youtube_auth[:status]",
+      "example": "youtube_auth:status"
+    },
+    "youtube_comment": {
+      "safety": "acts",
+      "cmd": "{python} {path}youtube/comment.py {args}",
+      "timeout": 45,
+      "description": "Post ONE top-level comment (commentThreads.insert, 50 quota units), then read it back and report verified / MISMATCH / could-not-verify separately -- a 2xx is not visibility, because YouTube holds or shadow-bans programmatic comments silently. Needs |force to publish at all (the shared publish confirmation). Separately refuses, overridable only with |force-dup, a second comment on a video already in ~/.config/youtube/sent.jsonl, more than 5 writes in an hour, or a sentinel log it cannot read. Appends the [AI-generated] marker unless no_publish_disclosure is set.",
+      "syntax": "youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force][|force-dup]",
+      "paths": { "args": [] },
+      "example": "youtube_comment:dQw4w9WgXcQ|Good breakdown of the retry logic."
     }
   }
 }

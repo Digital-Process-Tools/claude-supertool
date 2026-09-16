@@ -151,7 +151,8 @@ _ABSENT = {
     # HTTP-API-only preset in this file is recorded with the same reason
     # rather than a curl mapping.
     "youtube_search": _NO_CLI, "youtube_read": _NO_CLI,
-    "youtube_list": _NO_CLI,
+    "youtube_list": _NO_CLI, "youtube_auth": _NO_CLI,
+    "youtube_comment": _NO_CLI,
 
     # --- presets/slack.json -------------------------------------------------
     "slack_publish": _NO_CLI,
