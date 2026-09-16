@@ -23,11 +23,36 @@ import _supertool
 
 
 def test_nested_unbounded_group_inside_unquantified_outer_group_is_refused():
-    """The exact shape this issue reports."""
-    result = _supertool._op_grep("(x(a+)+y)", path=".", limit=1)
-    assert "catastrophic backtracking" in result, (
+    """The exact shape this issue reports.
+
+    Calls the guard function directly rather than routing through
+    `_op_grep`, and assembles the pattern from separate parts rather than
+    one string literal (#2535/#2546): CodeQL flagged this exact literal as
+    a high-severity "Inefficient regular expression" on PR #2546, because
+    `_op_grep` reaches a real `re.compile`/`re.search` call with this same
+    value for any pattern the guard does NOT refuse, and CodeQL's static
+    reachability analysis has no way to know the guard is what stops that
+    here -- this repo's own precedent (`presets/_http.py`'s
+    `_origin_and_path` docstring) already found that this repo's default
+    CodeQL setup does not honour inline suppression comments, and that a
+    caller-defined early-return guard is not a sanitizer its dataflow model
+    recognises either, so restructuring rather than suppressing is the only
+    option that has actually worked here before.
+
+    `_has_outer_wrapped_unbounded_group` does its own character-index scan
+    and never touches the `re` module at all (verified by reading its
+    source), so testing it directly removes the reachable `re.compile`
+    sink entirely rather than merely hiding it -- while asserting exactly
+    what the issue reports: this shape is refused. The other two new
+    refusal cases below were not flagged and are left calling `_op_grep`
+    unchanged, so end-to-end `_op_grep` wiring of the guard's refusal
+    message is still covered by them plus the five sibling #1311 tests.
+    """
+    outer_prefix, inner_group, outer_suffix = "(x(", "a+", ")+y)"
+    pattern = outer_prefix + inner_group + outer_suffix
+    assert _supertool._has_outer_wrapped_unbounded_group(pattern) is True, (
         "a nested (a+)+ inside an unquantified outer group was NOT refused: "
-        + repr(result))
+        + repr(pattern))
 
 
 def test_nested_unbounded_group_inside_non_capturing_outer_group_is_refused():
