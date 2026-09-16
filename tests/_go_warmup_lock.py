@@ -66,6 +66,26 @@ def shared_worker_root(tmp_path_factory) -> Path:
 STALE_MARGIN = 3.0
 
 
+def _exists_or_assume_so(path: Path) -> bool:
+    """`Path.exists()` swallows most `OSError`s internally, but not every
+    one a delete-pending file can raise on Windows: `PermissionError`
+    (`ERROR_ACCESS_DENIED` / `ERROR_SHARING_VIOLATION`) is not in its
+    ignore-list, so a lock file mid-unlink can make a bare `exists()` call
+    raise instead of answering `False` (#2551 self-review, auditor -- the
+    same Windows-only narrow-except hazard the fix this guards exists to
+    close, one layer down in `pathlib`'s own exception filter). An
+    `exists()` that cannot tell must not be read as "gone": the safe
+    direction is the one this file already prefers everywhere else -- treat
+    an unreadable state as contention (wait/retry) rather than as licence
+    to run `fn()` immediately, which is the concurrent-run hazard this
+    whole module exists to prevent.
+    """
+    try:
+        return path.exists()
+    except OSError:
+        return True
+
+
 def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
                     timeout_s: float, stale_after_s: float | None = None) -> T:
     """Run `fn` with at most one caller inside it at a time, across processes.
@@ -110,7 +130,38 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
     while fd is None:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+        except OSError as exc:
+            # Two very different causes reach this branch. Someone else
+            # genuinely holds the lock -- the ordinary `FileExistsError`, or,
+            # on Windows, `PermissionError` (ERROR_SHARING_VIOLATION /
+            # ERROR_ACCESS_DENIED) from a file another process still has
+            # open, or one whose `unlink` in the holder's own `finally` has
+            # left it delete-pending. The lock file itself is unusable for a
+            # reason that will not clear -- an unwritable `lock_dir`, for
+            # instance -- which raises the same exception *type* with no
+            # lock file ever created. Exception type alone cannot tell these
+            # apart on Windows (#2551): only "someone else holds it" leaves
+            # a lock file behind, so that is what disambiguates them.
+            if not isinstance(exc, FileExistsError) and not _exists_or_assume_so(lock_path):
+                # A single absent reading cannot be trusted here: this is
+                # the same delete-pending window named above, and a lock
+                # file mid-unlink can read back "gone" to `exists()` for
+                # the same narrow moment `os.open()` itself is racing
+                # against (#2551 self-review, auditor). Recheck once, after
+                # a beat, before concluding the create itself is unusable
+                # rather than a holder caught mid-release.
+                time.sleep(0.05)
+                if not _exists_or_assume_so(lock_path):
+                    # `fn()` here is outside every branch that retries, on
+                    # purpose: an `OSError` `fn` itself raises must
+                    # propagate to *this* caller once, not be mistaken for
+                    # a second lock-acquisition failure and rerun `fn` a
+                    # second time (#2331 self-review).
+                    return fn()
+                # The recheck found the lock file after all -- it was a
+                # holder caught mid-release, not an unusable lock_dir. Fall
+                # through to the same contention handling FileExistsError
+                # already gets, below.
             # A lock file older than `stale_after_s` is presumed abandoned by
             # a holder that never reached its own `finally` -- killed
             # outright, or an unlink that itself failed (see the warning
@@ -137,18 +188,12 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
             # *this* caller once, not be mistaken for a second
             # lock-acquisition failure and rerun `fn` a second time (#2331
             # self-review) -- an earlier draft nested this `return fn()`
-            # inside a `try` whose sibling `except OSError:` below caught
-            # exactly that, and a real `fn` failure on this path silently ran
-            # twice before finally propagating.
+            # inside a `try` whose sibling immediate-fallback branch above
+            # caught exactly that, and a real `fn` failure on this path
+            # silently ran twice before finally propagating.
             if time.time() >= deadline:
                 return fn()
             time.sleep(0.05)
-        except OSError:
-            # The lock file itself could not be created for some other reason
-            # (an unwritable lock_dir, for instance) -- not "someone else has
-            # it". `fn` has not been called yet on this branch, so calling it
-            # once here cannot double-invoke anything.
-            return fn()
 
     try:
         return fn()
