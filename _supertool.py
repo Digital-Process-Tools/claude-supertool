@@ -6765,7 +6765,23 @@ def _pattern_gate(pattern: str) -> Tuple[str, str, str]:
     note correcting the request they just made. Refusing costs nothing a
     caller meant: the predicate fires only on a top-level alternation with a
     branch that matches every probe, so `^$|alpha` and `colo(u|)r` still run.
+
+    The #150 ReDoS backtracking guard (`_has_outer_wrapped_unbounded_group`,
+    hardened by #1311/#2535) lived only inside `_op_grep` until #2547: every
+    other route through this chokepoint -- `around`'s public wrapper and
+    `read`'s `grep=` -- reached `re.compile`/match against real file content
+    with the same adversarial shape (`(x(a+)+y)`) completely unrefused. Single-
+    sourcing it here, ahead of the rewrite, is the fix `_pattern_gate`'s own
+    reason for existing already argues for: a guard wired route by route is a
+    guard that drifts, the same way the rewrite and the saturation refusal
+    once did (#1344).
     """
+    if _has_outer_wrapped_unbounded_group(pattern):
+        return pattern, (
+            "ERROR: pattern contains nested unbounded quantifiers "
+            f"({pattern!r}) — would risk catastrophic backtracking. "
+            "Rewrite without `(...+)+`-style nesting.\n"
+        ), ""
     effective, rewritten = _bre_alternation_rewrite(pattern)
     refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
     if refusal:
