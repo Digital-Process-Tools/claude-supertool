@@ -289,10 +289,26 @@ def test_channel_disclosure_states_the_opt_out(monkeypatch):
     assert "desktop" in blob.lower(), blob
 
 
-def test_channel_disclosure_says_nothing_extra_when_not_opted_out(monkeypatch):
+def test_channel_disclosure_states_the_default_off_state(monkeypatch):
+    """#2544's own reason 1 applies to this board too: with neither knob set
+    (the new default), the board must say OFF and name the opt-in -- silence
+    on this line must never mean two different things (default-off and
+    opted-in both used to read as nothing said at all)."""
     monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.delenv(transport.DESKTOP_ENV, raising=False)
     blob = "\n".join(transport.channel_disclosure())
     assert transport.NO_DESKTOP_ENV not in blob, blob
+    assert transport.DESKTOP_ENV in blob, blob
+    assert "OFF" in blob, blob
+
+
+def test_channel_disclosure_states_the_opted_in_state(monkeypatch):
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    blob = "\n".join(transport.channel_disclosure())
+    assert transport.DESKTOP_ENV in blob, blob
+    assert "ON" in blob, blob
+    assert "OFF" not in blob, blob
 
 
 def test_the_change_is_findable() -> None:

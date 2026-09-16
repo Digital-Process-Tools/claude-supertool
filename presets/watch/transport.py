@@ -1302,18 +1302,34 @@ def channel_disclosure() -> list[str]:
     the reason `delivery_of` and `DELIVERY_LABELS` live here too. `[]` when there
     is nothing to say.
 
-    The desktop opt-out (#2170) joins the same list for the same reason: an
-    operator who has silenced the macOS ping must see that stated here, not
-    infer it from the absence of a notification they cannot distinguish from
-    "nothing has happened" or "System Settings ate it" (the gap the issue
-    itself names). The socket and status-file transports are unaffected and
-    say so, so a reader does not read this as the fleet going dark.
+    The desktop knob (#2170, #2544) joins the same list for the same reason:
+    an operator's actual desktop state must be stated here, not inferred from
+    the absence of a notification -- which cannot be told apart from "nothing
+    has happened" or "System Settings ate it" (the gap #2170 named) or, since
+    #2544 flipped the default to off, from "nobody has opted in yet" either.
+    Three states, not the two this used to cover: opted out
+    (`NO_DESKTOP_ENV`) always reads OFF; opted in (`DESKTOP_ENV`) and not
+    opted out reads ON; neither set -- now the common case for every
+    pre-#2544 config -- reads OFF too, naming the opt-in rather than the
+    opt-out, because silence on this line must never mean two different
+    things. The socket and status-file transports are unaffected either way
+    and say so, so a reader does not read any of this as the fleet going
+    dark.
     """
     lines = naming.disclosure_lines(RESOLVED, naming.declared_names())
     if desktop_notify_disabled():
         lines = lines + [
             f"desktop notifications are OFF ({NO_DESKTOP_ENV} is set) — the "
             f"socket and status-file transports are unaffected"]
+    elif desktop_notify_enabled():
+        lines = lines + [
+            f"desktop notifications are ON ({DESKTOP_ENV} is set) — the "
+            f"socket and status-file transports are unaffected"]
+    else:
+        lines = lines + [
+            f"desktop notifications are OFF (default -- set {DESKTOP_ENV}=1 "
+            f"to opt in) — the socket and status-file transports are "
+            f"unaffected"]
     return lines
 
 
