@@ -98,7 +98,7 @@ class TestAvailable:
         _config_at(monkeypatch, tmp_path, {
             "ops": {"gl-mr": {"cmd": _probe_cmd("ran-mr.txt", "MR-OK")}},
         })
-        out = supertool.dispatch("gl-mr:1")
+        out = supertool.dispatch("gl-mr")
         _assert_probe_ran(out, tmp_path, "ran-mr.txt", "MR-OK")
         assert "unknown operation" not in out
         assert "unavailable here" not in out
@@ -235,7 +235,7 @@ class TestUnavailableHere:
         _config_at(monkeypatch, tmp_path, {
             "ops": {"gh-job": {"cmd": _probe_cmd("ran-local.txt", "LOCAL")}},
         })
-        out = supertool.dispatch("gh-job:1")
+        out = supertool.dispatch("gh-job")
         _assert_probe_ran(out, tmp_path, "ran-local.txt", "LOCAL")
         assert "unavailable here" not in out
 

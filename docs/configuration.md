@@ -186,6 +186,8 @@ Use `{file}`/`{dir}` for file operations, `{arg}`/`{args}` for non-file argument
 
 **`{file}`, `{dir}` and `{arg}` take exactly one token, and a token they cannot reach is now refused** ([#873](https://github.com/Digital-Process-Tools/claude-supertool/issues/873)). `op:all:dry` against `"cmd": "tool.py {arg}"` used to run as `argv == ["all"]` — the `:dry` vanished silently, which in the filed case meant a dry-run flag was dropped and the op pushed for real. The op is now declined before it runs, with the dropped text named. If your op takes more than one `:`-separated argument, write `{args}` (each token its own argv word) or `{argjoin}` (all tokens rejoined with `:::` as one word).
 
+**A `cmd` naming no placeholder at all takes the same refusal** ([#1532](https://github.com/Digital-Process-Tools/claude-supertool/issues/1532)). `"cmd": "make lint"` called as `op:x` used to drop `x` just as silently — write `{args}`/`{argjoin}` if your op needs to reach a caller token, or nothing if it genuinely takes none.
+
 ## Extra config keys as environment variables
 
 Any key in a custom op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`, `exitStatus`) is passed to the subprocess as a `SUPERTOOL_` prefixed environment variable:

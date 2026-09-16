@@ -246,7 +246,7 @@ class TestPresetDispatchIntegration:
             "ops": {"local": {"cmd": "echo from_project"}}
         }
         supertool._merge_presets(supertool._CONFIG, str(tmp_path))
-        out_remote = supertool.dispatch("remote:x")
-        out_local = supertool.dispatch("local:x")
+        out_remote = supertool.dispatch("remote")
+        out_local = supertool.dispatch("local")
         assert "from_preset" in out_remote
         assert "from_project" in out_local

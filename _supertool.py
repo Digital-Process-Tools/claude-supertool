@@ -3941,21 +3941,24 @@ def _unconsumed_arg_tokens(cmd_template: str, parts: List[str]) -> List[str]:
     unconsumed token is empty — `op:all:` carries no text to lose, and
     refusing a bare trailing separator would be noise rather than disclosure.
 
-    **A template with NO argument placeholder is deliberately not held here**,
-    even though `op:x` against `"cmd": "make lint"` drops `x` just as silently.
-    That is a different claim: this op never said it takes an argument, so
-    nothing in its receipt can read as a flag that was honoured — which is the
-    specific harm #873 was filed about. It is also a much wider net: measured
-    on the full suite, 15 tests across 6 files hand a throwaway token to a
-    placeholder-free `cmd`, and `op_check` forwards its path to whatever entry
-    the caller named whether or not that entry can use one. Refusing there is
-    worth doing and is filed separately rather than ridden in on this diff.
+    **A template with NO argument placeholder at all** (#1532, split out of
+    #873 deliberately, priced and declined until now) is held to the same
+    rule: nothing in `parts[1:]` can ever reach the subprocess, so every one
+    of those tokens is unconsumed, not just `parts[2:]`. `op:x` against
+    `"cmd": "make lint"` used to drop `x` exactly as silently as the
+    single-placeholder case #873 already refuses. Measured population is 4
+    shipped ops (`git-conflicts`, `mcp_status`, `mcp_stop_all`, `watches`,
+    pinned in `tests/test_custom_op_dropped_tokens_873.py`) plus whatever a
+    project's own `.supertool.json` defines — a much smaller net than #873
+    feared, because the pinned population is exactly 4, not an unbounded
+    fraction of the registry.
     """
     if any(p in cmd_template for p in _ALL_ARGS_PLACEHOLDERS):
         return []
-    if not any(p in cmd_template for p in _ONE_ARG_PLACEHOLDERS):
-        return []
-    extra = list(parts[2:])
+    if any(p in cmd_template for p in _ONE_ARG_PLACEHOLDERS):
+        extra = list(parts[2:])
+        return extra if any(extra) else []
+    extra = list(parts[1:])
     return extra if any(extra) else []
 
 
