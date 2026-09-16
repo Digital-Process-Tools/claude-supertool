@@ -24,7 +24,7 @@ the authorised user over OAuth2. `youtube_reply`, `youtube_like` and
 | `youtube_read` | `youtube_read:VIDEO_ID_OR_URL` | Video title, channel, stats, top N inline comments (with comment IDs) |
 | `youtube_list` | `youtube_list:CHANNEL[\|N]` | A channel's uploads: title, publish date, watch URL per video |
 | `youtube_auth` | `youtube_auth[:status]` | Runs the one-time OAuth2 consent flow, or reports what is cached |
-| `youtube_comment` | `youtube_comment:VIDEO_ID_OR_URL\|TEXT_OR_file://PATH[\|force]` | Posts one top-level comment, then reads it back and reports whether it could confirm it |
+| `youtube_comment` | `youtube_comment:VIDEO_ID_OR_URL\|TEXT_OR_file://PATH[\|force][\|force-dup]` | Posts one top-level comment, then reads it back and reports whether it could confirm it |
 
 `N` defaults to `SUPERTOOL_DEFAULT_LIMIT` (10), same env knob as `bluesky_list`/`bluesky_search`. `youtube_read`'s inline comment count is `SUPERTOOL_INLINE_COMMENTS` (5), same knob `bluesky_read` uses for inline replies.
 
@@ -96,11 +96,16 @@ believing a comment landed. The op says so in its own output.
 
 ### Guardrails
 
-Three, and each one refuses rather than warns. `|force` as the last field
-overrides any of them.
+Three, and each one refuses rather than warns. Two of them take **different**
+override tokens, passed as trailing fields in either order: `|force` confirms
+the publish, `|force-dup` overrides the sentinel. One does not grant the other.
+They shared a single `|force` in the first draft, which left the duplicate guard
+off on every invocation that actually published, since `|force` is what an
+operator has to pass to publish at all.
 
 - **Confirmation.** No `|force` and no `no_publish_confirm`, no publish. Shared
-  with every other publishing op through `presets/_publish_safety.py`.
+  with every other publishing op through `presets/_publish_safety.py`. `|force`
+  buys this and nothing else.
 - **One comment per video, 5 writes per hour.** Recorded in
   `~/.config/youtube/sent.jsonl` (0600). The cap is #227's number and is not
   derived from quota: 50 units a comment against 10,000 a day would allow 200,
@@ -108,7 +113,8 @@ overrides any of them.
   exists and **cannot be read** is `cannot-tell`, which is treated as a refusal --
   an unreadable log is not an empty one, and this preset has no delete op, so an
   unknown is the one state where doing nothing is clearly right. A *missing* log
-  is a real answer and is fine: nothing was written yet.
+  is a real answer and is fine: nothing was written yet. Overridden by
+  `|force-dup`, which is a separate token for exactly this reason.
 - **Authorship disclosure.** `[AI-generated]` is appended unless
   `no_publish_disclosure` is set, and the output says `(disclosure: suppressed)`
   when it was not.

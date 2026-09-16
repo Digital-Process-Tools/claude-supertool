@@ -40,8 +40,8 @@
       "safety": "acts",
       "cmd": "{python} {path}youtube/comment.py {args}",
       "timeout": 45,
-      "description": "Post ONE top-level comment (commentThreads.insert, 50 quota units), then read it back and report verified / MISMATCH / could-not-verify separately -- a 2xx is not visibility, because YouTube holds or shadow-bans programmatic comments silently. Refuses without |force: a second comment on a video already in ~/.config/youtube/sent.jsonl, more than 5 writes in an hour, or a sentinel log it cannot read. Appends the [AI-generated] marker unless no_publish_disclosure is set.",
-      "syntax": "youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force]",
+      "description": "Post ONE top-level comment (commentThreads.insert, 50 quota units), then read it back and report verified / MISMATCH / could-not-verify separately -- a 2xx is not visibility, because YouTube holds or shadow-bans programmatic comments silently. Needs |force to publish at all (the shared publish confirmation). Separately refuses, overridable only with |force-dup, a second comment on a video already in ~/.config/youtube/sent.jsonl, more than 5 writes in an hour, or a sentinel log it cannot read. Appends the [AI-generated] marker unless no_publish_disclosure is set.",
+      "syntax": "youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force][|force-dup]",
       "paths": { "args": [] },
       "example": "youtube_comment:dQw4w9WgXcQ|Good breakdown of the retry logic."
     }

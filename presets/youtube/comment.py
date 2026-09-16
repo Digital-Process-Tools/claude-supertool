@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force] (#227).
+"""youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force][|force-dup] (#227).
 
 Posts one top-level comment via `commentThreads.insert`, then reads it back.
 
@@ -28,6 +28,12 @@ video, 5 writes/hour), and `apply_disclosure` (the `[AI-generated]` marker,
 opt-out via `no_publish_disclosure`). The sentinel's `cannot-tell` is treated
 as a refusal: this preset has no delete op, so an unknown is the one state
 where doing nothing is clearly right.
+
+**The first two take different tokens.** `|force` confirms the publish,
+`|force-dup` overrides the sentinel, and passing one does not grant the
+other. They shared `|force` in the first draft of #2543, which left the
+duplicate guard off on every invocation that actually published, since
+`|force` is what an operator has to pass to publish at all.
 """
 from __future__ import annotations
 
@@ -53,6 +59,7 @@ from read import parse_video_id  # noqa: E402
 #: refusal before the network rather than a surprise after it.
 MAX_LEN = 10000
 _FILE_PREFIX = "file://"
+USAGE = ("youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force][|force-dup]")
 
 
 def _resolve_body(arg: str) -> str:
@@ -73,15 +80,33 @@ def _resolve_body(arg: str) -> str:
     return resolved.read_text(encoding="utf-8")
 
 
-def parse_args(arg: str) -> tuple[str, str, bool]:
-    """(video_id, body, force)."""
+def parse_args(arg: str) -> tuple[str, str, bool, bool]:
+    """(video_id, body, force, force_dup).
+
+    Two tokens, not one. `force` is the shared publish confirmation every
+    op in this repo takes; `force-dup` is the separate permission to post
+    over the sentinel. Folding them together would have disarmed the
+    duplicate guard on every normal invocation, because `force` is the token
+    the usage string tells an operator to pass in order to publish at all --
+    and this preset has no delete op, so that is the guard that matters.
+
+    Both are read from the trailing fields, in either order.
+    """
     parts = arg.split("|")
     if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
-        sys.stderr.write(
-            "ERROR: usage youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force]\n")
+        sys.stderr.write(f"ERROR: usage {USAGE}\n")
         sys.exit(2)
-    force = len(parts) > 2 and parts[-1].strip().lower() == "force"
-    text_fields = parts[1:-1] if force else parts[1:]
+    force = force_dup = False
+    while len(parts) > 2:
+        token = parts[-1].strip().lower()
+        if token == "force":
+            force = True
+        elif token == "force-dup":
+            force_dup = True
+        else:
+            break
+        parts.pop()
+    text_fields = parts[1:]
     # Rejoin on "|" so a body containing a pipe survives, which a plain
     # `split("|", 2)` would silently truncate at the second one.
     body = _resolve_body("|".join(text_fields)).strip()
@@ -92,7 +117,7 @@ def parse_args(arg: str) -> tuple[str, str, bool]:
         sys.stderr.write(
             f"ERROR: comment is {len(body)} chars (YouTube's max is {MAX_LEN}).\n")
         sys.exit(2)
-    return parse_video_id(parts[0].strip()), body, force
+    return parse_video_id(parts[0].strip()), body, force, force_dup
 
 
 def verify(comment_id: str, token: str, sent: str) -> tuple[str, str]:
@@ -132,14 +157,20 @@ def main(arg: str) -> None:
     # nothing about a write that already happened (#2062's failure, on the one
     # path where it cannot be retried).
     use_utf8_stdout()
-    video_id, body, force = parse_args(arg)
+    video_id, body, force, force_dup = parse_args(arg)
     body, disclosure_state = apply_disclosure(body, max_len=MAX_LEN)
     require_confirm("youtube_comment", body, force=force)
 
+    # `force` is spent on the confirmation above and buys nothing here. The
+    # sentinel takes its own token, so confirming a publish is not also a
+    # licence to double-post on a video this account already commented on.
     verdict, reason = _sentinel.check(video_id)
-    if verdict != "ok" and not force:
+    if verdict != "ok" and not force_dup:
         label = "ABORT" if verdict == "refuse" else "ABORT (cannot tell)"
-        sys.stderr.write(f"{label} -- {reason}\n  Use |force to post anyway.\n")
+        sys.stderr.write(
+            f"{label} -- {reason}\n"
+            "  Use |force-dup as a further field to post anyway "
+            "(|force alone confirms the publish, it does not override this).\n")
         sys.exit(1)
 
     try:
@@ -192,7 +223,6 @@ def main(arg: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.stderr.write(
-            "ERROR: usage youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force]\n")
+        sys.stderr.write(f"ERROR: usage {USAGE}\n")
         sys.exit(2)
     main(":".join(sys.argv[1:]))

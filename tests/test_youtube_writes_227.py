@@ -159,12 +159,12 @@ def test_the_log_is_written_0600(config_home: Path) -> None:
 # --- argument parsing ----------------------------------------------------
 
 def test_parse_args_splits_video_and_body() -> None:
-    vid, body, force = comment_op.parse_args("dQw4w9WgXcQ|nice work")
-    assert (vid, body, force) == ("dQw4w9WgXcQ", "nice work", False)
+    vid, body, force, force_dup = comment_op.parse_args("dQw4w9WgXcQ|nice work")
+    assert (vid, body, force, force_dup) == ("dQw4w9WgXcQ", "nice work", False, False)
 
 
 def test_parse_args_accepts_a_url_for_the_video() -> None:
-    vid, _, _ = comment_op.parse_args(
+    vid, _, _, _ = comment_op.parse_args(
         "https://www.youtube.com/watch?v=dQw4w9WgXcQ|hi")
     assert vid == "dQw4w9WgXcQ"
 
@@ -173,13 +173,13 @@ def test_parse_args_keeps_a_pipe_inside_the_body() -> None:
     """A body is prose and prose contains pipes. `split("|", 2)` would drop
     everything after the second one, silently publishing a truncated comment.
     """
-    _, body, force = comment_op.parse_args("vid|before | after")
+    _, body, force, _ = comment_op.parse_args("vid|before | after")
     assert body == "before | after"
     assert force is False
 
 
 def test_parse_args_reads_force_from_the_last_field() -> None:
-    _, body, force = comment_op.parse_args("vid|before | after|force")
+    _, body, force, _ = comment_op.parse_args("vid|before | after|force")
     assert force is True
     assert body == "before | after"
 
@@ -566,3 +566,74 @@ def test_a_loose_credential_is_still_refused_where_bits_are_enforced(
     with pytest.raises(SystemExit) as e:
         oauth.get_access_token()
     assert e.value.code == 2
+
+
+# --- |force confirms, |force-dup overrides the sentinel (review of #2543) --
+
+def test_parse_args_reads_the_two_override_tokens_separately() -> None:
+    """`force` and `force-dup` are different permissions and are parsed as
+    two flags, in either order, from the trailing fields."""
+    _, body, force, force_dup = comment_op.parse_args(
+        "vid|before | after|force|force-dup")
+    assert body == "before | after"
+    assert (force, force_dup) == (True, True)
+    _, _, force, force_dup = comment_op.parse_args("vid|hi|force-dup|force")
+    assert (force, force_dup) == (True, True)
+
+
+def test_parse_args_keeps_a_lone_force_out_of_the_sentinel_flag() -> None:
+    _, _, force, force_dup = comment_op.parse_args("vid|hi|force")
+    assert (force, force_dup) == (True, False)
+
+
+def test_force_alone_does_not_bypass_the_duplicate_guard(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    """The finding this section exists for. `|force` is the token the usage
+    string tells an operator to pass to confirm a publish, so if it also
+    disarmed the sentinel the duplicate guard would be off on every normal
+    invocation -- and this preset has no delete op.
+    """
+    calls = _wire(monkeypatch, insert=_INSERT_OK, readback=_readback("x"))
+    sentinel.record(op="youtube_comment", video_id="vid9", comment_id="c",
+                    url="u", verification="verified")
+    with pytest.raises(SystemExit) as e:
+        comment_op.main("vid9|another one|force")
+    assert e.value.code == 1
+    assert "force-dup" in capsys.readouterr().err
+    assert not calls, "a confirmed publish is not a licence to double-post"
+
+
+def test_force_alone_does_not_bypass_an_unreadable_sentinel(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _wire(monkeypatch, insert=_INSERT_OK, readback=_readback("x"))
+    (config_home / "sent.jsonl").write_text("{broken\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as e:
+        comment_op.main("vid9|hello|force")
+    assert e.value.code == 1
+    assert not calls
+
+
+def test_force_dup_does_bypass_the_duplicate_guard(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The must-fire half. Without this the two above would also pass if
+    `force-dup` overrode nothing at all."""
+    calls = _wire(monkeypatch, insert=_INSERT_OK, readback=ECHO)
+    sentinel.record(op="youtube_comment", video_id="vid9", comment_id="c",
+                    url="u", verification="verified")
+    comment_op.main("vid9|another one|force|force-dup")
+    assert [c for c in calls if c["method"] == "POST"], (
+        "force-dup is the documented override and has to actually override")
+
+
+def test_force_dup_alone_does_not_confirm_the_publish(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other direction of the split: overriding the sentinel is not
+    consent to publish either."""
+    calls = _wire(monkeypatch, insert=_INSERT_OK, readback=_readback("x"))
+    monkeypatch.delenv("SUPERTOOL_NO_PUBLISH_CONFIRM", raising=False)
+    monkeypatch.chdir(config_home)
+    with pytest.raises(SystemExit) as e:
+        comment_op.main("vid9|hello|force-dup")
+    assert e.value.code == 2
+    assert not calls
