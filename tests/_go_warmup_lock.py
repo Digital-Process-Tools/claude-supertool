@@ -147,21 +147,54 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
                 # the same delete-pending window named above, and a lock
                 # file mid-unlink can read back "gone" to `exists()` for
                 # the same narrow moment `os.open()` itself is racing
-                # against (#2551 self-review, auditor). Recheck once, after
-                # a beat, before concluding the create itself is unusable
-                # rather than a holder caught mid-release.
-                time.sleep(0.05)
+                # against (#2551 self-review, auditor). But absence can
+                # just as easily mean the holder really did just unlink
+                # the lock file on release -- the lock is genuinely free
+                # -- and one more recheck of `exists()` cannot tell that
+                # apart from "nobody will ever create it here". Giving up
+                # and running `fn()` immediately on that recheck races a
+                # third caller that wins the now-free lock during the same
+                # window: this caller would then run `fn()` concurrently
+                # with that third caller, the exact hazard this whole
+                # function exists to prevent (#2553). So retry the create
+                # itself, bounded by the same `deadline` every other wait
+                # on this path already uses, instead of trusting one more
+                # snapshot read of `exists()`.
+                while fd is None and time.time() < deadline:
+                    time.sleep(0.05)
+                    try:
+                        fd = os.open(
+                            str(lock_path),
+                            os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    except OSError:
+                        if _exists_or_assume_so(lock_path):
+                            # A lock file exists now -- someone else won
+                            # the race for it, or is genuinely holding it.
+                            # Real contention, not an unusable lock_dir:
+                            # fall through to the same handling
+                            # FileExistsError already gets, below.
+                            break
+                        # Still nothing there -- keep retrying until the
+                        # deadline.
+                if fd is not None:
+                    # Won the retry race ourselves: go back to the top of
+                    # the outer loop, which exits immediately since `fd`
+                    # is no longer `None`.
+                    continue
                 if not _exists_or_assume_so(lock_path):
+                    # The create kept failing and no lock file ever
+                    # appeared for the whole retry window: a genuinely
+                    # unusable lock_dir, not a race we lost.
+                    #
                     # `fn()` here is outside every branch that retries, on
                     # purpose: an `OSError` `fn` itself raises must
                     # propagate to *this* caller once, not be mistaken for
                     # a second lock-acquisition failure and rerun `fn` a
                     # second time (#2331 self-review).
                     return fn()
-                # The recheck found the lock file after all -- it was a
-                # holder caught mid-release, not an unusable lock_dir. Fall
-                # through to the same contention handling FileExistsError
-                # already gets, below.
+                # A lock file exists now -- someone else grabbed it while
+                # we were retrying. Fall through to the same contention
+                # handling FileExistsError already gets, below.
             # A lock file older than `stale_after_s` is presumed abandoned by
             # a holder that never reached its own `finally` -- killed
             # outright, or an unlink that itself failed (see the warning

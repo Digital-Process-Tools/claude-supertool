@@ -479,6 +479,57 @@ def test_a_transient_exists_check_miss_is_rechecked_before_falling_back(
         "to close")
 
 
+def test_the_absence_recheck_keeps_waiting_past_one_beat_before_giving_up(
+        tmp_path: Path, monkeypatch) -> None:
+    """#2553: the #2551/#2551-self-review fix trusted a single 0.05s
+    recheck to tell "genuinely unusable lock_dir" from "the holder just
+    released -- the lock is actually free". That one extra reading is
+    exactly as untrustworthy as the first snapshot: a third caller can
+    win the now-free lock at any point during -- or after -- that one
+    recheck window, not only inside its first 0.05s. A waiter that gave
+    up after one recheck and ran `fn()` immediately would then run
+    concurrently with that third caller, the exact hazard this whole
+    module exists to prevent. Reproduced here with a longer-than-one-beat
+    "still gone" stretch before the lock file (`exists()`) genuinely
+    appears -- past what the old single recheck could ever see -- and the
+    caller must still have waited for it rather than bailing out
+    immediately."""
+    lock_path = tmp_path / "go_warmup.lock"
+    exists_calls = []
+
+    real_exists = lock_mod.Path.exists
+
+    def _flaky_exists(self):
+        if self == lock_path:
+            exists_calls.append(1)
+            # Stays "gone" for several rechecks -- well past the single
+            # 0.05s recheck the old fix trusted -- before a (simulated)
+            # third caller's lock file is observed.
+            return len(exists_calls) > 3
+        return real_exists(self)
+
+    def _boom(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(lock_mod.Path, "exists", _flaky_exists)
+    monkeypatch.setattr(lock_mod.os, "open", _boom)
+
+    called = []
+    start = time.monotonic()
+    result = lock_mod.serialize_once(
+        tmp_path, "go_warmup", lambda: called.append(1) or "ran",
+        timeout_s=0.3)
+    elapsed = time.monotonic() - start
+
+    assert result == "ran"
+    assert called == [1]
+    assert elapsed >= 0.25, (
+        "gave up after the old single recheck and ran fn() immediately "
+        "instead of continuing to wait/retry through a longer stretch "
+        "where a lock file genuinely existed (a third caller had won it) "
+        "-- elapsed %.3fs" % elapsed)
+
+
 def test_an_exists_check_that_itself_raises_is_treated_as_contention_not_a_crash(
         tmp_path: Path, monkeypatch) -> None:
     """Auditor finding on the #2551 fix itself: `Path.exists()` swallows
