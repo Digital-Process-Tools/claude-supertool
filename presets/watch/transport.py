@@ -1697,7 +1697,7 @@ def installed_version() -> tuple[str | None, str]:
     root = Path(__file__).resolve().parent.parent.parent / "_supertool.py"
     try:
         text = root.read_text(encoding="utf-8")
-    except OSError as err:
+    except (OSError, ValueError) as err:
         return None, f"could not read {root} ({type(err).__name__})"
     match = _INSTALLED_VERSION_RE.search(text)
     if not match:

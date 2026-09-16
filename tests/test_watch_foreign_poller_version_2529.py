@@ -110,6 +110,25 @@ def test_installed_version_declines_rather_than_guessing_when_the_file_is_missin
     assert why
 
 
+def test_installed_version_declines_rather_than_crashing_on_a_malformed_file(
+        monkeypatch, tmp_path) -> None:
+    """A corrupted plugin-cache download or a bad partial write can leave
+    _supertool.py holding bytes that are not valid UTF-8. UnicodeDecodeError
+    is a ValueError subclass, not an OSError subclass, so a bare
+    `except OSError` around read_text lets it escape uncaught -- crashing the
+    whole `watches` render instead of returning the documented (None, why)
+    "could not read" state, exactly the shape this repo's own _supertool.py
+    (lines 606, 696) and this same module (lines 290, 767) already guard
+    against by catching OSError and ValueError together."""
+    bad_root = tmp_path / "nowhere" / "presets" / "watch" / "transport.py"
+    (tmp_path / "nowhere").mkdir(parents=True)
+    (tmp_path / "nowhere" / "_supertool.py").write_bytes(b"VERSION = \xff\xfe not utf-8")
+    monkeypatch.setattr(transport, "Path", lambda *a, **k: bad_root)
+    version, why = transport.installed_version()
+    assert version is None
+    assert why
+
+
 # ---------------------------------------------------------------------------
 # foreign_version_disclosure -- the rendered clause
 # ---------------------------------------------------------------------------
