@@ -98,18 +98,45 @@ def _lock_dir_usable(lock_dir: Path) -> bool:
     never collide with a real holder's lock file or with the Windows
     delete-pending window `_exists_or_assume_so` exists to tolerate (#2551)
     -- nobody else knows this filename, so nobody else can be holding it.
-    Any `OSError` here therefore means the directory itself is unusable
+    An `OSError` here almost always means the directory itself is unusable
     (missing, unwritable, wrong permissions), never "someone else has this
-    one file open"; there is no exception-type ambiguity left to resolve,
-    unlike the real lock file's own create attempt.
+    one file open"; there is no exception-type ambiguity of *that* kind
+    left to resolve, unlike the real lock file's own create attempt. It can
+    still be a one-off hiccup unrelated to `lock_dir`'s own writability (a
+    transient AV scan touching the just-created probe file, the same
+    Windows phenomenon `tests/conftest.py` names for a different lock) --
+    this function cannot tell that apart from a genuinely broken directory,
+    so it reports it (self-review, auditor) rather than swallowing it the
+    way #2551's original absence-recheck bug did, and answers `False`
+    either way: the caller's contract is "never fails, always falls back to
+    `fn()` safely", so treating an unreadable probe result as `unusable` is
+    the same safe direction `_exists_or_assume_so` already takes for the
+    read side of this same ambiguity.
     """
     probe_path = lock_dir / (".serialize_once_probe_%d_%s" % (
         os.getpid(), uuid.uuid4().hex))
     try:
         fd = os.open(str(probe_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError:
+    except OSError as exc:
+        warnings.warn(
+            "serialize_once's lock_dir probe could not create %s: %s -- "
+            "treating lock_dir as unusable" % (probe_path, exc),
+            stacklevel=2)
         return False
-    os.close(fd)
+    try:
+        os.close(fd)
+    except OSError as exc:
+        # Closing a handle this process itself just opened should never
+        # fail, but the same transient interference the comment above
+        # names could still hit it -- caught rather than left to propagate
+        # out of a function whose whole contract is "never raises"
+        # (self-review, auditor).
+        warnings.warn(
+            "serialize_once's lock_dir probe could not close its own "
+            "handle on %s: %s -- treating lock_dir as unusable" % (
+                probe_path, exc),
+            stacklevel=2)
+        return False
     try:
         probe_path.unlink()
     except OSError:
