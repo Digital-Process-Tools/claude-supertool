@@ -11,6 +11,7 @@
     "CHANGELOG.md",
     "README.md"
   ],
+  "triage_route_threshold": 2,
   "changelog_dir": "changelog.d",
   "user_visible_paths": [
     "^_?supertool\\.py$",
@@ -124,7 +125,8 @@
     "commit_subject": null,
     "triggers": {
       "merged_prs": 20,
-      "soak_hours": 48
+      "soak_hours": 48,
+      "triage_after_release": true
     }
   }
 }
