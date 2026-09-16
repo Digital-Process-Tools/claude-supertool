@@ -66,7 +66,8 @@ def test_op_around_still_finds_a_benign_match():
     """Positive control: an ordinary around call must still work."""
     result = supertool.op_around("VERSION", "_supertool.py", 1)
     assert "catastrophic backtracking" not in result
-    assert result.startswith("ERROR:") is False or "VERSION" in result
+    assert "VERSION" in result, (
+        "op_around no longer found a benign match: " + repr(result[:200]))
 
 
 def test_op_read_grep_filter_refuses_it():
