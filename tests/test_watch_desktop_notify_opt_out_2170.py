@@ -289,17 +289,18 @@ def test_channel_disclosure_states_the_opt_out(monkeypatch):
     assert "desktop" in blob.lower(), blob
 
 
-def test_channel_disclosure_states_the_default_off_state(monkeypatch):
-    """#2544's own reason 1 applies to this board too: with neither knob set
-    (the new default), the board must say OFF and name the opt-in -- silence
-    on this line must never mean two different things (default-off and
-    opted-in both used to read as nothing said at all)."""
+def test_channel_disclosure_says_nothing_extra_on_the_default(monkeypatch):
+    """With neither knob set (the new default), the board stays silent about
+    desktop notifications -- silence now means exactly one thing (off,
+    nothing configured), the same way it used to mean exactly one thing (on)
+    before #2544 flipped the default. A line on every render regardless of
+    configuration was tried and reverted (#2560): it broke every board/banner
+    test in the suite that asserts silence on a healthy default render."""
     monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
     monkeypatch.delenv(transport.DESKTOP_ENV, raising=False)
     blob = "\n".join(transport.channel_disclosure())
     assert transport.NO_DESKTOP_ENV not in blob, blob
-    assert transport.DESKTOP_ENV in blob, blob
-    assert "OFF" in blob, blob
+    assert transport.DESKTOP_ENV not in blob, blob
 
 
 def test_channel_disclosure_states_the_opted_in_state(monkeypatch):

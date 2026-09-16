@@ -1303,18 +1303,25 @@ def channel_disclosure() -> list[str]:
     is nothing to say.
 
     The desktop knob (#2170, #2544) joins the same list for the same reason:
-    an operator's actual desktop state must be stated here, not inferred from
-    the absence of a notification -- which cannot be told apart from "nothing
-    has happened" or "System Settings ate it" (the gap #2170 named) or, since
-    #2544 flipped the default to off, from "nobody has opted in yet" either.
-    Three states, not the two this used to cover: opted out
-    (`NO_DESKTOP_ENV`) always reads OFF; opted in (`DESKTOP_ENV`) and not
-    opted out reads ON; neither set -- now the common case for every
-    pre-#2544 config -- reads OFF too, naming the opt-in rather than the
-    opt-out, because silence on this line must never mean two different
-    things. The socket and status-file transports are unaffected either way
-    and say so, so a reader does not read any of this as the fleet going
-    dark.
+    an operator's actual desktop state must be stated here when it is
+    anything other than the default, not inferred from the absence of a
+    notification -- which cannot be told apart from "nothing has happened"
+    or "System Settings ate it" (the gap #2170 named). Since #2544 flipped
+    the default to off, silence here now means exactly one thing --
+    desktop notifications are off, nothing was configured -- the same way
+    silence used to mean exactly one thing (on) before the flip. Only a
+    departure from that default gets a line: opted out (`NO_DESKTOP_ENV`)
+    still reads OFF, explicitly, for the operator who set it on purpose;
+    opted in (`DESKTOP_ENV`) and not opted out reads ON, since that is now
+    the surprising state worth confirming landed. A line on every render
+    regardless of configuration was tried and reverted (#2560): it broke
+    every board/banner test asserting silence on a healthy default render,
+    trading a real but narrow ambiguity (silence meaning two different
+    things only in the disabled-vs-just-flipped-default window right after
+    #2544 shipped) for a banner nobody asked for on every single run
+    afterward. The socket and status-file transports are unaffected either
+    way and the ON/OFF-explicit lines say so, so a reader does not read
+    either as the fleet going dark.
     """
     lines = naming.disclosure_lines(RESOLVED, naming.declared_names())
     if desktop_notify_disabled():
@@ -1325,11 +1332,6 @@ def channel_disclosure() -> list[str]:
         lines = lines + [
             f"desktop notifications are ON ({DESKTOP_ENV} is set) — the "
             f"socket and status-file transports are unaffected"]
-    else:
-        lines = lines + [
-            f"desktop notifications are OFF (default -- set {DESKTOP_ENV}=1 "
-            f"to opt in) — the socket and status-file transports are "
-            f"unaffected"]
     return lines
 
 

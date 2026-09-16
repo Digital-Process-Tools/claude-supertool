@@ -1678,13 +1678,14 @@ notification, and it **always wins over the opt-in**: an operator who already
 set it keeps getting silence no matter what `SUPERTOOL_WATCH_DESKTOP` says —
 the existing key means "never", and a key that means never must not be
 overridable by one that means "yes please".
-`watches` and `radar` both state the actual desktop state -- OFF by
-default, ON when opted in, OFF when opted out -- through
-`channel_disclosure()` rather than going quiet about it. Silence on this
-line must never mean two different things: before #2544 it meant "opted
-out"; a default-off state would otherwise read exactly like an opted-in one
-going quiet, which is the same absence-you-have-to-explain-by-elimination
-problem #2170 named, one config value over.
+`watches` and `radar` both state a desktop configuration that departs from
+the default -- ON when opted in, OFF when opted out -- through
+`channel_disclosure()` rather than going quiet about it. The default itself
+(neither knob set) stays silent: since #2544 flipped it to off, silence now
+means exactly one thing (off, nothing configured), the same way it used to
+mean exactly one thing (on) before the flip -- a line on every render
+regardless of configuration was tried and reverted (#2560) because it broke
+every board/banner test asserting silence on a healthy default render.
 
 Override the socket path with the `SUPERTOOL_WATCH_SOCK` env var — set it to
 the **same** value on every poller and on the Phase 2 `claude-channel`
