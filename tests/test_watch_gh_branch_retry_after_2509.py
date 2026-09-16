@@ -19,7 +19,7 @@ _spec.loader.exec_module(poller)
 
 
 def _snap(error):
-    return ("", "", "", "", error, False)
+    return ("", "", "", "", error, False, False)
 
 
 def _ctx(ref="main"):
