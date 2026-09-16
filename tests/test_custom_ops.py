@@ -143,7 +143,7 @@ class TestResolveCustomOp:
         supertool._CONFIG = {
             "ops": {"slow": {"cmd": "sleep 10", "timeout": 1}}
         }
-        result = supertool._resolve_custom_op("slow", ["slow", "x"])
+        result = supertool._resolve_custom_op("slow", ["slow"])
         assert result is not None
         assert "FAIL" in result
 
@@ -184,7 +184,7 @@ class TestResolveCustomOp:
             "timeout": 1,
             "ops": {"slow": {"cmd": "sleep 10"}}
         }
-        result = supertool._resolve_custom_op("slow", ["slow", "x"])
+        result = supertool._resolve_custom_op("slow", ["slow"])
         assert result is not None
         assert "FAIL" in result
 
@@ -194,7 +194,7 @@ class TestResolveCustomOp:
             "ops": {"fast": {"cmd": "echo ok"}}
         }
         # Just verify it doesn't crash — 60s is plenty for echo
-        result = supertool._resolve_custom_op("fast", ["fast", "x"])
+        result = supertool._resolve_custom_op("fast", ["fast"])
         assert result is not None
         assert "PASS" in result
 
@@ -223,7 +223,7 @@ class TestResolveCustomOp:
         monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}, "rector-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": True}}}
-        result = supertool._resolve_custom_op("clean", ["clean", "x"])
+        result = supertool._resolve_custom_op("clean", ["clean"])
         assert result is not None
         assert "PASS" in result
         assert sorted(stopped) == ["phpstan-warm", "rector-warm"]
@@ -235,7 +235,7 @@ class TestResolveCustomOp:
         monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}, "rector-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": ["rector-warm"]}}}
-        result = supertool._resolve_custom_op("clean", ["clean", "x"])
+        result = supertool._resolve_custom_op("clean", ["clean"])
         assert result is not None
         assert stopped == ["rector-warm"]
         assert "phpstan-warm" not in stopped
@@ -246,7 +246,7 @@ class TestResolveCustomOp:
         monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}, "rector-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": "phpstan-warm"}}}
-        result = supertool._resolve_custom_op("clean", ["clean", "x"])
+        result = supertool._resolve_custom_op("clean", ["clean"])
         assert result is not None
         assert stopped == ["phpstan-warm"]
         assert "restarted 1 daemon(s)" in result
@@ -257,7 +257,7 @@ class TestResolveCustomOp:
         monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": ["phpstan-warm", "typo-warm"]}}}
-        result = supertool._resolve_custom_op("clean", ["clean", "x"])
+        result = supertool._resolve_custom_op("clean", ["clean"])
         assert result is not None
         assert stopped == ["phpstan-warm"]
         assert "restarted 1 daemon(s)" in result
@@ -269,7 +269,7 @@ class TestResolveCustomOp:
         monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "false", "restartMcp": True}}}
-        result = supertool._resolve_custom_op("clean", ["clean", "x"])
+        result = supertool._resolve_custom_op("clean", ["clean"])
         assert result is not None
         assert "FAIL" in result
         assert stopped == []
@@ -280,7 +280,7 @@ class TestResolveCustomOp:
         monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: (stopped.append(name), supertool._StopOutcome(True, "stopped", ""))[1])
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}})
         supertool._CONFIG = {"ops": {"plain": {"cmd": "echo ok"}}}
-        result = supertool._resolve_custom_op("plain", ["plain", "x"])
+        result = supertool._resolve_custom_op("plain", ["plain"])
         assert result is not None
         assert "PASS" in result
         assert stopped == []
@@ -300,7 +300,7 @@ class TestResolveCustomOp:
         supertool._CONFIG = {
             "ops": {"fail": {"cmd": "exit 1"}}
         }
-        result = supertool._resolve_custom_op("fail", ["fail", "x"])
+        result = supertool._resolve_custom_op("fail", ["fail"])
         assert result is not None
         assert "FAIL" in result
 
@@ -309,7 +309,7 @@ class TestResolveCustomOp:
         supertool._CONFIG = {
             "ops": {"warn": {"cmd": "echo warning >&2 && exit 1"}}
         }
-        result = supertool._resolve_custom_op("warn", ["warn", "x"])
+        result = supertool._resolve_custom_op("warn", ["warn"])
         assert result is not None
         assert "warning" in result
 
@@ -318,7 +318,7 @@ class TestResolveCustomOp:
         supertool._CONFIG = {
             "ops": {"hi": "echo hello"}
         }
-        result = supertool._resolve_custom_op("hi", ["hi", "x"])
+        result = supertool._resolve_custom_op("hi", ["hi"])
         assert result is not None
         assert "PASS" in result
         assert "hello" in result
@@ -423,7 +423,7 @@ class TestResolveCustomOp:
                 "mode": "verbose",
             }}
         }
-        result = supertool._resolve_custom_op("tool", ["tool", "x"])
+        result = supertool._resolve_custom_op("tool", ["tool"])
         assert result is not None
         assert "200" in result
         assert "verbose" in result
@@ -438,7 +438,7 @@ class TestResolveCustomOp:
                 "job_patterns": [{"job": "rector", "patterns": ["applied_rectors"]}],
             }}
         }
-        result = supertool._resolve_custom_op("tool", ["tool", "x"])
+        result = supertool._resolve_custom_op("tool", ["tool"])
         assert result is not None
         line = next(ln for ln in result.splitlines() if ln.startswith("SUPERTOOL_JOB_PATTERNS="))
         payload = line.split("=", 1)[1]
@@ -456,7 +456,7 @@ class TestResolveCustomOp:
                 "custom_key": "yes",
             }}
         }
-        result = supertool._resolve_custom_op("tool", ["tool", "x"])
+        result = supertool._resolve_custom_op("tool", ["tool"])
         assert result is not None
         assert "SUPERTOOL_CUSTOM_KEY=yes" in result
         assert "SUPERTOOL_CMD" not in result
@@ -536,7 +536,9 @@ class TestResolveAlias:
         f.write_text("test\n")
         supertool._CONFIG = {
             "ops": {"shout": {"cmd": "echo LOUD"}},
-            "aliases": {"combo": {"ops": ["shout:{file}", "read:{file}"]}}
+            # shout takes no argument -- its cmd has no placeholder to carry
+            # {file}, so the alias must not hand it one (#1532).
+            "aliases": {"combo": {"ops": ["shout", "read:{file}"]}}
         }
         result = supertool._resolve_alias("combo", ["combo", str(f)])
         assert result is not None
@@ -625,7 +627,7 @@ class TestDispatchPriority:
             "ops": {"tool": {"cmd": "echo FROM_OP"}},
             "aliases": {"tool": {"ops": ["read:something"]}}
         }
-        out = supertool.dispatch("tool:x")
+        out = supertool.dispatch("tool")
         assert "FROM_OP" in out
 
     def test_custom_op_dispatched_via_dispatch(self) -> None:
@@ -633,8 +635,8 @@ class TestDispatchPriority:
         supertool._CONFIG = {
             "ops": {"ping": {"cmd": "echo pong"}}
         }
-        out = supertool.dispatch("ping:x")
-        assert "--- ping:x ---" in out
+        out = supertool.dispatch("ping")
+        assert "--- ping ---" in out
         assert "pong" in out
 
     def test_alias_dispatched_via_dispatch(self, tmp_path: Path) -> None:
@@ -693,9 +695,13 @@ class TestCheckFromOps:
         assert "no ops defined" in out
 
     def test_direct_op_and_check_both_work(self) -> None:
-        """phpstan:file and check:phpstan:file both resolve the same op."""
+        """phpstan:file and check:phpstan:file both resolve the same op.
+
+        `{arg}` (#1532): `check:PRESET:PATH` always forwards a path, so a
+        placeholder-free cmd would now refuse it instead of ignoring it.
+        """
         supertool._CONFIG = {
-            "ops": {"phpstan": {"cmd": "echo analysis"}}
+            "ops": {"phpstan": {"cmd": "echo analysis {arg}"}}
         }
         direct = supertool.dispatch("phpstan:file.php")
         check = supertool.dispatch("check:phpstan:file.php")
@@ -716,13 +722,13 @@ class TestMainIntegration:
         supertool._CONFIG = {
             "ops": {"hi": {"cmd": "echo hello"}}
         }
-        ret = supertool.main(["hi:test"])
+        ret = supertool.main(["hi"])
         captured = capsys.readouterr()
         assert ret == 0
         assert "hello" in captured.out
         # Log should record the custom op
         log_content = log_file.read_text(encoding="utf-8")
-        assert "hi:test" in log_content
+        assert "hi" in log_content
 
     def test_main_with_alias(self, capsys, tmp_path: Path, monkeypatch) -> None:
         f = tmp_path / "x.py"
@@ -747,7 +753,7 @@ class TestMainIntegration:
         supertool._CONFIG = {
             "ops": {"ping": {"cmd": "echo pong"}}
         }
-        ret = supertool.main([f"read:{f}", "ping:x"])
+        ret = supertool.main([f"read:{f}", "ping"])
         captured = capsys.readouterr()
         assert ret == 0
         assert "data" in captured.out
@@ -1000,7 +1006,7 @@ class TestShellMetacharsNotExecuted:
         supertool._CONFIG = {
             "ops": {"x": {"cmd": f"{{python}} {script.as_posix()} $UNDEFINED_VAR_XYZ"}}
         }
-        result = supertool._resolve_custom_op("x", ["x", "unused.txt"])
+        result = supertool._resolve_custom_op("x", ["x"])
         assert result is not None and "PASS" in result
         argv = eval(captured.read_text(encoding="utf-8"))
         assert argv == ["$UNDEFINED_VAR_XYZ"], (

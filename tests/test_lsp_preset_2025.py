@@ -102,7 +102,9 @@ def test_the_control_op_really_does_emit_the_marker(
         monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(supertool, "_CONFIG", _shadow_config())
     monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-    out = supertool.dispatch("lsp-shadow-control:Thing")
+    # cmd is a bare "echo SHADOWED" with no placeholder, so a token here would
+    # be refused rather than dropped (#1532) -- the control op takes none.
+    out = supertool.dispatch("lsp-shadow-control")
     assert "SHADOWED" in out, (
         "the control op did not run, so the shadowing test below cannot "
         "distinguish 'built-in won' from 'nothing ran at all'")

@@ -252,7 +252,11 @@ def test_an_env_value_holding_a_placeholder_token_is_not_re_substituted(tmp_path
 
     An environment variable whose VALUE reads `{args}` must not become a
     second interpolation site — that would be the same defect pointed the
-    other way.
+    other way. `cmd` here carries only the literal `$SUPERTOOL_1734_HOSTILE`
+    reference, no real `{args}`/`{arg}`/`{file}`/`{dir}`/`{argjoin}`
+    placeholder, so it takes no caller token at all (#1532): a trailing
+    `:::injected` would now be refused rather than silently dropped, which
+    is a different assertion than this test is about.
     """
     env = _child_env()
     env["SUPERTOOL_1734_HOSTILE"] = "{args}"
@@ -260,12 +264,11 @@ def test_an_env_value_holding_a_placeholder_token_is_not_re_substituted(tmp_path
         tmp_path,
         "{python} -c " + json.dumps(_PROBE) + " $SUPERTOOL_1734_HOSTILE")
     proc = subprocess.run(
-        [sys.executable, str(_ROOT / "supertool.py"), "probe:::injected"],
+        [sys.executable, str(_ROOT / "supertool.py"), "probe"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=str(proj), env=env, timeout=120)
     argv = _argv(proc)
     assert argv == ["{args}"], argv
-    assert "injected" not in argv
 
 
 # --------------------------------------------------------------------------

@@ -261,7 +261,7 @@ class TestRestartMcpHonesty:
         monkeypatch.setattr(supertool, "_mcp_stop_server", lambda name: outcome)
         monkeypatch.setattr(supertool, "_mcp_specs", {"phpstan-warm": {}})
         supertool._CONFIG = {"ops": {"clean": {"cmd": "echo ok", "restartMcp": True}}}
-        return supertool._resolve_custom_op("clean", ["clean", "x"])
+        return supertool._resolve_custom_op("clean", ["clean"])
 
     def test_failed_stop_is_not_reported_as_restarted(self, monkeypatch) -> None:
         result = self._op(
