@@ -95,8 +95,28 @@ def test_a_match_that_only_exists_in_cwd_is_refused(tmp_path, monkeypatch) -> No
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + "/nonexistent-bin")
     # The fixture must actually simulate the vulnerable condition before the
     # guard is credited with anything: raw shutil.which() has to find it.
+    # On Windows, CPython's shutil.which() inserts os.curdir literally as
+    # the string "." into the search list ahead of the explicit PATH entry
+    # (the insertion happens unconditionally, after the `path is None`
+    # check, not gated on whether cwd already appears in PATH) and joins
+    # the candidate name onto THAT entry, so the hit it returns is the
+    # relative path ".\\st-probe-2575.cmd", not the absolute planted path
+    # -- comparing against `str(planted)` directly fails even though the
+    # shim genuinely was found via cwd. Normalise both sides through
+    # abspath() before comparing so the assertion checks *that a match
+    # happened*, not which of the two equivalent spellings of it came back.
+    #
+    # This was observed directly on a Windows CI leg (job 105118201619,
+    # pytest 3.10 and 3.12), not reasoned from source: it is sharper
+    # evidence than #2575's own issue text, which reasoned about the
+    # curdir-insertion from reading CPython's shutil.py but never ran it on
+    # a real Windows host. The relative form matters beyond this fixture --
+    # it is what a caller-level guard sees back, and a relative path
+    # resolves against cwd *again* at spawn time, so a naive `is None` check
+    # is not the only thing a fix would need to get right.
     import shutil
-    assert shutil.which(TOOL) == str(planted), (
+    found = shutil.which(TOOL)
+    assert found is not None and os.path.abspath(found) == str(planted), (
         "fixture does not reproduce cwd-first resolution -- shutil.which() "
         "did not find the planted shim, so the assertions below are not "
         "testing the #2575 shape at all"
