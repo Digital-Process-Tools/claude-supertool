@@ -9,8 +9,9 @@ unreachable code, shadowed declarations or accidental globals.
 **Three absences, and each one arrives looking like a clean file.**
 
 1. *eslint not installed.* `skipped`, with the install hint. On the machine
-   this actually happens on — a laptop with node — `shutil.which("eslint")` is
-   false and `shutil.which("npx")` is true, so the fallback below resolves and
+   this actually happens on — a laptop with node — `spawnable("eslint")` is
+   false and `spawnable("npx")` is true (#2579; `shutil.which()` directly
+   until then), so the fallback below resolves and
    the install-hint branch is never reached at all. npx then exits **1 with
    empty stdout** and `Unknown command: "eslint"` (npm 11) or `could not
    determine executable to run` (npm 8-10) on stderr, which is neither a

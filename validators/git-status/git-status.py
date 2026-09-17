@@ -350,7 +350,7 @@ def main() -> None:
                 cwd=file_dir, text=True, encoding="utf-8", errors="replace",
             )
         except OSError as exc:
-            # `shutil.which` said git was there; the spawn says otherwise — it
+            # `spawnable()` said git was there; the spawn says otherwise — it
             # was removed under us, or is not executable by this user. Not a
             # measurement either way, and NOT a timeout: naming it one sends
             # the reader to raise a budget that was never the problem.

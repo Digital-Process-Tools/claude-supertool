@@ -121,6 +121,12 @@ def _timeout_payload(monkeypatch, tmp_path: Path, capsys) -> dict:
             return "/nonexistent/" + name
 
     monkeypatch.setattr(mod, "shutil", _ToolchainPresent)
+    # The gate itself now goes through `spawnable()` (#2579), a name bound
+    # directly in the adapter's own namespace rather than reached via
+    # `mod.shutil.which` -- the `_ToolchainPresent` stub above no longer
+    # touches it, and with PATH left as the test runner's own this would
+    # otherwise decline for real if `go` genuinely is not installed.
+    monkeypatch.setattr(mod, "spawnable", lambda name: "/nonexistent/" + name)
     monkeypatch.setattr(mod, "subprocess", _Wall)
     monkeypatch.setattr(mod, "time", _Clock(1000.0, 1000.0 + mod.TIMEOUT + 0.138))
     monkeypatch.setattr(sys, "argv", ["go-vet.py", str(root / "pkg" / "a.go")])

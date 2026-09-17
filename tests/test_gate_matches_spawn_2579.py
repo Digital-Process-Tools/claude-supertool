@@ -78,11 +78,27 @@ def _uses_the_chokepoint_at_spawn_time(tree: ast.AST) -> bool:
     gate is now the only place the old, unsafe `shutil.which()` can survive.
     """
     names = set()
+    modules = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 names.add(alias.name)
-    return bool(names & {"argv0", "spawnable", "resolve_bin_cmd"})
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                modules.add(alias.asname or alias.name)
+    if names & {"argv0", "spawnable", "resolve_bin_cmd"}:
+        return True
+    # `import spawnable` / `import bin_resolve` (module-style, attribute
+    # access at the call site -- `spawnable.argv0(...)`) is a second way to
+    # reach the same chokepoint that `from X import Y` does not surface as
+    # a bare name. No shipped adapter uses this style today, but the walker
+    # must not go blind the day one does (#2579 review).
+    if modules & {"spawnable", "bin_resolve"}:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in (
+                    "argv0", "spawnable", "resolve_bin_cmd"):
+                return True
+    return False
 
 
 def _offenders() -> "list[str]":
@@ -129,6 +145,26 @@ def test_the_register_can_actually_see_the_defect() -> None:
     assert _calls_raw_which(tree), "the shutil.which() walker is blind"
     assert _uses_the_chokepoint_at_spawn_time(tree), (
         "the chokepoint-import walker is blind"
+    )
+
+
+def test_a_module_style_chokepoint_import_is_still_seen() -> None:
+    """`import spawnable` + `spawnable.argv0(...)` is a second way to reach
+    the chokepoint that `from spawnable import argv0` does not surface as a
+    bare name (auditor review, #2579). No shipped adapter is written this
+    way today, but the walker must not go blind if one ever is.
+    """
+    bad = (
+        "import shutil, subprocess, spawnable\n"
+        "if not shutil.which(TOOL):\n"
+        "    absent()\n"
+        "cmd = [spawnable.argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(bad)
+    assert _calls_raw_which(tree)
+    assert _uses_the_chokepoint_at_spawn_time(tree), (
+        "the module-style import walker is blind"
     )
 
 
