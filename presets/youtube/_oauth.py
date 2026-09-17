@@ -48,6 +48,7 @@ exit 2 blaming the operator's permissions.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import http.server
 import json
@@ -276,11 +277,22 @@ def authorize(*, open_browser: bool = True) -> dict:
         # raw traceback instead of the sentence-naming-the-next-command
         # contract every other failure path here keeps
         # (trap.d/227.oauth-loopback-port-race-raw-traceback.md).
+        #
+        # `HTTPServer(...)` can also raise OSError for reasons that have
+        # nothing to do with that race -- fd exhaustion, a sandbox denial --
+        # and naming the race unconditionally would itself be a misreport.
+        # errno.EADDRINUSE (and EACCES, which some platforms raise for the
+        # same race) is the only case this sentence is actually about.
+        if e.errno in (errno.EADDRINUSE, errno.EACCES):
+            cause = (
+                "Another local process took the port between the "
+                "free-port probe and this bind. ")
+        else:
+            cause = ""
         raise OAuthError(
             f"could not bind the loopback callback server on "
-            f"127.0.0.1:{port}: {e}. Another local process took the port "
-            "between the free-port probe and this bind. Nothing was stored; "
-            "run youtube_auth again."
+            f"127.0.0.1:{port}: {e}. {cause}"
+            "Nothing was stored; run youtube_auth again."
         ) from e
     server.timeout = _BROWSER_WAIT_S
     thread = threading.Thread(target=server.handle_request, daemon=True)

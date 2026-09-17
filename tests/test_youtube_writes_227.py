@@ -281,6 +281,34 @@ def test_authorize_reports_a_loopback_port_race_as_oautherror(
     assert "youtube_auth" in str(e.value)
 
 
+def test_authorize_does_not_blame_the_port_race_for_an_unrelated_oserror(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The must-not-misreport half. `HTTPServer(...)` can raise `OSError` for
+    reasons that have nothing to do with the free-port race -- file
+    descriptor exhaustion, a sandbox denial -- and asserting the race
+    narrative unconditionally would be a false claim about the cause,
+    exactly the misreport class this module otherwise exists to avoid. The
+    real `OSError` must still reach the operator; the port-race sentence
+    must not.
+    """
+    (config_home / "client_secret.json").write_text(
+        json.dumps({"installed": {"client_id": "cid", "client_secret": "s"}}),
+        encoding="utf-8")
+    (config_home / "client_secret.json").chmod(0o600)
+
+    def boom(*_a, **_k):
+        raise OSError(24, "Too many open files")
+    monkeypatch.setattr(oauth.http.server, "HTTPServer", boom)
+
+    with pytest.raises(oauth.OAuthError) as e:
+        oauth.authorize(open_browser=False)
+    message = str(e.value)
+    assert "Too many open files" in message
+    assert "another local process took the port" not in message.lower(), (
+        "a non-EADDRINUSE OSError must not be narrated as the port race: "
+        f"{message!r}")
+
+
 def test_an_absent_token_names_youtube_auth(config_home: Path) -> None:
     """A write op must never open a browser: see _oauth's docstring."""
     with pytest.raises(oauth.OAuthError) as e:
