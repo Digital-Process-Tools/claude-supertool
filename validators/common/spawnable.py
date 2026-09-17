@@ -43,6 +43,60 @@ import os
 import shutil
 
 
+def which_excluding_cwd(name: str) -> "str | None":
+    """`shutil.which(name)`, but a match found only via the current
+    directory never wins (#2575).
+
+    On Windows, `shutil.which()` inserts `os.curdir` at the front of its
+    own search path unless `NoDefaultCurrentDirectoryInExePath` is set --
+    and it does this even when a caller passes an explicit `path=`: in
+    CPython's own source the insertion happens after the `path is None`
+    branch, not inside it, so overriding `path` does not skip it. A
+    repository containing `ruff.cmd`, `markdownlint.cmd` or `git.cmd` at
+    its own root therefore has that file resolved ahead of every real PATH
+    entry -- and every validator/formatter chokepoint in this repo spawns
+    its adapter subprocess with no `cwd=`, so that adapter inherits
+    supertool's own cwd: the repository under inspection.
+
+    A `name` that already contains a directory component carries none of
+    this risk -- `shutil.which()`'s own dirname branch never touches PATH
+    or the current directory at all -- and is delegated to directly.
+
+    Otherwise this walks `PATH` itself, in the same order `shutil.which()`
+    would search it past the curdir-insertion step (PATHEXT included on
+    Windows), except an entry whose directory is the current one is
+    skipped rather than returned. A genuine PATH entry still resolves; only
+    the implicit, attacker-reachable cwd match is refused, so a repo-planted
+    binary can shadow nothing further down PATH than itself.
+    """
+    if os.path.dirname(name):
+        return shutil.which(name)
+    path_env = os.environ.get("PATH")
+    if not path_env:
+        return None
+    here = os.path.abspath(os.curdir)
+    exts = [""]
+    if os.name == "nt":
+        raw_pathext = os.getenv("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        exts = [""] + [e for e in raw_pathext.split(os.pathsep) if e]
+    seen = set()
+    for entry in path_env.split(os.pathsep):
+        if not entry:
+            continue
+        entry_abs = os.path.abspath(entry)
+        norm = os.path.normcase(entry_abs)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if entry_abs == here:
+            continue
+        for ext in exts:
+            candidate = os.path.join(entry, name + ext)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
 def spawnable(name: str) -> "str | None":
     """The spawnable form of `name`, or None when it is not on PATH.
 
@@ -55,8 +109,12 @@ def spawnable(name: str) -> "str | None":
     allowlist of "which tools are a .cmd on Windows" is a list that rots and
     a new adapter never joins; spawning the resolved path is correct for a
     real ``.exe`` too, and makes every adapter spawn exactly what it probed.
+
+    Routed through `which_excluding_cwd` rather than `shutil.which`
+    directly: a bare match that only exists in the current directory --
+    the repository under inspection -- is never trusted (#2575).
     """
-    return shutil.which(name)
+    return which_excluding_cwd(name)
 
 
 def _already_a_path(name: str) -> bool:
@@ -75,8 +133,17 @@ def _already_a_path(name: str) -> bool:
     That rewriting would undo the separator normalisation #2176 and #2249
     exist to get right, and it buys nothing: a path that resolves here was
     already spawnable, `.cmd` included.
+
+    Gated on `name` containing a directory component (#2575). Without that,
+    a BARE name -- "ruff", no separator -- checked with `os.path.isfile()`
+    resolves relative to the current directory exactly like the
+    `shutil.which()` curdir insertion this module exists to stop: a repo
+    shipping a file literally named `ruff` at its own root would satisfy
+    this check and then be returned unresolved-but-"already a path" by
+    `argv0`, which is the same "file supplied by the repository is run as
+    a program" shape, reached without ever calling `which()` at all.
     """
-    return os.path.isfile(name) and os.access(name, os.X_OK)
+    return bool(os.path.dirname(name)) and os.path.isfile(name) and os.access(name, os.X_OK)
 
 
 def argv0(name: str) -> str:
@@ -96,7 +163,12 @@ def argv0(name: str) -> str:
     A value that is already an executable path is returned byte-identical;
     see `_already_a_path` for the 3.12 `shutil.which` rewrite that makes
     that explicit rather than incidental.
+
+    Resolved through `which_excluding_cwd` rather than `shutil.which`
+    directly, so a match that only exists in the current directory -- the
+    repository under inspection -- falls through to the miss arm above
+    instead of being spawned (#2575).
     """
     if _already_a_path(name):
         return name
-    return shutil.which(name) or name
+    return which_excluding_cwd(name) or name
