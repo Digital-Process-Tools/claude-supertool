@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import time
@@ -31,6 +30,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "validators" / "common"))
 from refusal import guard_main  # noqa: E402
 from bin_resolve import describe_unresolved, resolve_bin_cmd  # noqa: E402
+from spawnable import spawnable  # noqa: E402
 from line_diff import line_diff as _line_diff  # noqa: E402
 
 
@@ -64,7 +64,7 @@ def main() -> None:
     ruff_bin = bin_cmd[0]
     ruff_config = os.environ.get("RUFF_CONFIG", "")
 
-    if not shutil.which(ruff_bin) and not (
+    if not spawnable(ruff_bin) and not (
         os.path.isfile(ruff_bin) and os.access(ruff_bin, os.X_OK)
     ):
         emit({

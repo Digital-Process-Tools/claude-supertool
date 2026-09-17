@@ -99,7 +99,7 @@ def _drive(monkeypatch: pytest.MonkeyPatch, target: Path) -> list:
         return _ImmediateProcess(list(argv))
 
     monkeypatch.setattr(mod.subprocess, "Popen", _popen)
-    monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/git")
+    monkeypatch.setattr(mod, "spawnable", lambda _n: "/usr/bin/git")
     monkeypatch.setattr(mod.sys, "argv", [str(ADAPTER), str(target)])
     emitted: list = []
     monkeypatch.setattr("builtins.print",
@@ -155,7 +155,7 @@ def test_the_flag_survives_into_a_real_stalled_call_receipt(
         raise OSError(2, "No such file or directory")
 
     monkeypatch.setattr(mod.subprocess, "Popen", _popen)
-    monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/git")
+    monkeypatch.setattr(mod, "spawnable", lambda _n: "/usr/bin/git")
     monkeypatch.setattr(mod.sys, "argv", [str(ADAPTER), str(repo / "base.txt")])
     emitted: list = []
     monkeypatch.setattr("builtins.print",

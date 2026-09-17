@@ -73,7 +73,7 @@ def _adapter(directory: str, filename: str):
 
 def _drive(mod, monkeypatch, capsys, target, runner) -> dict:
     monkeypatch.setattr(mod.subprocess, "run", runner)
-    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/stub")
+    monkeypatch.setattr(mod, "spawnable", lambda _name: "/usr/bin/stub")
     monkeypatch.setattr(mod.sys, "argv", ["adapter.py", str(target)])
     mod.main()
     return json.loads(capsys.readouterr().out.strip())
@@ -351,7 +351,7 @@ def test_stylelint_absent_is_the_third_state_not_a_failed_edit(
     """
     f = tmp_path / "x.css"
     f.write_text("a { color: #fff; }\n", encoding="utf-8")
-    monkeypatch.setattr(stylelint.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(stylelint, "spawnable", lambda _name: None)
     monkeypatch.setattr(stylelint.sys, "argv", ["stylelint.py", str(f)])
     stylelint.main()
     out = json.loads(capsys.readouterr().out.strip())

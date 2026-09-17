@@ -62,7 +62,6 @@ Usage:  jit-index.py <file>
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 import time
@@ -71,6 +70,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, guard_main, skipped  # noqa: E402
 from linebreaks import split_lines  # noqa: E402
+from spawnable import spawnable  # noqa: E402
 
 TOOL = "jit-index"
 
@@ -457,7 +457,7 @@ def main():
         if family == "tools":
             errors.extend(_case_findings(line, pattern))
 
-    awk = shutil.which("awk")
+    awk = spawnable("awk")
     unrun = None
     unchecked = []
     if awk and patterns:

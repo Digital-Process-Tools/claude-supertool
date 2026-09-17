@@ -64,7 +64,7 @@ def _drive_timeout(adapter: Path, tool: str, target: Path,
         raise subprocess.TimeoutExpired(cmd=[tool], timeout=kwargs.get("timeout", 60))
 
     monkeypatch.setattr(mod.subprocess, "run", _always_times_out)
-    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/" + tool)
+    monkeypatch.setattr(mod, "spawnable", lambda _name: "/usr/bin/" + tool)
     monkeypatch.setattr(mod.sys, "argv", [str(adapter), str(target)])
 
     emitted: list = []

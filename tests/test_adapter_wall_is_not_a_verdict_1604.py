@@ -72,6 +72,10 @@ import _adapter_verdict as verdicts  # noqa: E402
 from _adapter_budget import inner_budget  # noqa: E402
 from _adapter_verdict import stalled_at_its_own_wall  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent
+                       / "validators" / "common"))
+import spawnable as _spawnable_mod  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
 VALIDATORS = REPO / "validators"
 RUBY = VALIDATORS / "ruby-check" / "ruby-check.py"
@@ -118,6 +122,12 @@ def _drive(adapter: Path, tool: str, target: Path, monkeypatch, *,
     monkeypatch.setattr(subprocess, "run", _boom)
     monkeypatch.setattr(time, "time", _clock)
     monkeypatch.setattr(shutil, "which", lambda _n: "/usr/bin/" + tool)
+    # The gate itself now goes through `spawnable()` (#2579) -- a fresh
+    # `from spawnable import spawnable` executed by `runpy.run_path` below
+    # picks up whatever `spawnable.spawnable` names AT THAT MOMENT, so
+    # patching the shared module here (before the run) reaches it, the same
+    # way the `shutil.which` patch above reaches a fresh `import shutil`.
+    monkeypatch.setattr(_spawnable_mod, "spawnable", lambda _n: "/usr/bin/" + tool)
     monkeypatch.setattr(sys, "argv", [str(adapter), str(target)])
     monkeypatch.setattr("builtins.print",
                         lambda *a, **k: emitted.append(" ".join(map(str, a))))

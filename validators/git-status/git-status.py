@@ -58,7 +58,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import pathlib
@@ -66,7 +65,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, guard_main
-from spawnable import argv0
+from spawnable import argv0, spawnable
 
 TOOL = "git-status"
 INSTALL_HINT = ("git not found on PATH — the working-tree delta for this file "
@@ -290,7 +289,7 @@ def main() -> None:
     file = sys.argv[1]
     git_bin = os.environ.get("GIT_BIN", "git")
 
-    if not shutil.which(git_bin):
+    if not spawnable(git_bin):
         # Not `state: "clean"`. A zeroed metrics block is a measurement, and no
         # measurement was taken.
         emit(absent(TOOL, file, INSTALL_HINT, 0))
@@ -350,7 +349,7 @@ def main() -> None:
                 cwd=file_dir, text=True, encoding="utf-8", errors="replace",
             )
         except OSError as exc:
-            # `shutil.which` said git was there; the spawn says otherwise — it
+            # `spawnable()` said git was there; the spawn says otherwise — it
             # was removed under us, or is not executable by this user. Not a
             # measurement either way, and NOT a timeout: naming it one sends
             # the reader to raise a budget that was never the problem.

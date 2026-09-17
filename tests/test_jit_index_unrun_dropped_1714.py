@@ -220,14 +220,13 @@ class TestOnAnyPlatform:
     def test_the_published_payload_carries_the_stall_beside_the_finding(
             self, adapter, tmp_path, capsys, monkeypatch):
         idx = _paths_index(tmp_path, r"presets/\w+/", "beta/")
-        # `adapter.shutil` **is** `sys.modules["shutil"]`, not a per-module copy,
-        # so a plain assignment here replaces `shutil.which` for the whole
-        # worker and never puts it back. It did: every later test in the process
-        # got `which(<anything>) == "awk"`, `presets/git/_git_common.py:1139`
-        # read that as "glab is installed", and ten tests in
-        # tests/test_status_swallowed_705.py went red on 11 CI legs (#1718).
-        # monkeypatch restores it; a bare `=` on a module attribute cannot.
-        monkeypatch.setattr(adapter.shutil, "which", lambda name: "awk")
+        # `adapter.spawnable` is a name bound in this one module's own
+        # namespace (`from spawnable import spawnable`, #2579) -- unlike the
+        # `shutil` module this used to patch (a plain assignment on THAT
+        # replaces `shutil.which` for the whole worker and never puts it
+        # back; see #1718), patching this name only ever touches jit-index's
+        # own import, and monkeypatch restores it regardless.
+        monkeypatch.setattr(adapter, "spawnable", lambda name: "awk")
         monkeypatch.setattr(
             adapter, "_awk_run",
             lambda awk, patterns: (None, "awk did not answer within 10s"))

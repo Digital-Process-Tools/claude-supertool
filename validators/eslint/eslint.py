@@ -9,8 +9,9 @@ unreachable code, shadowed declarations or accidental globals.
 **Three absences, and each one arrives looking like a clean file.**
 
 1. *eslint not installed.* `skipped`, with the install hint. On the machine
-   this actually happens on — a laptop with node — `shutil.which("eslint")` is
-   false and `shutil.which("npx")` is true, so the fallback below resolves and
+   this actually happens on — a laptop with node — `spawnable("eslint")` is
+   false and `spawnable("npx")` is true (#2579; `shutil.which()` directly
+   until then), so the fallback below resolves and
    the install-hint branch is never reached at all. npx then exits **1 with
    empty stdout** and `Unknown command: "eslint"` (npm 11) or `could not
    determine executable to run` (npm 8-10) on stderr, which is neither a
@@ -56,7 +57,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import time
@@ -65,7 +65,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import guard_main, required, required_but_absent, skipped, tool_fault
 from npx_absent import is_npx_absent
-from spawnable import argv0
+from spawnable import argv0, spawnable
 
 TOOL = "eslint"
 
@@ -131,9 +131,9 @@ def _decline(file: str, reason: str, dur_ms: int) -> None:
 
 def _resolve_cmd() -> list:
     """argv prefix for eslint: global first, then a project-local install."""
-    if shutil.which(TOOL):
+    if spawnable(TOOL):
         return [argv0(TOOL)]
-    if shutil.which("npx"):
+    if spawnable("npx"):
         # `--no-install` so a missing eslint stays a missing eslint rather
         # than becoming a silent network fetch inside a post-edit validator.
         return [argv0("npx"), "--no-install", TOOL]

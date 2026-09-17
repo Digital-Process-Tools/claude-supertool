@@ -242,7 +242,7 @@ def test_unexplained_nonzero_exit_with_empty_stderr_is_a_named_error(monkeypatch
     f = tmp_path / "good.rb"
     f.write_text('def hello\n  puts "hello"\nend\n')
 
-    monkeypatch.setattr(ruby_check.shutil, "which", lambda name: "/usr/bin/ruby")
+    monkeypatch.setattr(ruby_check, "spawnable", lambda name: "/usr/bin/ruby")
     monkeypatch.setattr(
         ruby_check.subprocess,
         "run",

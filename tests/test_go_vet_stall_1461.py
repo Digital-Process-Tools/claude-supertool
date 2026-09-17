@@ -107,20 +107,12 @@ def _timeout_payload(monkeypatch, tmp_path: Path, capsys) -> dict:
         def run(*args, **kwargs):
             raise subprocess.TimeoutExpired(cmd="go vet .", timeout=mod.TIMEOUT)
 
-    class _ToolchainPresent:
-        """`shutil`, with only the one call the adapter makes answered.
-
-        Patched onto the adapter module rather than onto `shutil` itself: the
-        real module is shared with everything else running in this process,
-        and a `which` that lies for the length of a test is not a thing to hand
-        to the rest of the suite.
-        """
-
-        @staticmethod
-        def which(name):
-            return "/nonexistent/" + name
-
-    monkeypatch.setattr(mod, "shutil", _ToolchainPresent)
+    # The gate goes through `spawnable()` (#2579), a name bound directly in
+    # the adapter's own namespace -- go-vet.py no longer imports `shutil` at
+    # all, so patching it here would raise. With PATH left as the test
+    # runner's own this would otherwise decline for real if `go` genuinely
+    # is not installed.
+    monkeypatch.setattr(mod, "spawnable", lambda name: "/nonexistent/" + name)
     monkeypatch.setattr(mod, "subprocess", _Wall)
     monkeypatch.setattr(mod, "time", _Clock(1000.0, 1000.0 + mod.TIMEOUT + 0.138))
     monkeypatch.setattr(sys, "argv", ["go-vet.py", str(root / "pkg" / "a.go")])

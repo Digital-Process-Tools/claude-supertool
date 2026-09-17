@@ -93,7 +93,7 @@ def _drive_flag_rejected(monkeypatch: pytest.MonkeyPatch, target: Path) -> dict:
         return _FlagRejectedProcess(list(argv))
 
     monkeypatch.setattr(mod.subprocess, "Popen", _popen)
-    monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/git")
+    monkeypatch.setattr(mod, "spawnable", lambda _n: "/usr/bin/git")
     monkeypatch.setattr(mod.sys, "argv", [str(ADAPTER), str(target)])
     emitted: list = []
     monkeypatch.setattr("builtins.print",

@@ -48,6 +48,8 @@ def _drive(mod, monkeypatch, capsys, target, runner) -> dict:
     monkeypatch.setattr(mod.subprocess, "run", runner)
     if hasattr(mod, "shutil"):
         monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/stub")
+    if hasattr(mod, "spawnable"):
+        monkeypatch.setattr(mod, "spawnable", lambda _name: "/usr/bin/stub")
     monkeypatch.setattr(mod.sys, "argv", ["adapter.py", str(target)])
     mod.main()
     return json.loads(capsys.readouterr().out.strip())

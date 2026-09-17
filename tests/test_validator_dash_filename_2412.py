@@ -154,6 +154,9 @@ def _spawn_calls(monkeypatch, tmp_path: Path, adapter: Path, unique: str,
     if hasattr(mod, "shutil"):
         monkeypatch.setattr(mod.shutil, "which",
                              lambda cmd=None, *a, **k: f"/usr/bin/{cmd or 'tool'}")
+    if hasattr(mod, "spawnable"):
+        monkeypatch.setattr(mod, "spawnable",
+                             lambda cmd=None, *a, **k: f"/usr/bin/{cmd or 'tool'}")
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     monkeypatch.setattr(mod.sys, "argv", [str(adapter), name])
     monkeypatch.chdir(tmp_path)
