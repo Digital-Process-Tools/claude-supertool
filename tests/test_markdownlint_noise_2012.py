@@ -72,8 +72,21 @@ into MD022/MD025/MD001 -- a worse document, not a linted one.
   Documenting fence-in-fence syntax needs an example that contains one;
   there is no way to write this example that both renders correctly and
   reads clean to a linter that does not understand nested fences.
+- `.claude/jit-context/paths/01-oss/changelog-fragments.md` carries 1
+  finding (MD046, "Expected: indented; Actual: fenced") since f0323829's
+  `/oss:scaffold --apply` refresh replaced this file's content with the
+  `claude-oss` plugin's own template (#2586). The template's earlier
+  indented example (an eight-space-indented `- Compatibility: ...` block)
+  sets the document's expected code-block style to "indented", and its
+  later fenced ` ```bash ` block breaks that consistency -- a same-file
+  style clash, not a repo-wide convention issue. This file is scaffolded
+  wholesale (this repo's own `CLAUDE.md`); a local edit to the fenced block
+  would be lost at the next `/oss:scaffold --apply` run, so the fix belongs
+  in the `claude-oss` template rather than here. Reported as a defect in
+  that declared dependency (`Digital-Process-Tools/claude-oss`) rather than
+  patched around locally.
 
-Post-fix: 26 findings across 2 of 84 tracked `.md` files (both named
+Post-fix: 27 findings across 3 of 138 tracked `.md` files (all named
 above), down from 846 across 50 of 82.
 """
 from __future__ import annotations
@@ -110,6 +123,7 @@ FINDINGS_CEILING = 40
 KNOWN_RESIDUE = {
     "CHANGELOG.md",
     ".claude/jit-context/paths/00-manual/changelog-d.md",
+    ".claude/jit-context/paths/01-oss/changelog-fragments.md",
 }
 
 
