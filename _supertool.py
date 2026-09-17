@@ -28981,6 +28981,42 @@ def _toml_parse_value(raw: str, i: int, key_offset: int) -> Tuple[Any, int]:
     )
 
 
+def _toml_parse_quoted_key(raw: str, i: int) -> Tuple[str, int]:
+    """Parse a quoted key (`"a b" = 1` or `'a b' = 1`) at offset *i*.
+
+    Returns (key, offset just past the closing quote). Quoted keys are
+    single-line only -- TOML has no multi-line key form -- so this is the
+    same grammar as the single-quote-mark VALUE branches in
+    `_toml_parse_value`, not the triple-quote ones (#1595): a basic
+    (double-quoted) key decodes escapes via `_toml_decode_escape`, a
+    literal (single-quoted) key is used verbatim.
+    """
+    n = len(raw)
+    key_offset = i
+    quote = raw[i]
+    i += 1
+    if quote == chr(34):
+        buf = []
+        while i < n and raw[i] != chr(34):
+            if raw[i] == chr(92):
+                text, i = _toml_decode_escape(raw, i, key_offset, False)
+                buf.append(text)
+            elif raw[i] == chr(10):
+                raise ValueError(
+                    f"newline in quoted key at offset {key_offset}"
+                )
+            else:
+                buf.append(raw[i])
+                i += 1
+        if i >= n:
+            raise ValueError(f"unterminated quoted key at offset {key_offset}")
+        return "".join(buf), i + 1
+    end = raw.find(chr(39), i)
+    if end < 0 or raw.find(chr(10), i, end) >= 0:
+        raise ValueError(f"unterminated quoted key at offset {key_offset}")
+    return raw[i:end], end + 1
+
+
 def _mini_toml_loads(raw: str) -> Dict[str, Any]:
     """Minimal TOML parser for @file payloads.
 
@@ -28991,9 +29027,12 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
     headers, and a single `[table]` header (#2473) -- same bare-name grammar
     as `[[table]]` (alnum, `_`, `-`; no dots, so this deliberately does not
     add a second, dotted-header convention). No dotted table headers, no
-    inline tables (`{ ... }`), no quoted keys, no dates — only what
-    payloads need. A quoted key (`"my key" = 1`) parses on stdlib `tomllib`
-    (3.11+) and is refused here, by name, on Python <3.11 (#1595).
+    inline tables (`{ ... }`), no dates — only what
+    payloads need. A quoted key (`"my key" = 1`, `'my key' = 1`) is accepted
+    (#1595), using the same single-line basic/literal string grammar as
+    string VALUES: a basic (double-quoted) key decodes escapes, a literal
+    (single-quoted) key keeps them as-is. Dotted keys (`a.b = 1`) remain
+    unsupported.
 
     Inline arrays matter specifically: a variadic payload field is written as
     a list, and `git-commit:@-` with `paths = ["a", "b"]` is the documented
@@ -29073,17 +29112,15 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
             current = table
             i = end + 1
             continue
-        if raw[i] in "\"'":
-            raise ValueError(
-                f"a quoted key at offset {i} is not supported by the fallback "
-                "TOML parser (Python <3.11); use a bare key or JSON (#1595)"
-            )
         ks = i
-        while i < n and (raw[i].isalnum() or raw[i] in "_-"):
-            i += 1
-        if i == ks:
-            raise ValueError(f"bad key at offset {i}")
-        key = raw[ks:i]
+        if raw[i] in "\"'":
+            key, i = _toml_parse_quoted_key(raw, i)
+        else:
+            while i < n and (raw[i].isalnum() or raw[i] in "_-"):
+                i += 1
+            if i == ks:
+                raise ValueError(f"bad key at offset {i}")
+            key = raw[ks:i]
         while i < n and raw[i] in " \t":
             i += 1
         if i >= n or raw[i] != "=":

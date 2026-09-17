@@ -62,12 +62,14 @@ def _probe_file(tmp_path: Path) -> str:
 
 # These five payloads are JSON, and that is load-bearing rather than taste.
 #
-# A key carrying a newline has to be a QUOTED key, and the fallback TOML parser
-# this repo ships for Python <3.11 (`_mini_toml_loads`) supports bare keys
-# only: `"kk" = 1`, byte-identical in meaning to `kk = 1`, dies at `bad key at
-# offset 0` before dispatch is ever reached. The first version of this test was
-# TOML and so was green on 3.11+ and red on the 3.9/3.10 legs with a parse
-# error, pinning nothing at all on a third of the supported matrix.
+# A key carrying a raw newline has to be a QUOTED key with the newline
+# escaped -- TOML forbids a literal newline inside a single-line string,
+# quoted key or not, and `_mini_toml_loads`, the fallback TOML parser this
+# repo ships for Python <3.11, still enforces that (#1595 widened it to
+# accept quoted keys at all, not to accept a raw newline inside one). The
+# first version of this test was TOML and so was green on 3.11+ and red on
+# the 3.9/3.10 legs with a parse error, pinning nothing at all on a third
+# of the supported matrix.
 #
 # JSON goes through `json.loads` on every supported interpreter, so these cases
 # reach the same five refusal sites identically everywhere. Do not convert them
