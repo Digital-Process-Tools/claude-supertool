@@ -13,10 +13,16 @@ mis-cited across a repo boundary before.
 **Absent tool → one call, `refusal.absent()`** (`validators/common/refusal.py:227`):
 
 ```python
-if not shutil.which(TOOL):
+if not spawnable(TOOL):
     emit(absent(TOOL, file, INSTALL_HINT, int((time.time() - start) * 1000)))
     return
 ```
+
+**Never `shutil.which(TOOL)` for the gate.** `spawnable(TOOL)` (`from spawnable import
+spawnable`) excludes a repo-planted cwd match (#2575) -- the same guard the spawn already uses via
+`argv0()`/`resolve_bin_cmd()`. A raw `shutil.which()` gate searches a different path list than the
+spawn it guards: a cwd shim passes the gate, then fails to spawn (#2579).
+`tests/test_gate_matches_spawn_2579.py` keeps this closed.
 
 `tool` is the **validator name** — the key a repo writes in `.supertool.json` — never the binary. `tsc-check` runs `tsc` and `html-check` runs `node`; escalating on the binary name would ignore the only spelling anyone can configure. Reserve it for an *absent* tool; a tool that ran and fell over is a different arm.
 

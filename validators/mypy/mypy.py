@@ -55,7 +55,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main
-from spawnable import argv0
+from spawnable import argv0, spawnable
 from linebreaks import split_lines
 
 TOOL = "mypy"
@@ -101,7 +101,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
 
-    if not shutil.which("mypy"):
+    if not spawnable("mypy"):
         _skip(file, start, INSTALL_HINT)
         return
 

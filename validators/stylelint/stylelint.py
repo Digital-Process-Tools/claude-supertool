@@ -28,7 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main, skipped, tool_fault
 from npx_absent import is_npx_absent
-from spawnable import argv0
+from spawnable import argv0, spawnable
 
 TOOL = "stylelint"
 INSTALL_HINT = ("stylelint not found, globally or via npx — this file was NOT "
@@ -69,9 +69,9 @@ def contained_target(file: str) -> str:
 
 def _resolve_cmd() -> list:
     """Return argv prefix for stylelint. Tries global, falls back to npx."""
-    if shutil.which("stylelint"):
+    if spawnable("stylelint"):
         return [argv0("stylelint")]
-    if shutil.which("npx"):
+    if spawnable("npx"):
         return [argv0("npx"), "--no-install", "stylelint"]
     return []
 

@@ -187,6 +187,7 @@ def test_flag_shaped_filename_gets_a_separator_before_it(
     mod = _adapter_module()
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/mypy")
+    monkeypatch.setattr(mod, "spawnable", lambda _name: "/usr/bin/mypy")
     monkeypatch.setattr(mod.sys, "argv", ["mypy.py", "--python-version=3.9"])
     mod.main()
 

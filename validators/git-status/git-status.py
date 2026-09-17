@@ -66,7 +66,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, guard_main
-from spawnable import argv0
+from spawnable import argv0, spawnable
 
 TOOL = "git-status"
 INSTALL_HINT = ("git not found on PATH — the working-tree delta for this file "
@@ -290,7 +290,7 @@ def main() -> None:
     file = sys.argv[1]
     git_bin = os.environ.get("GIT_BIN", "git")
 
-    if not shutil.which(git_bin):
+    if not spawnable(git_bin):
         # Not `state: "clean"`. A zeroed metrics block is a measurement, and no
         # measurement was taken.
         emit(absent(TOOL, file, INSTALL_HINT, 0))

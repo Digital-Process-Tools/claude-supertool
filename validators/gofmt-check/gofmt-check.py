@@ -22,7 +22,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main, tool_fault
-from spawnable import argv0
+from spawnable import argv0, spawnable
 from linebreaks import split_lines
 from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
                           anchor_miss_message as _anchor_miss_message)
@@ -109,7 +109,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
 
-    if not shutil.which("gofmt"):
+    if not spawnable("gofmt"):
         emit(absent(TOOL, file, INSTALL_HINT,
                     int((time.time() - start) * 1000)))
         return

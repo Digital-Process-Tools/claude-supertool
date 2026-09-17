@@ -44,7 +44,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main, tool_fault, skipped
-from spawnable import argv0
+from spawnable import argv0, spawnable
 from linebreaks import lf_line_of_v8_line
 
 TIMEOUT_S = 30
@@ -446,7 +446,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
 
-    if not shutil.which("node"):
+    if not spawnable("node"):
         emit(absent("html-check", file,
                     "node not on PATH — inline <script> blocks were NOT checked",
                     int((time.time() - start) * 1000)))

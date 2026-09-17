@@ -155,7 +155,7 @@ def test_timeout_is_skipped_never_invalid(tmp_path: Path, monkeypatch) -> None:
         raise subprocess.TimeoutExpired(cmd=["glab"], timeout=30)
 
     monkeypatch.setattr(mod.subprocess, "run", _boom)
-    monkeypatch.setattr(mod.shutil, "which", lambda _b: "/usr/bin/glab")
+    monkeypatch.setattr(mod, "spawnable", lambda _b: "/usr/bin/glab")
 
     f = tmp_path / ".gitlab-ci.yml"
     f.write_text("stages:\n  - build\n")

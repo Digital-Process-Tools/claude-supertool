@@ -178,6 +178,7 @@ def test_outside_a_git_repository_declines_rather_than_guessing(
 def test_ruff_absent_is_the_third_state_not_a_pass(
         repo: Path, monkeypatch) -> None:
     monkeypatch.setattr(adapter.shutil, "which", lambda *_a, **_k: None)
+    monkeypatch.setattr(adapter, "spawnable", lambda *_a, **_k: None)
     new_file = repo / "brand_new2.py"
     new_file.write_text(DEAD_IMPORT, encoding="utf-8")
     verdict = _run_adapter(new_file)

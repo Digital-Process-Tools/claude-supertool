@@ -24,7 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from linebreaks import split_lines
 from refusal import absent, guard_main, tool_fault
-from spawnable import argv0
+from spawnable import argv0, spawnable
 
 TOOL = "terraform-check"
 
@@ -126,7 +126,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
 
-    if not shutil.which("terraform"):
+    if not spawnable("terraform"):
         emit(absent(TOOL, file, INSTALL_HINT,
                     int((time.time() - start) * 1000)))
         return

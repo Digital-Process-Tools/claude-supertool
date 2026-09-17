@@ -43,7 +43,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from pkg_paths import attribute
 from refusal import absent, guard_main
-from spawnable import argv0
+from spawnable import argv0, spawnable
 from linebreaks import split_lines
 
 TOOL = "tsc-check"
@@ -190,7 +190,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
 
-    if not shutil.which("tsc"):
+    if not spawnable("tsc"):
         emit(absent(TOOL, file, INSTALL_HINT,
                     int((time.time() - start) * 1000)))
         return

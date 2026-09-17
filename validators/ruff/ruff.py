@@ -53,7 +53,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main, skipped, tool_fault
-from spawnable import argv0
+from spawnable import argv0, spawnable
 
 TOOL = "ruff"
 
@@ -197,7 +197,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
 
-    if not shutil.which(TOOL):
+    if not spawnable(TOOL):
         emit(absent(TOOL, file, INSTALL_HINT,
                     int((time.time() - start) * 1000)))
         return

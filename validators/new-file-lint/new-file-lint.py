@@ -51,7 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, guard_main, skipped, tool_fault  # noqa: E402
-from spawnable import argv0  # noqa: E402
+from spawnable import argv0, spawnable  # noqa: E402
 
 TOOL = "new-file-lint"
 
@@ -331,7 +331,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
 
-    if not shutil.which("ruff"):
+    if not spawnable("ruff"):
         emit(absent(TOOL, file, INSTALL_HINT, int((time.time() - start) * 1000)))
         return
 

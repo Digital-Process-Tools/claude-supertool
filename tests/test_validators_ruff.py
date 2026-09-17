@@ -351,6 +351,7 @@ def test_a_probe_that_cannot_answer_is_not_a_clean_pass(
     probe = _Probe(probe_result)
     monkeypatch.setattr(mod.subprocess, "run", probe)
     monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/ruff")
+    monkeypatch.setattr(mod, "spawnable", lambda _name: "/usr/bin/ruff")
     monkeypatch.setattr(mod.sys, "argv", ["ruff.py", str(f)])
     mod.main()
     out = json.loads(capsys.readouterr().out.strip())

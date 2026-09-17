@@ -76,6 +76,8 @@ def _drive_main(mod, monkeypatch, capsys, argv, proc):
     monkeypatch.setattr(mod.sys, "argv", argv)
     if hasattr(mod, "shutil"):
         monkeypatch.setattr(mod.shutil, "which", lambda *a, **k: "/fake/bin/tool")
+    if hasattr(mod, "spawnable"):
+        monkeypatch.setattr(mod, "spawnable", lambda *a, **k: "/fake/bin/tool")
     monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: proc)
     capsys.readouterr()
     mod.main()

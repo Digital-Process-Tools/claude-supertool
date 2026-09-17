@@ -65,6 +65,8 @@ def _drive_timeout(adapter: Path, tool: str, target: Path,
 
     monkeypatch.setattr(mod.subprocess, "run", _always_times_out)
     monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/" + tool)
+    if hasattr(mod, "spawnable"):
+        monkeypatch.setattr(mod, "spawnable", lambda _name: "/usr/bin/" + tool)
     monkeypatch.setattr(mod.sys, "argv", [str(adapter), str(target)])
 
     emitted: list = []

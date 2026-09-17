@@ -98,6 +98,7 @@ def _drive(monkeypatch: pytest.MonkeyPatch, target: Path,
 
     monkeypatch.setattr(mod.subprocess, "Popen", _popen)
     monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/git")
+    monkeypatch.setattr(mod, "spawnable", lambda _n: "/usr/bin/git")
     monkeypatch.setattr(mod.sys, "argv", [str(ADAPTER), str(target)])
 
     emitted: list = []

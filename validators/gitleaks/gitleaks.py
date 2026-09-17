@@ -85,7 +85,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import guard_main, required, required_but_absent, skipped, tool_fault
-from spawnable import argv0
+from spawnable import argv0, spawnable
 
 TOOL = "gitleaks"
 
@@ -150,7 +150,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
 
-    if not shutil.which(TOOL):
+    if not spawnable(TOOL):
         _decline(file, INSTALL_HINT, int((time.time() - start) * 1000))
         return
 

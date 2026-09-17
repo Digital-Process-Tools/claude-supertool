@@ -288,6 +288,7 @@ def test_a_blown_budget_is_a_stated_decline_with_valid_json(
 
     monkeypatch.setattr(mod.subprocess, "run", _always_times_out)
     monkeypatch.setattr(mod.shutil, "which", lambda _name: f"/usr/bin/{tool}")
+    monkeypatch.setattr(mod, "spawnable", lambda _name: f"/usr/bin/{tool}")
     monkeypatch.setattr(mod.sys, "argv", [str(path), str(target)])
 
     emitted: list[str] = []

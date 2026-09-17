@@ -113,6 +113,8 @@ def _receipt(mod, monkeypatch, capsys, target, stderr, rc: int = 1) -> dict:
         # name rather than a POSIX absolute keeps a platform literal out of a
         # file that runs on the Windows legs too.
         monkeypatch.setattr(mod.shutil, "which", lambda n: n)
+    if hasattr(mod, "spawnable"):  # html-check's gate now goes through this (#2579)
+        monkeypatch.setattr(mod, "spawnable", lambda n: n)
     monkeypatch.setattr(mod.sys, "argv", ["adapter", str(target)])
     mod.main()
     return json.loads(capsys.readouterr().out.strip().split(LF)[-1])
