@@ -33,13 +33,28 @@ a path the operator never set (#2250).
 from __future__ import annotations
 
 import os
+import pathlib
 import shlex
-import shutil
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from spawnable import which_excluding_cwd  # noqa: E402
 
 
 def _is_executable(path: str) -> bool:
-    return bool(shutil.which(path)) or (
-        os.path.isfile(path) and os.access(path, os.X_OK)
+    """Is `path` already a runnable command, as configured -- not merely a
+    name that happens to match a file sitting in the current directory?
+
+    The raw `os.path.isfile(path)` fallback is gated on `path` containing a
+    directory component (#2575): a BARE name checked that way resolves
+    relative to the current directory, the same shape as the
+    `shutil.which()` curdir insertion `which_excluding_cwd` exists to stop
+    -- a repo shipping a file literally named `ruff` at its own root would
+    otherwise satisfy this check with no `which()` call involved at all.
+    """
+    has_dir = bool(os.path.dirname(path))
+    return bool(which_excluding_cwd(path)) or (
+        has_dir and os.path.isfile(path) and os.access(path, os.X_OK)
     )
 
 
@@ -63,10 +78,19 @@ def _spawnable(name: str) -> str:
     Measured on the windows 3.12 leg and no other: 3.9 through 3.11 return
     the argument verbatim. Such a path was already spawnable anyway, `.cmd`
     included -- only a bare NAME needs the PATH search this fixes.
+
+    Routed through `which_excluding_cwd` rather than `shutil.which`
+    directly, so a bare NAME that only resolves via the current directory --
+    the repository under inspection -- falls through to the bare-name
+    return above instead of being spawned (#2575). The `os.path.isfile`
+    fast path just below is gated on `name` containing a directory
+    component for the same reason: an unqualified BARE name checked with
+    `os.path.isfile()` resolves relative to the current directory too, no
+    `which()` call required.
     """
-    if os.path.isfile(name) and os.access(name, os.X_OK):
+    if os.path.dirname(name) and os.path.isfile(name) and os.access(name, os.X_OK):
         return name
-    return shutil.which(name) or name
+    return which_excluding_cwd(name) or name
 
 
 def resolve_bin_cmd(raw: str, default: str) -> list[str]:
