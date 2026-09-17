@@ -128,6 +128,10 @@ def test_the_refusal_carries_the_gh_op_own_words(shipped_github):
     ("gh pr create --web", "same"),
     ("gh run view 17123456 --web", "same"),
     ("gh label list --web", "same"),
+    ("gh pr merge 1424 --web", "#2588: the one write op in this family had "
+                               "no exclusion, so its own refusal cited a "
+                               "manual route the guard then blocked"),
+    ("gh pr merge 1424 -w", "same, short spelling"),
     ("gh pr checks 1424 --watch", "gh-pr:NUMBER:status is one read, not a "
                                   "poller; `watch` is the op for polling and "
                                   "takes a PR, not a check list"),

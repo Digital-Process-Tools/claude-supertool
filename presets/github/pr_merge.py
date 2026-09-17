@@ -1555,8 +1555,12 @@ def main() -> int:
             print(line)
         print()
         print(f"Nothing was merged. This op has no green-bypass: if you "
-              f"disagree with the refusal, the manual route is "
-              f"`gh pr merge {number} --{method}`.")
+              f"disagree with the refusal, `gh pr merge {number} --{method}` "
+              f"is refused too, by this repo's own raw-command guard, which "
+              f"points back here. The route that is actually open is "
+              f"`gh pr merge {number} --web`, which opens the merge page in "
+              f"the browser for a human to decide -- or ask the maintainer "
+              f"to merge from outside a hooked session.")
         print(f"[result] REFUSED — PR #{number} was not merged. "
               f"Reasons above; nothing changed.")
         return 1

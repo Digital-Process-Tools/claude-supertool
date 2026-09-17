@@ -291,13 +291,23 @@ def test_a_declared_shortfall_refuses_and_merges_nothing(monkeypatch, capsys):
     assert "2 of 14" in out, out
 
 
-def test_the_refusal_names_the_manual_route_and_no_bypass(monkeypatch, capsys):
+def test_the_refusal_names_a_route_the_guard_does_not_also_block(
+        monkeypatch, capsys):
+    """#2588: the old message named `gh pr merge 944 --squash` as "the manual
+    route" -- a command this repo's own raw-command guard refuses, pointing
+    back at the op that just refused. The reworded message still says the
+    plain CLI form is refused, but names `--web` (excluded from the guard's
+    `gh pr merge` mapping the same way every other gh-pr-* entry excludes it)
+    as the route that is actually open, plus the out-of-session alternative.
+    """
     h = _Harness(_pr(mergeable="CONFLICTING"))
     _install(monkeypatch, h, argv=["944"])
     m.main()
     out = capsys.readouterr().out
     assert "no green-bypass" in out
     assert "gh pr merge 944 --squash" in out
+    assert "refused too" in out
+    assert "gh pr merge 944 --web" in out
 
 
 # ===========================================================================

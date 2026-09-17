@@ -99,7 +99,8 @@
       "syntax": "gh-pr-merge:NUMBER[:squash|:merge|:rebase][|force][|cleanup]",
       "example": "gh-pr-merge:940:squash|force",
       "replaces": [
-        { "argv": "gh pr merge", "use": "gh-pr-merge:NUMBER:squash|force" }
+        { "argv": "gh pr merge", "unless_flag": ["--web", "-w"],
+          "use": "gh-pr-merge:NUMBER:squash|force" }
       ],
       "repo_target": true
     },
