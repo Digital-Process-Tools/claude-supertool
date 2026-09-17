@@ -23,11 +23,12 @@ or `resolve_bin_cmd`) must not gate on a raw `shutil.which()` call instead.
 `validators/phpstan/phpstan.py` was the one adapter deliberately left off this
 register, tracked separately (#2581): its resolved `phpstan_bin` value is spliced as
 a literal script argument to `php`, not spawned as argv[0], so its own gate
-had nothing to be inconsistent WITH until that resolution was itself routed
-through `spawnable()` and the resolved answer reused as the argv element --
-done now, so the `ALLOWLIST` below is empty rather than removed outright
-(kept as the register's own escape hatch for the next adapter shaped this
-way, not because this one still needs it).
+had nothing to be inconsistent WITH until it gated on `spawnable()` too --
+matching every other `_BIN` adapter's own convention, `spawnable()` there is
+a presence-only check and `argv0(phpstan_bin)` builds the actual argv element
+separately. Done now, so the `ALLOWLIST` below is empty rather than removed
+outright (kept as the register's own escape hatch for the next adapter shaped
+this way, not because this one still needs it).
 """
 from __future__ import annotations
 
@@ -46,10 +47,11 @@ CHOKEPOINT_FILES = {"spawnable.py", "bin_resolve.py"}
 
 #: `phpstan_bin` was spliced into `php`'s argv as a literal script path, with
 #: nothing to check it against -- no chokepoint-routed spawn its gate could
-#: disagree with. Fixed by #2581 (the resolved `spawnable()` answer is now
-#: reused as that argv element), so nothing needs allowlisting here today;
-#: kept empty rather than removed as the register's own escape hatch for the
-#: next adapter shaped this way.
+#: disagree with. Fixed by #2581 (gated on `spawnable()` too, argv built
+#: separately via `argv0()`, same split every other `_BIN` adapter already
+#: uses), so nothing needs allowlisting here today; kept empty rather than
+#: removed as the register's own escape hatch for the next adapter shaped
+#: this way.
 ALLOWLIST: set = set()
 
 

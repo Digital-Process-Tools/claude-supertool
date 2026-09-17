@@ -247,3 +247,48 @@ def test_genuine_clean_is_still_clean(
                   stdout=json.dumps({"totals": {"file_errors": 0}, "files": {}}),
                   rc=0)
     assert data["ok"] is True and data["count"] == 0 and "skipped" not in data
+
+
+# ---------------------------------------------------------------------------
+# #2581 review: a regression test that could not fail on the regression it
+# names -- `_drive`'s spawnable/argv0 mocks returned the SAME value, so
+# reverting phpstan.py to reuse spawnable()'s own answer as the argv element
+# (rather than building it separately via argv0()) would have stayed green
+# here. This asserts the argv element the adapter actually sends `php`,
+# with the two mocks returning DIFFERENT values so the two code paths are
+# distinguishable.
+# ---------------------------------------------------------------------------
+
+def test_the_argv_element_comes_from_argv0_not_spawnable(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`argv0(phpstan_bin)` builds the argv element; `spawnable(phpstan_bin)`
+    is a presence-only gate. If phpstan.py ever went back to reusing
+    spawnable()'s own resolved answer instead, this must go red.
+    """
+    mod = _load()
+    target = tmp_path / "A.php"
+    target.write_text("<?php" + chr(10), encoding="utf-8")
+    monkeypatch.setattr(mod, "spawnable", lambda _b: "/from-spawnable/phpstan")
+    monkeypatch.setattr(mod, "argv0", lambda _b: "/from-argv0/phpstan")
+    captured: list = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(list(cmd))
+        return types.SimpleNamespace(
+            stdout=json.dumps({"totals": {"file_errors": 0}, "files": {}}),
+            stderr="", returncode=0)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.sys, "argv", ["phpstan.py", str(target)])
+    seen: list = []
+    monkeypatch.setattr(mod, "emit", seen.append)
+    mod.main()
+    assert captured, "phpstan.py never spawned php at all"
+    cmd = captured[0]
+    assert "/from-argv0/phpstan" in cmd, (
+        "the argv sent to php does not carry argv0()'s resolved answer "
+        f"at all: {cmd}")
+    assert "/from-spawnable/phpstan" not in cmd, (
+        "the argv sent to php carries spawnable()'s own resolved answer "
+        "instead of argv0()'s -- the gate and the spawn have gone back "
+        f"to disagreeing about which resolution is authoritative: {cmd}")
