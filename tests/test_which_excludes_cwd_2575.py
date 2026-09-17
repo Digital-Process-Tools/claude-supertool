@@ -40,7 +40,32 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent
 from bin_resolve import _is_executable, _spawnable  # noqa: E402
 from spawnable import argv0, spawnable, which_excluding_cwd  # noqa: E402
 
-TOOL = "st-probe-2575"
+# A name ending in a PATHEXT extension, not a bare name (#2577 review of
+# #2575's own tests). CPython's shutil.which() on Windows does NOT try the
+# bare name once it decides the name has no recognised extension -- for a
+# name that does not already end in one of PATHEXT's suffixes it builds
+# `files = [cmd + ext for ext in pathext]` and never includes bare `cmd` in
+# that list at all (see cpython/Lib/shutil.py, the `if any(cmd.lower()...)`
+# branch). A shim planted as bare "st-probe-2575" is therefore invisible to
+# the *real* shutil.which() on a genuine Windows host -- the very call the
+# fixture's own precondition below uses to prove it planted a reachable
+# shim -- even though `which_excluding_cwd()` under test tries the bare
+# name itself (its own `exts = [""] + [...]` includes "" first) and would
+# have found it fine. The mismatch was reasoned on macOS, not observed on
+# Windows, and CI caught it: all three Windows legs failed the fixture's
+# own self-check, never reaching the guard under test at all.
+#
+# ".cmd" is one of the extensions `shutil.which()` matches unconditionally
+# via `cmd.lower().endswith(ext.lower())` against the default PATHEXT
+# (".COM;.EXE;.BAT;.CMD"), so a name that already ends in it takes the
+# "already has an extension" branch and `files = [cmd]` -- the literal
+# name, unmodified -- which is exactly the shape the module's own docstring
+# names as the real-world attack (a repo-planted "ruff.cmd"). On POSIX,
+# `shutil.which()` has no PATHEXT logic at all and treats the whole string
+# as a literal filename either way, so this is not a Windows-only special
+# case in the fixture -- the same TOOL name is correct on every platform
+# this suite runs on.
+TOOL = "st-probe-2575.cmd"
 
 
 def _shim(d: "pathlib.Path", name: str = TOOL) -> "pathlib.Path":
