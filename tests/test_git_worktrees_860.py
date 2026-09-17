@@ -192,7 +192,7 @@ def test_every_verdict_names_evidence(monkeypatch, tmp_path) -> None:
 def test_cwd_scan_timeout_is_unknown_not_absence(monkeypatch, tmp_path) -> None:
     """The bug one layer down: a probe that stalled must not read as 'nobody'."""
     monkeypatch.setattr(wt, "_have_proc", lambda: False)
-    monkeypatch.setattr(wt.shutil, "which", lambda name: "/usr/bin/lsof")
+    monkeypatch.setattr(wt, "which_excluding_cwd", lambda name: "/usr/bin/lsof")
 
     def _boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="lsof", timeout=10)
@@ -204,7 +204,7 @@ def test_cwd_scan_timeout_is_unknown_not_absence(monkeypatch, tmp_path) -> None:
 
 def test_cwd_scan_without_lsof_or_proc_declines_naming_the_platform(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(wt, "_have_proc", lambda: False)
-    monkeypatch.setattr(wt.shutil, "which", lambda name: None)
+    monkeypatch.setattr(wt, "which_excluding_cwd", lambda name: None)
     got = wt._cwd_scan(str(tmp_path))
     assert got.answer == "unknown"
     assert sys.platform in got.detail
@@ -216,7 +216,7 @@ def test_cwd_scan_parses_lsof_and_matches_only_inside(monkeypatch, tmp_path) -> 
     sibling = tmp_path / "wt-other"
     sibling.mkdir()
     monkeypatch.setattr(wt, "_have_proc", lambda: False)
-    monkeypatch.setattr(wt.shutil, "which", lambda name: "/usr/bin/lsof")
+    monkeypatch.setattr(wt, "which_excluding_cwd", lambda name: "/usr/bin/lsof")
     out = f"p111\nn{sibling}\np222\nn{inside}/sub\np333\nn/tmp\n"
     monkeypatch.setattr(
         wt.subprocess, "run",
@@ -231,7 +231,7 @@ def test_cwd_scan_parses_lsof_and_matches_only_inside(monkeypatch, tmp_path) -> 
 def test_cwd_scan_empty_lsof_output_is_unknown_not_no(monkeypatch, tmp_path) -> None:
     """No rows at all means the tool did not speak, not that the machine is idle."""
     monkeypatch.setattr(wt, "_have_proc", lambda: False)
-    monkeypatch.setattr(wt.shutil, "which", lambda name: "/usr/bin/lsof")
+    monkeypatch.setattr(wt, "which_excluding_cwd", lambda name: "/usr/bin/lsof")
     monkeypatch.setattr(
         wt.subprocess, "run",
         lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", "lsof: WARNING"),

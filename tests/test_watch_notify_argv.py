@@ -24,7 +24,7 @@ _TRAILING_BACKSLASH = 'branch name ending in a slash\\'
 def _run_calls(monkeypatch):
     calls = []
     monkeypatch.setattr(transport.sys, "platform", "darwin")
-    monkeypatch.setattr(transport.shutil, "which", lambda _n: "/usr/bin/osascript")
+    monkeypatch.setattr(transport, "which_excluding_cwd", lambda _n: "/usr/bin/osascript")
     # Desktop notifications are off unless opted in (#2544); these tests are
     # about the argv shape, not the opt-in itself, so opt in here.
     monkeypatch.setenv(transport.DESKTOP_ENV, "1")

@@ -20,7 +20,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -43,6 +42,7 @@ import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs
 import _repo_target  # noqa: E402  (a `repo:` target wins over the cwd's remote, #1952)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
 import naming  # noqa: E402  (one name above the two path variables, #1477)
+from _spawnable import which_excluding_cwd  # noqa: E402  (cwd-excluding which, #2596)
 
 # Overridable (#581): the Phase 2 consumer (channel.ts) already reads
 # SUPERTOOL_WATCH_SOCK, and four shipped surfaces — the #550 refusal message and
@@ -975,7 +975,8 @@ def desktop_notify(title: str, message: str) -> None:
         return
     if not desktop_notify_enabled():
         return
-    if not shutil.which("osascript"):
+    osascript_bin = which_excluding_cwd("osascript")
+    if not osascript_bin:
         return
     # Titles and bodies arrive from remote repos, so they routinely contain
     # quotes, backslashes and other characters that are syntax to AppleScript.
@@ -985,7 +986,7 @@ def desktop_notify(title: str, message: str) -> None:
     try:
         subprocess.run(
             [
-                "osascript",
+                osascript_bin,
                 "-e", "on run argv",
                 "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
                 "-e", "end run",
@@ -1517,9 +1518,12 @@ def _ps_rows() -> list[tuple[int, list[str]]] | None:
     is running, None means nobody looked. #511 is a catalogue of what happens
     when a tool renders the second as the first.
     """
+    ps_bin = which_excluding_cwd("ps")
+    if not ps_bin:
+        return None
     try:
         proc = subprocess.run(
-            list(_SCAN_PS_ARGV),
+            [ps_bin, *_SCAN_PS_ARGV[1:]],
             capture_output=True, timeout=5, check=False,
             encoding="utf-8", errors="replace",
         )
@@ -1594,14 +1598,15 @@ def _ran(argv: tuple[str, ...] | list[str]) -> int | None:
 
 
 def _probe_ps_scan() -> bool:
-    if shutil.which("ps") is None:
+    ps_bin = which_excluding_cwd("ps")
+    if ps_bin is None:
         return False
-    scan = _ran(_SCAN_PS_ARGV)
+    scan = _ran((ps_bin, *_SCAN_PS_ARGV[1:]))
     if scan == 0:
         return True
     if scan is None:
         return True
-    return _ran(("ps",)) != 0
+    return _ran((ps_bin,)) != 0
 
 
 def _labelled_with_path(tokens: list[str]) -> tuple[str | None, str, str, str] | None:
