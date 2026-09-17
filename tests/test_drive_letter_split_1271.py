@@ -38,7 +38,6 @@ negative assertion needs a positive control").
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -111,6 +110,39 @@ def test_drive_letter_swap_suggest_unit_candidate_must_exist(
     monkeypatch.chdir(tmp_path)
     out = core._drive_letter_swap_suggest("read", "leading C", r"\does-not-exist.py")
     assert out == ""
+
+
+def test_drive_letter_after_space_still_fires_when_the_naive_path_also_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """CI (windows-latest, all four interpreters) failure this pins: on a
+    real Windows machine, dropping the drive letter from an absolute path
+    leaves a bare "\\coincidence.py" shape, which Windows resolves against
+    the CURRENT drive rather than failing -- so whenever `cwd` shares a
+    drive with the intended target (a single-drive machine, i.e. virtually
+    every real Windows install and every windows-latest runner), the naive,
+    mis-tokenized path coincidentally EXISTS too. The old
+    "os.path.exists(path): return \"\"" early-out in `_colon_split_hint`
+    swallowed the diagnosis right there, before it ever reached
+    `_drive_letter_swap_suggest`.
+
+    Reproduced here via `os.name`, not a real Windows box: the new branch is
+    gated on `os.name == "nt"`, and POSIX's own `os.path.splitdrive` always
+    reports "no drive" regardless of content, so mocking just that one
+    attribute reaches the exact branch real Windows takes -- the two literal
+    filenames below stand in for "the naive path exists" and "the corrected
+    one exists too", the same technique `_drive_qualified_target` already
+    uses for the positive-control test above."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(core.os, "name", "nt")
+    naive = r"\coincidence.py"
+    (tmp_path / naive).write_text("naive\n", encoding="utf-8")
+    candidate = r"C:\coincidence.py"
+    (tmp_path / candidate).write_text("real\n", encoding="utf-8")
+
+    out = core._colon_split_hint("grep", "pattern:file.py C", naive)
+    assert "Windows absolute path" in out, out
+    assert candidate in out, out
 
 
 # --- regression: the WORKING (non-whitespace) drive-letter cases in

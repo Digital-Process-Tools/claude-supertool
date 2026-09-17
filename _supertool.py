@@ -11448,7 +11448,26 @@ def _colon_split_hint(op: str, leading: str, path: str,
     `START:END` was a silent zero-diagnostic regression, not a wash, the
     first time this shipped.
     """
-    if not path or path == "." or os.path.exists(path):
+    if not path or path == ".":
+        return ""
+    if os.path.exists(path):
+        # Windows only, and only this one shape: a path with no drive
+        # component that starts with a separator resolves against the
+        # CURRENT drive rather than failing outright (a bare "\Users\x.py"
+        # reads as "<cwd's drive>:\Users\x.py"), so `os.path.exists`
+        # returning True here is not proof the tokenization was right -- it
+        # is exactly what the drive-letter-after-space mistake looks like
+        # when `cwd` happens to share a drive with the intended target,
+        # which on a single-drive machine (virtually every Windows install)
+        # is the common case, not a corner one (CI, windows-latest, all four
+        # interpreters, #1271 follow-up). Every other existing path -- POSIX
+        # entirely, or a Windows path that already carries its own drive
+        # letter -- still returns "" here exactly as before this branch.
+        if (os.name == "nt" and not os.path.splitdrive(path)[0]
+                and path[:1] in ("\\", "/")):
+            _drive = _drive_letter_swap_suggest(op, leading, path)
+            if _drive:
+                return _path_not_found(path, suggest=_drive)
         return ""
     if ":" not in leading and _looks_like_path(path):
         return ""
