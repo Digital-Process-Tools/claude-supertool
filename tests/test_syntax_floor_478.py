@@ -186,7 +186,25 @@ def test_a_repo_planted_interpreter_shim_at_cwd_is_never_trusted(
         pytest.skip("running interpreter IS the floor — nothing to shadow")
     minor = supertool.SYNTAX_FLOOR[1]
     name = "python%d.%d" % (supertool.SYNTAX_FLOOR[0], minor)
-    planted = tmp_path / name
+    # Planted with a recognised PATHEXT suffix, not the bare interpreter
+    # name -- the same fixture defect #2577 already found and fixed in
+    # `test_which_excludes_cwd_2575.py`'s own TOOL constant, reproduced
+    # here independently. CPython's `shutil.which()` on Windows only
+    # inserts the *bare* `cmd` into its candidate list when `cmd` already
+    # ends in a PATHEXT suffix (`Lib/shutil.py`: `files = [cmd + ext for
+    # ext in pathext]`, with the literal `cmd` prepended only when
+    # `cmd.upper()` already ends with one of them); a bare `python3.9`
+    # therefore builds candidates `python3.9.COM`/`.EXE`/`.BAT`/`.CMD` and
+    # never `python3.9` itself, so the planted shim was invisible to the
+    # self-check's own `shutil.which()` call and the test failed before
+    # reaching the guard under test at all (observed on windows-latest,
+    # 3.10, PR #2601). This is a fixture-only fix: the guard being tested,
+    # `_which_excluding_cwd`, never goes through `shutil.which()` -- it
+    # walks PATH itself and skips any entry equal to cwd outright -- so
+    # which extension the shim carries has no bearing on what that
+    # function returns.
+    shim_name = name + ".cmd"
+    planted = tmp_path / shim_name
     # Reports the floor version unconditionally -- unlike
     # `test_a_lying_python39_on_path_is_not_trusted` above, this shim must
     # genuinely pass the version check (report older than `current`), so
@@ -203,7 +221,7 @@ def test_a_repo_planted_interpreter_shim_at_cwd_is_never_trusted(
     # The fixture must actually reproduce cwd-first resolution before the
     # guard is credited with anything: raw shutil.which() has to find it.
     import shutil as _shutil
-    found = _shutil.which(name)
+    found = _shutil.which(shim_name)
     assert found is not None, (
         "fixture does not reproduce cwd-first resolution — shutil.which() "
         "did not find the planted shim, so the assertion below is not "
