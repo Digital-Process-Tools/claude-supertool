@@ -279,7 +279,12 @@
     "radar": {
       "watch_name": "oss-supertool",
       "radar_tiers": {
-        "gh-prs": {}
+        "gh-prs": {
+          "pr_exclude_events": [
+            "checks_pending",
+            "conflicts_appeared"
+          ]
+        }
       }
     },
     "watches": {
