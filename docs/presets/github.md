@@ -2103,8 +2103,12 @@ on is the entire question. Found on PR #951 against the live API, where
 
 **There is no green-bypass.** A `--force` past the gate would make the op's one
 guarantee conditional on its caller, which is the thing that fails at 2am. A
-refusal names the raw command instead, so the escape hatch exists without this
-op ever being what merged something unverified. The `|force` suffix it *does*
+refusal discloses that the plain CLI form (`gh pr merge N --squash`/`--merge`/
+`--rebase`) is refused too, by this repo's own raw-command guard, and names
+`gh pr merge N --web` (which the guard excludes, same as every other
+`gh pr */gh issue *` entry) and merging outside a hooked session as the routes
+that are actually open — never a route back through this op, and never a raw
+command that merges something unverified ([#2588](https://github.com/Digital-Process-Tools/claude-supertool/issues/2588)). The `|force` suffix it *does*
 take is `_publish_safety.require_confirm` — the same confirmation gate the
 publish ops use — so a merge is never single-shot; without it the op prints the
 gate and merges nothing.
