@@ -6745,7 +6745,9 @@ def _bre_rewrite_note(written: str, effective: str, rewritten: bool) -> str:
             f"`[|]`.)" + chr(10))
 
 
-def _pattern_gate(pattern: str) -> Tuple[str, str, str]:
+def _pattern_gate(
+    pattern: str, check_saturation: bool = True
+) -> Tuple[str, str, str]:
     """The one place a caller-supplied search pattern is normalised and judged.
 
     Returns `(effective, refusal, note)`. A non-empty `refusal` is the whole
@@ -6778,6 +6780,20 @@ def _pattern_gate(pattern: str) -> Tuple[str, str, str]:
     reason for existing already argues for: a guard wired route by route is a
     guard that drifts, the same way the rewrite and the saturation refusal
     once did (#1344).
+
+    `check_saturation=False` (#2573) exists for callers whose semantics are a
+    single-match position search rather than a filtered count -- `op_vim`'s
+    `/`, `?`, `n`/`N`, `:s`, `:g`/`:v` and operator motion forms. There, "the
+    whole pattern matches every line" is not a meaningless result the way it
+    is for `grep`/`around`: a bare `|` is a completely ordinary, previously-
+    working vim search for a literal pipe character (`_saturating_branch`
+    sees the empty alternation branch and refuses it), and vim has no result
+    count for the refusal's own rationale to apply to. The length cap and the
+    ReDoS backtracking guard still apply unconditionally -- this only turns
+    off the one check whose rationale does not transfer. `trap.d/2571.
+    between-saturating-refusal.md` flagged the identical mismatch for
+    `op_between_pattern`, left unresolved there; `op_vim` is the first call
+    site to actually need the opt-out rather than merely note the mismatch.
     """
     if len(pattern) > 1000:
         return pattern, (
@@ -6790,9 +6806,10 @@ def _pattern_gate(pattern: str) -> Tuple[str, str, str]:
             "Rewrite without `(...+)+`-style nesting.\n"
         ), ""
     effective, rewritten = _bre_alternation_rewrite(pattern)
-    refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
-    if refusal:
-        return effective, refusal, ""
+    if check_saturation:
+        refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
+        if refusal:
+            return effective, refusal, ""
     return effective, "", _bre_rewrite_note(pattern, effective, rewritten)
 
 
@@ -16162,7 +16179,10 @@ def _op_vim_impl(path: str, script: str) -> str:
         elif verb == "/":
             if not arg:
                 return f"ERROR: action {i} '{action}': empty / pattern\n"
-            pat = arg
+            pat, _gate_refusal, _gate_note = _pattern_gate(
+                arg, check_saturation=False)
+            if _gate_refusal:
+                return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
             idx = -1
             try:
                 rx = re.compile(pat, re.MULTILINE)
@@ -16270,7 +16290,10 @@ def _op_vim_impl(path: str, script: str) -> str:
         elif verb == "?":
             if not arg:
                 return f"ERROR: action {i} '{action}': empty ? pattern\n"
-            pat = arg
+            pat, _gate_refusal, _gate_note = _pattern_gate(
+                arg, check_saturation=False)
+            if _gate_refusal:
+                return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
             idx = -1
             try:
                 rx = re.compile(pat, re.MULTILINE)
@@ -16408,7 +16431,10 @@ def _op_vim_impl(path: str, script: str) -> str:
                 and "\t" not in arg
             ):
                 # Run the search now; skip the open (Kevin never wanted content here).
-                _pat = arg[1:]
+                _pat, _gate_refusal, _gate_note = _pattern_gate(
+                    arg[1:], check_saturation=False)
+                if _gate_refusal:
+                    return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
                 _direction = arg[0]
                 try:
                     _rx = re.compile(_pat, re.MULTILINE)
@@ -17119,6 +17145,10 @@ def _op_vim_impl(path: str, script: str) -> str:
             if last_search is None:
                 return f"ERROR: action {i} '{action}': no previous search for {verb}\n"
             spat, sdir = last_search
+            spat, _gate_refusal, _gate_note = _pattern_gate(
+                spat, check_saturation=False)
+            if _gate_refusal:
+                return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
             forward = (sdir == "/") if verb == "n" else (sdir != "/")
             idx = -1
             try:
@@ -17228,6 +17258,10 @@ def _op_vim_impl(path: str, script: str) -> str:
             spat, srepl, sflags = parts[0], parts[1], parts[2]
             if not spat:
                 return f"ERROR: action {i} '{action}': :s needs non-empty PAT\n"
+            spat, _gate_refusal, _gate_note = _pattern_gate(
+                spat, check_saturation=False)
+            if _gate_refusal:
+                return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
             flags_re = re.MULTILINE
             if "i" in sflags:
                 flags_re |= re.IGNORECASE
@@ -17736,6 +17770,10 @@ def _op_vim_impl(path: str, script: str) -> str:
                 pat = spec[2:]
                 if not pat:
                     return f"ERROR: action {i} '{action}': :{mode}/PAT/d needs non-empty PAT\n"
+                pat, _gate_refusal, _gate_note = _pattern_gate(
+                    pat, check_saturation=False)
+                if _gate_refusal:
+                    return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
                 try:
                     rx = re.compile(pat)
                 except re.error as e:
@@ -17768,7 +17806,13 @@ def _op_vim_impl(path: str, script: str) -> str:
                 # Pattern address `/PAT/` — line number of first match.
                 # Search forward from cursor line (matches real vim).
                 if addr.startswith("/") and addr.endswith("/") and len(addr) >= 2:
-                    pat = addr[1:-1]
+                    pat, _gate_refusal, _gate_note = _pattern_gate(
+                        addr[1:-1], check_saturation=False)
+                    if _gate_refusal:
+                        raise ValueError(
+                            f"bad pattern {addr!r}: "
+                            f"{_gate_refusal[len('ERROR: '):].rstrip(chr(10))}"
+                        )
                     try:
                         rxp = re.compile(pat)
                     except re.error as e:
@@ -18272,7 +18316,10 @@ def _op_vim_impl(path: str, script: str) -> str:
             elif motion == "/":
                 if not arg:
                     return f"ERROR: action {i} '{action}': {verb} empty pattern\n"
-                pat = arg
+                pat, _gate_refusal, _gate_note = _pattern_gate(
+                    arg, check_saturation=False)
+                if _gate_refusal:
+                    return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
                 idx = -1
                 try:
                     rx = re.compile(pat, re.MULTILINE)
@@ -18523,7 +18570,10 @@ def _op_vim_impl(path: str, script: str) -> str:
             elif motion == "?":
                 if not arg:
                     return f"ERROR: action {i} '{action}': {verb} empty pattern\n"
-                pat = arg
+                pat, _gate_refusal, _gate_note = _pattern_gate(
+                    arg, check_saturation=False)
+                if _gate_refusal:
+                    return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
                 idx = -1
                 try:
                     rx = re.compile(pat, re.MULTILINE)
