@@ -35,16 +35,25 @@ is a finding on the pull request that introduced it rather than a stopped releas
 the fragments; an entry written directly into the file is lost at the next release, silently,
 because the fold has no way to know it was meant to stay.
 
-**The fragment checker could not be located in this repository**, so this rule
-names no command. A path guessed here would fail the first time anybody ran
-it, and read as this repository being wrong.
+Check before pushing. **Two commands, not one:** the checker refuses both audits in a
+single call, and says so. They used to be combinable, and the combination quietly ran the
+link audit alone while printing one confident `ok` for it -- so each flag now gets its own
+invocation, and each audits its own thing completely.
 
-**`/oss:scaffold` will not put one here.** A changelog gate already runs in
-this repository under a different name (`already present: .github/scripts/assemble_changelog.py, .github/workflows/changelog.yml`), so the owned checker was
-declined rather than written on top of it -- and running `/oss:scaffold`
-again declines again. **This rule does not know that gate's command.** Read
-what the parentheses above name -- one file or several, and possibly a note
-about part of the tree that could not be read: that is the gate this
-repository actually runs.
-`/oss:scaffold --force-owned` installs this plugin's checker alongside it,
-after which both gates run on every pull request.
+```bash
+python3 .oss/assemble_changelog.py --check --dir 'changelog.d' --changelog CHANGELOG.md
+python3 .oss/assemble_changelog.py --check-links --untagged '0.19.0,0.18.0,0.17.0,0.16.0,0.15.0,0.14.0,0.11.0' --dir 'changelog.d' --changelog CHANGELOG.md
+```
+
+Those are the same two commands the scaffolded changelog workflow runs as its own two
+steps, so the pair you run before pushing and the pair that gates the pull request cannot
+disagree.
+
+`--check-links` refuses when a `## [x.y.z]` section has no link reference definition. If the
+version it names was never tagged, the missing link is the correct state: there is no release
+page to point at, and a `releases/tag/vX.Y.Z` URL written for one is a 404 that renders as a
+working link.
+
+The declaration above is not written here: `changelog_untagged` in `.oss.json` names 0.19.0, 0.18.0, 0.17.0, 0.16.0, 0.15.0, 0.14.0, 0.11.0,
+and the CI leg reads the same key, so the command you run and the one that gates the pull
+request cannot disagree. Add a version there and re-run `/oss:scaffold --apply`.
