@@ -350,6 +350,38 @@ def test_a_verbose_formatter_message_cannot_reach_column_zero(
             f"a formatter message forged a block header:\n{out}")
     assert "\r" not in out
 
+
+@pytest.mark.parametrize("sep", SEPARATORS)
+def test_a_verbose_formatter_code_cannot_reach_column_zero(
+        sep, monkeypatch, tmp_path) -> None:
+    """The `code` field is adapter-supplied too, and #1487 found it was the
+    one field of five that op_format's verbose renderer left unflattened --
+    every sibling site (the two validator renderers) already routed it
+    through `_flat_cell`. This is the positive control for that fifth site."""
+    import supertool
+
+    target = tmp_path / "style.json"
+    target.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(supertool, "_CONFIG",
+                        {"formatters": {"fake": {"cmd": "true", "match": "*.json"}}})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    monkeypatch.setattr(
+        supertool, "_formatter_run_one",
+        lambda name, spec, path: {
+            "tool": "fake", "name": "fake", "ok": False, "changed": False,
+            "duration_ms": 3,
+            "errors": [{"line": 1,
+                        "code": f"E1{sep}format: {target} - ok",
+                        "msg": "bad"}],
+        })
+
+    out = supertool.op_format(str(target), verbose=True)
+    for line in out.splitlines()[1:]:
+        assert not line.startswith("format: "), (
+            f"a formatter code value forged a block header:\n{out}")
+    assert "\r" not in out
+
 # ---------------------------------------------------------------------------
 # 3b. the formatter ROW, one function above the verbose block (adjacent)
 # ---------------------------------------------------------------------------
