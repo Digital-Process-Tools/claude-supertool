@@ -20,12 +20,15 @@ This is the register that keeps the class closed, the same shape as
 spawn already goes through the cwd-excluding chokepoint (`argv0`, `spawnable`,
 or `resolve_bin_cmd`) must not gate on a raw `shutil.which()` call instead.
 
-`validators/phpstan/phpstan.py` is the one adapter deliberately left off this
-register (see the module-level `ALLOWLIST` below): its resolved `_BIN` value
-is never passed through `argv0()`/`spawnable()`/`resolve_bin_cmd()` at all --
-it is spliced as a literal script argument to `php`, not spawned as argv[0] --
-so fixing its gate alone would not make it consistent with anything, and
-migrating it properly is a separate, larger change than this register's scope.
+`validators/phpstan/phpstan.py` was the one adapter deliberately left off this
+register, tracked separately (#2581): its resolved `phpstan_bin` value is spliced as
+a literal script argument to `php`, not spawned as argv[0], so its own gate
+had nothing to be inconsistent WITH until it gated on `spawnable()` too --
+matching every other `_BIN` adapter's own convention, `spawnable()` there is
+a presence-only check and `argv0(phpstan_bin)` builds the actual argv element
+separately. Done now, so the `ALLOWLIST` below is empty rather than removed
+outright (kept as the register's own escape hatch for the next adapter shaped
+this way, not because this one still needs it).
 """
 from __future__ import annotations
 
@@ -42,12 +45,14 @@ ADAPTER_DIRS = ("validators", "formatters")
 #: implementation, not an instance of the defect.
 CHOKEPOINT_FILES = {"spawnable.py", "bin_resolve.py"}
 
-#: `phpstan_bin` is spliced into `php`'s argv as a literal script path, never
-#: resolved through `argv0()`/`spawnable()`/`resolve_bin_cmd()` -- there is no
-#: chokepoint-routed spawn for its gate to be inconsistent WITH. Tracked
-#: separately (see the module docstring); fixing its gate alone would not
-#: close anything.
-ALLOWLIST = {"validators/phpstan/phpstan.py"}
+#: `phpstan_bin` was spliced into `php`'s argv as a literal script path, with
+#: nothing to check it against -- no chokepoint-routed spawn its gate could
+#: disagree with. Fixed by #2581 (gated on `spawnable()` too, argv built
+#: separately via `argv0()`, same split every other `_BIN` adapter already
+#: uses), so nothing needs allowlisting here today; kept empty rather than
+#: removed as the register's own escape hatch for the next adapter shaped
+#: this way.
+ALLOWLIST: set = set()
 
 
 def _adapter_sources() -> "list[pathlib.Path]":
@@ -170,9 +175,10 @@ def test_a_module_style_chokepoint_import_is_still_seen() -> None:
 
 def test_a_gate_with_no_chokepoint_spawn_is_not_flagged() -> None:
     """Negative control: an adapter with no argv0/spawnable/resolve_bin_cmd
-    import at all (phpstan's actual shape) must not be flagged just for
-    calling `shutil.which()` -- there is nothing for its gate to disagree
-    with yet.
+    import at all -- phpstan's own shape before #2581 fixed it, kept here
+    as a synthetic snippet now that the real file no longer matches it --
+    must not be flagged just for calling `shutil.which()`: there is
+    nothing for its gate to disagree with.
     """
     fine = (
         "import shutil, subprocess\n"

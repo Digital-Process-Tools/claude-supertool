@@ -177,5 +177,34 @@ def test_an_explicit_path_is_never_routed_through_the_guard(
     assert which_excluding_cwd(str(exe)) == str(exe)
 
 
+def test_a_differently_cased_path_entry_is_still_recognised_as_cwd(
+        tmp_path, monkeypatch) -> None:
+    """#2581: `spawnable.py:91` compared a PATH entry to `here` with a raw
+    `==`, while the dedupe two lines above it (`:87`) folds case first with
+    `os.path.normcase`. On a case-insensitive filesystem (Windows, and
+    macOS by default) a PATH entry spelling the repository directory in a
+    different case is therefore not recognised as `here` and its match is
+    returned rather than excluded -- the same "file supplied by the
+    repository is run as a program" shape #2575 closed for the exact-case
+    spelling only.
+
+    Isolated from whether *this* host's filesystem/`os.path.normcase` fold
+    case at all by monkeypatching `os.path.normcase` to `str.lower` (the
+    Windows behaviour, POSIX's own `os.path.normcase` is the identity
+    function) and `os.path.isfile`/`os.access` to always answer True for
+    the candidate: what is under test is the string comparison at `:91`,
+    not this runner's platform.
+    """
+    monkeypatch.chdir(tmp_path)
+    cased = str(tmp_path).upper()
+    if cased == str(tmp_path):
+        cased = str(tmp_path).lower()
+    monkeypatch.setenv("PATH", cased)
+    monkeypatch.setattr(os.path, "normcase", str.lower)
+    monkeypatch.setattr(os.path, "isfile", lambda p: True)
+    monkeypatch.setattr(os, "access", lambda p, m: True)
+    assert which_excluding_cwd(TOOL) is None
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__])

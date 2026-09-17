@@ -74,7 +74,7 @@ def which_excluding_cwd(name: str) -> "str | None":
     path_env = os.environ.get("PATH")
     if not path_env:
         return None
-    here = os.path.abspath(os.curdir)
+    here = os.path.normcase(os.path.abspath(os.curdir))
     exts = [""]
     if os.name == "nt":
         raw_pathext = os.getenv("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
@@ -88,7 +88,7 @@ def which_excluding_cwd(name: str) -> "str | None":
         if norm in seen:
             continue
         seen.add(norm)
-        if entry_abs == here:
+        if norm == here:
             continue
         for ext in exts:
             candidate = os.path.join(entry, name + ext)

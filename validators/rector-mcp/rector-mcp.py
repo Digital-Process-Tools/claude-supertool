@@ -102,8 +102,8 @@ def resolve_bin(cwd: str) -> str:
                     f"mcp-rector-warm not found at: {candidate}")
             bin_path = candidate
         else:
-            from shutil import which
-            resolved = which(bin_path)
+            from spawnable import which_excluding_cwd
+            resolved = which_excluding_cwd(bin_path)
             if resolved is None:
                 raise _refusal.DaemonUnavailable(
                     "mcp-rector-warm not found on $PATH — install via: "
