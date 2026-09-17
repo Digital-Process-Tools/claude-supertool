@@ -501,7 +501,7 @@ backslashes and handed the op `C:Usersdevnotes.txt`, which then failed with
 `path not found` at an address nobody had typed. Both parsers now agree, and
 `\u` / `\U` escapes (`"\u00e9"`) work on every version.
 
-Other TOML primitives supported in payloads: integers (`start = 42`), booleans (`replace_all = true`), `# comments`, inline arrays (`paths = ["a", "b"]`), and a single `[table]` header for a nested-object field, e.g. `[set]` for `json-set`'s `set` field (#2473) -- bare name only (alnum, `_`, `-`), matching `[[table]]`'s own grammar. Dotted table headers, inline tables (`{ ... }`), quoted keys and dates aren't supported.
+Other TOML primitives supported in payloads: integers (`start = 42`), booleans (`replace_all = true`), `# comments`, inline arrays (`paths = ["a", "b"]`), a single `[table]` header for a nested-object field, e.g. `[set]` for `json-set`'s `set` field (#2473) -- bare name only (alnum, `_`, `-`), matching `[[table]]`'s own grammar -- and a quoted key (`"my key" = 1`, `'my key' = 1`), basic or literal (#1595). Dotted table headers, dotted keys, inline tables (`{ ... }`), quoted table names and dates aren't supported.
 
 ### Implementation note
 
