@@ -18,3 +18,7 @@ budget and already carries one `## ... tier` section per registered tier (`gl-mr
 If the description ever needs to shrink (the only direction this ledger allows), that is a
 separate change from adding a tier, and `test_a_shrunk_entry_leaves_the_ledger_rather_than_going_stale`
 is what checks the ledger's own recorded number stays in sync afterward.
+
+**This is one instance of a wider class**, not specific to `radar` or to `presets/watch.json`:
+see `presets-json-description-length.md` — the same three guards fire off a description-length
+change to ANY op in ANY `presets/*.json`.
