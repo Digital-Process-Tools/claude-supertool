@@ -133,7 +133,11 @@ def verify(comment_id: str, token: str, sent: str) -> tuple[str, str]:
         data = authorized("commentThreads", token,
                           {"part": "snippet", "id": comment_id})
     except YouTubeAPIError as e:
-        return "could-not-verify", str(e)
+        # Escaped the same way the MISMATCH arm below does: the HTTP error
+        # body is Google's and can carry a newline, which would otherwise
+        # put the remainder at column 0 of a receipt an agent parses
+        # (trap.d/227.oauth-error-body-unescaped-in-receipt.md).
+        return "could-not-verify", repr(safe_short(str(e), 300))
     items = data.get("items") or []
     if not items:
         return "could-not-verify", (
