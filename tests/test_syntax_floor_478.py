@@ -41,6 +41,7 @@ reports the breakage only after nine CI legs already have (#478 itself).
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -167,6 +168,47 @@ def test_a_lying_python39_on_path_is_not_trusted(monkeypatch, tmp_path: Path) ->
     fake.chmod(0o755)
     monkeypatch.delenv(supertool.SYNTAX_FLOOR_ENV, raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
+    assert supertool._syntax_floor_interpreter() is None
+
+
+def test_a_repo_planted_interpreter_shim_at_cwd_is_never_trusted(
+        monkeypatch, tmp_path: Path) -> None:
+    """#2596 — a repo-planted `python3.9.exe` at the repository root would,
+    on Windows, be resolved ahead of every real PATH entry by raw
+    `shutil.which()` and then spawned as the floor compiler against the
+    maintainer's own source tree. This asks the mechanism directly (same
+    approach as `tests/test_which_excludes_cwd_2575.py`) rather than the
+    platform: a repo-planted shim that is the *only* thing that would
+    resolve must be refused, and a genuine PATH entry elsewhere must still
+    be found.
+    """
+    if sys.version_info[:2] <= supertool.SYNTAX_FLOOR:
+        pytest.skip("running interpreter IS the floor — nothing to shadow")
+    minor = supertool.SYNTAX_FLOOR[1]
+    name = "python%d.%d" % (supertool.SYNTAX_FLOOR[0], minor)
+    planted = tmp_path / name
+    # Reports the floor version unconditionally -- unlike
+    # `test_a_lying_python39_on_path_is_not_trusted` above, this shim must
+    # genuinely pass the version check (report older than `current`), so
+    # the only thing standing between it and being spawned as the floor
+    # compiler is the cwd-exclusion guard under test, not the separate
+    # name-vs-binary check that test already covers.
+    planted.write_text(
+        "#!/bin/sh\necho '%d.%d'\n" % (supertool.SYNTAX_FLOOR[0], minor),
+        encoding="utf-8")
+    planted.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(supertool.SYNTAX_FLOOR_ENV, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + "/nonexistent-bin")
+    # The fixture must actually reproduce cwd-first resolution before the
+    # guard is credited with anything: raw shutil.which() has to find it.
+    import shutil as _shutil
+    found = _shutil.which(name)
+    assert found is not None, (
+        "fixture does not reproduce cwd-first resolution — shutil.which() "
+        "did not find the planted shim, so the assertion below is not "
+        "testing the #2596 shape at all"
+    )
     assert supertool._syntax_floor_interpreter() is None
 
 

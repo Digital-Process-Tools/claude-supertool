@@ -24627,7 +24627,11 @@ def _syntax_floor_interpreter(env: Optional[Dict[str, str]] = None) -> Optional[
         return sys.executable
 
     for minor in range(SYNTAX_FLOOR[1], current[1]):
-        cand = shutil.which("python%d.%d" % (SYNTAX_FLOOR[0], minor))
+        # Routed through the cwd-excluding chokepoint (#2596), not raw
+        # shutil.which(): a repo-planted `python3.9.exe` at the repo root
+        # would otherwise be resolved and spawned as the floor compiler,
+        # running against the maintainer's own source tree.
+        cand = _which_excluding_cwd("python%d.%d" % (SYNTAX_FLOOR[0], minor))
         if cand and (_interpreter_version(cand) or current) < current:
             return cand
     return None
