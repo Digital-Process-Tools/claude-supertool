@@ -74,6 +74,23 @@ def test_op_between_pattern_refuses_overlong_end(tmp_path):
         "match: " + repr(result[:200]))
 
 
+def test_op_between_pattern_discloses_a_bre_alternation_rewrite(tmp_path):
+    """_pattern_gate can silently rewrite start/end (bash-grep BRE
+    alternation -- an escaped pipe -- becomes a plain pipe) -- op_grep/
+    op_around disclose that via the note _pattern_gate returns;
+    op_between_pattern must too, or a caller whose pattern was rewritten
+    cannot tell "matched exactly what I typed" from "matched a silently-
+    normalized version of what I typed."
+    """
+    target = tmp_path / "target.txt"
+    target.write_text("alpha only\ngamma only\nEND\n")
+    result = supertool.op_between_pattern(r"alpha\|gamma", "END", str(target))
+    assert "pattern rewritten to" in result, (
+        "op_between_pattern dropped _pattern_gate's rewrite disclosure: "
+        + repr(result[:300]))
+    assert "`alpha|gamma`" in result, repr(result[:300])
+
+
 def test_op_between_pattern_still_works_on_a_benign_slice(tmp_path):
     """Positive control: an ordinary between call must still work."""
     target = tmp_path / "target.txt"
