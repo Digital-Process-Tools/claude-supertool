@@ -7725,6 +7725,18 @@ def op_between_pattern(start: str, end: str, path: str) -> str:
     if not os.path.isfile(path):
         return f"ERROR: file not found: {path}\n"
 
+    start, start_refusal, start_note = _pattern_gate(start)
+    if start_refusal:
+        return start_refusal
+    end, end_refusal, end_note = _pattern_gate(end)
+    if end_refusal:
+        return end_refusal
+    # _pattern_gate can silently rewrite the caller's pattern (e.g. bash-grep
+    # BRE alternation \| -> a plain |), the same disclosure op_grep/op_around
+    # print above their result -- carried through every return below so a
+    # rewritten start/end is never a silent difference from what was typed.
+    gate_notes = start_note + end_note
+
     try:
         start_re = re.compile(start)
     except re.error:
@@ -7738,7 +7750,7 @@ def op_between_pattern(start: str, end: str, path: str) -> str:
         with open(path, "rb") as f:
             raw_lines = f.read().splitlines(keepends=True)
     except OSError as e:
-        return f"ERROR: could not read {path}: {e}\n"
+        return gate_notes + f"ERROR: could not read {path}: {e}\n"
 
     lines: List[str] = []
     for raw in raw_lines:
@@ -7753,7 +7765,8 @@ def op_between_pattern(start: str, end: str, path: str) -> str:
             start_idx = i
             break
     if start_idx is None:
-        return (f"ERROR: start pattern {start!r} not matched in {path}\n"
+        return (gate_notes
+                + f"ERROR: start pattern {start!r} not matched in {path}\n"
                 + _shim_facade_note(path))
 
     end_idx: int | None = None
@@ -7762,10 +7775,12 @@ def op_between_pattern(start: str, end: str, path: str) -> str:
             end_idx = i
             break
     if end_idx is None:
-        return (f"ERROR: end pattern {end!r} not matched after line "
+        return (gate_notes
+                + f"ERROR: end pattern {end!r} not matched after line "
                 f"{start_idx + 1} in {path}\n")
 
-    out = [f"(slice lines {start_idx + 1}–{end_idx + 1}, "
+    out = [gate_notes,
+           f"(slice lines {start_idx + 1}–{end_idx + 1}, "
            f"{end_idx - start_idx + 1} lines)\n"]
     for i in range(start_idx, end_idx + 1):
         marker = "→" if i in (start_idx, end_idx) else " "
