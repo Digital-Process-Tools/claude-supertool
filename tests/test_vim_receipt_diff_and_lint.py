@@ -117,7 +117,7 @@ def test_xml_lint(tmp_path: Path) -> None:
     f.write_text("<root><a/></root>\n")
     # Break it
     out = supertool.op_vim(str(f), "/<\\/root>␞x")
-    if shutil.which("xmllint"):
+    if supertool._which_excluding_cwd("xmllint"):
         # A decline is a third state, and it is neither a verdict nor a lenient
         # pass: the budget is an environment limit, so this site skips
         # countably instead of reddening (#1360). Raising the budget is what
