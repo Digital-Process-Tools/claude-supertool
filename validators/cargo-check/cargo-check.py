@@ -24,7 +24,6 @@ import ntpath
 import os
 import posixpath
 import re
-import shutil
 import subprocess
 import sys
 import time

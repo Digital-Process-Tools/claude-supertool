@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import json
 import pathlib
-import shutil
 import subprocess
 import sys
 import time

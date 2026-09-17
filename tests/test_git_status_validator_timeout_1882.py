@@ -139,7 +139,6 @@ def _drive_stalled(monkeypatch: pytest.MonkeyPatch, target: Path,
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(mod.subprocess, "Popen", _popen)
     monkeypatch.setattr(mod.subprocess, "run", _run)
-    monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/git")
     monkeypatch.setattr(mod, "spawnable", lambda _n: "/usr/bin/git")
     monkeypatch.setattr(mod.sys, "argv", [str(ADAPTER), str(target)])
 
@@ -253,7 +252,6 @@ def test_a_spawn_failure_is_not_reported_as_a_timeout(
 
     monkeypatch.setattr(mod.subprocess, "Popen", _explode)
     monkeypatch.setattr(mod.subprocess, "run", _explode)
-    monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/git")
     monkeypatch.setattr(mod, "spawnable", lambda _n: "/usr/bin/git")
     monkeypatch.setattr(mod.sys, "argv", [str(ADAPTER), str(repo / "base.txt")])
     emitted: list = []

@@ -52,7 +52,6 @@ def _argv_for(monkeypatch, tmp_path: Path, name: str) -> list:
         seen.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/tsc")
     monkeypatch.setattr(mod, "spawnable", lambda _n: "/usr/bin/tsc")
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     monkeypatch.setattr(mod.sys, "argv", ["tsc-check.py", name])
@@ -241,7 +240,6 @@ def test_the_base_is_the_directory_the_adapter_ran_tsc_in(
     def fake_run(argv, **kwargs):
         return subprocess.CompletedProcess(argv, 2, OWN + "\n", "")
 
-    monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/tsc")
     monkeypatch.setattr(mod, "spawnable", lambda _n: "/usr/bin/tsc")
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     monkeypatch.chdir(tmp_path)

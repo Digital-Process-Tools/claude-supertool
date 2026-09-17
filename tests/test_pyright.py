@@ -166,7 +166,6 @@ def test_dashdash_separator_does_not_protect_pyright(
 
     mod = _adapter_module()
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/pyright")
     monkeypatch.setattr(mod, "spawnable", lambda _name: "/usr/bin/pyright")
     monkeypatch.setattr(mod.sys, "argv", ["pyright.py", "--outputjson"])
     mod.main()
