@@ -22,7 +22,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import guard_main, is_refusal, skipped
 from linebreaks import split_lines
-from spawnable import spawnable
+from spawnable import argv0, spawnable
 
 # Extra refusal substrings (comma-separated), opt-in per repo.
 SKIP_PATTERNS_ENV = "PHPSTAN_SKIP_PATTERNS"
@@ -137,14 +137,20 @@ def main() -> None:
     phpstan_config = os.environ.get("PHPSTAN_CONFIG", "")
     phpstan_level = os.environ.get("PHPSTAN_LEVEL", "")
 
-    # Guard: binary must exist. The resolved answer is reused as the argv
-    # phpstan_bin then reaches -- unlike every other adapter here phpstan is
-    # not argv[0] (`php` is), so a spawnable() gate whose resolved path was
-    # then discarded in favour of the raw, unresolved name would leave php
-    # itself opening a bare "phpstan" relative to cwd -- the repository
-    # under inspection -- on the default config (#2581).
-    resolved_phpstan = spawnable(phpstan_bin)
-    if not resolved_phpstan:
+    # Guard: binary must exist. Gate on spawnable() (presence only, same
+    # convention as every other _BIN adapter here) and build the argv
+    # element through argv0() separately, not by reusing spawnable()'s own
+    # answer directly: spawnable() delegates a dirname-bearing name (e.g.
+    # PHPSTAN_BIN=./vendor/bin/phpstan) straight to shutil.which(), which
+    # on Python 3.12 rewrites an already-valid path via
+    # os.path.join(dirname, basename), splicing a native separator into a
+    # forward-slash path (validators/common/spawnable.py's own
+    # `_already_a_path`/argv0() docstring). argv0() guards against exactly
+    # that by returning an already-executable dirname path byte-identical,
+    # never routing it through which() at all -- the same guard every
+    # other _BIN adapter's separate argv0() call already gets, that a bare
+    # spawnable() reuse here would have bypassed (#2581 review).
+    if not spawnable(phpstan_bin):
         emit({
             "tool": "phpstan", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
@@ -153,7 +159,7 @@ def main() -> None:
         })
         return
 
-    cmd = ["php", f"-d", f"memory_limit={phpstan_memory}", resolved_phpstan, "analyse"]
+    cmd = ["php", f"-d", f"memory_limit={phpstan_memory}", argv0(phpstan_bin), "analyse"]
     if phpstan_config:
         cmd += ["-c", phpstan_config]
     if phpstan_level:

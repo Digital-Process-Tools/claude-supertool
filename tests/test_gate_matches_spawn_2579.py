@@ -21,7 +21,7 @@ spawn already goes through the cwd-excluding chokepoint (`argv0`, `spawnable`,
 or `resolve_bin_cmd`) must not gate on a raw `shutil.which()` call instead.
 
 `validators/phpstan/phpstan.py` was the one adapter deliberately left off this
-register, tracked separately (#2581): its resolved `_BIN` value is spliced as
+register, tracked separately (#2581): its resolved `phpstan_bin` value is spliced as
 a literal script argument to `php`, not spawned as argv[0], so its own gate
 had nothing to be inconsistent WITH until that resolution was itself routed
 through `spawnable()` and the resolved answer reused as the argv element --
@@ -173,9 +173,10 @@ def test_a_module_style_chokepoint_import_is_still_seen() -> None:
 
 def test_a_gate_with_no_chokepoint_spawn_is_not_flagged() -> None:
     """Negative control: an adapter with no argv0/spawnable/resolve_bin_cmd
-    import at all (phpstan's actual shape) must not be flagged just for
-    calling `shutil.which()` -- there is nothing for its gate to disagree
-    with yet.
+    import at all -- phpstan's own shape before #2581 fixed it, kept here
+    as a synthetic snippet now that the real file no longer matches it --
+    must not be flagged just for calling `shutil.which()`: there is
+    nothing for its gate to disagree with.
     """
     fine = (
         "import shutil, subprocess\n"
