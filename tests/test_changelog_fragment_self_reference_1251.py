@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -58,24 +59,28 @@ def _frag_dir(tmp_path: Path, name: str, body: str) -> Path:
     return directory
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the oss-owned .oss/assemble_changelog.py's self-reference "
-    "finding does not name the issue that made the rule (#1251) the way "
-    "this repo's own copy did -- reported for filing on "
-    "Digital-Process-Tools/claude-oss rather than patched here, since "
-    ".oss/assemble_changelog.py is replaced wholesale on every "
-    "/oss:scaffold run and a local patch would be lost at the next one "
-    "(#2489)",
-)
 def test_a_fragment_that_never_names_its_own_issue_is_refused(tmp_path: Path) -> None:
+    """Was xfail(strict=True) (#2582): the upstream `oss` plugin's
+    `self_reference_finding()` did not name #1251 the way this repo's own
+    copy did (#2489). Commit f0323829's `/oss:scaffold` refresh pulled in a
+    version that now embeds the literal issue URL, so this is no longer an
+    unexpected pass.
+
+    The assertion below is deliberately not a bare `"1251" in message`: that
+    would pass again on a coincidental substring, exactly the danger
+    `test_a_longer_number_containing_this_one_is_not_a_reference` pins for
+    #1192 -- a longer number containing these digits must not count.
+    """
     directory = _frag_dir(tmp_path, "1192.security.md", SILENT)
     with pytest.raises(asm.BadFragment) as excinfo:
         asm.collect(directory)
     message = str(excinfo.value)
     assert message.startswith("1192.security.md:1: "), message
     assert "#1192" in message
-    assert "1251" in message, "the finding should say where the rule came from"
+    assert re.search(r"(?<!\d)1251(?!\d)", message), (
+        "the finding should say where the rule came from (#1251), not "
+        "merely contain those digits as part of a longer number: " + message
+    )
 
 
 def test_a_fragment_that_names_its_own_issue_is_collected(tmp_path: Path) -> None:
