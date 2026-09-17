@@ -64,7 +64,7 @@ needs_socket = pytest.mark.skipif(
 def _osascript_calls(monkeypatch):
     calls = []
     monkeypatch.setattr(transport.sys, "platform", "darwin")
-    monkeypatch.setattr(transport.shutil, "which", lambda _n: "/usr/bin/osascript")
+    monkeypatch.setattr(transport, "which_excluding_cwd", lambda _n: "/usr/bin/osascript")
 
     def fake_run(argv, **kwargs):
         calls.append(argv)

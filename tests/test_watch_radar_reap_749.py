@@ -274,17 +274,24 @@ def _ps_stub(fleet, *, which="/bin/ps", scan=0, bare=0):
     `scan` answers the exact invocation the scan makes; `bare` answers the
     control probe. Returns the list of argvs actually run, so a test can pin
     that the probe and the scan cannot drift apart.
+
+    `which_excluding_cwd` is stubbed, not `shutil.which` (#2596): the real
+    site now resolves `ps` through the cwd-excluding chokepoint and spawns
+    the resolved path as argv[0], so the scan's own argv comparison below
+    checks argv[1:] against `_SCAN_PS_ARGV[1:]` and argv[0] against `which`.
     """
     calls: list[list[str]] = []
 
     def run(argv, *a, **k):
         calls.append(list(argv))
-        outcome = scan if list(argv) == list(transport._SCAN_PS_ARGV) else bare
+        is_scan = (list(argv) == [which] + list(transport._SCAN_PS_ARGV[1:])
+                   if which else False)
+        outcome = scan if is_scan else bare
         if isinstance(outcome, BaseException):
             raise outcome
         return types.SimpleNamespace(returncode=outcome, stdout="")
 
-    fleet["monkeypatch"].setattr(transport.shutil, "which", lambda name: which)
+    fleet["monkeypatch"].setattr(transport, "which_excluding_cwd", lambda name: which)
     fleet["monkeypatch"].setattr(transport.subprocess, "run", run)
     fleet["monkeypatch"].setattr(transport, "_ps_scan_verdict", None)
     return calls
@@ -321,7 +328,7 @@ def test_a_ps_that_works_but_rejects_our_invocation_can_never_answer(fleet):
     # The probe asks the scan's own question first, from the same constant, so
     # a future change to the scan's flags cannot leave the probe testing a
     # question nothing asks.
-    assert calls[0] == list(transport._SCAN_PS_ARGV)
+    assert calls[0] == ["/bin/ps"] + list(transport._SCAN_PS_ARGV[1:])
 
 
 def test_a_ps_that_fails_everything_is_not_claimed_to_be_permanent(fleet):

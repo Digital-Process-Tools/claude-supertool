@@ -75,7 +75,7 @@ def test_detached_head_returns_empty() -> None:
 def test_glab_match_returns_bang_iid() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
     fake_run = _runs(_proc('[{"iid": 21816, "title": "x"}]'))
-    with mock.patch.object(_common.shutil, "which", fake_which), \
+    with mock.patch.object(_common, "which_excluding_cwd", fake_which), \
          mock.patch.object(_common.subprocess, "run", fake_run), \
          mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "!21816"
@@ -84,14 +84,14 @@ def test_glab_match_returns_bang_iid() -> None:
 def test_gh_fallback_when_no_glab() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/gh" if c == "gh" else None)
     fake_run = _runs(_proc('[{"number": 172}]'))
-    with mock.patch.object(_common.shutil, "which", fake_which), \
+    with mock.patch.object(_common, "which_excluding_cwd", fake_which), \
          mock.patch.object(_common.subprocess, "run", fake_run), \
          mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "#172"
 
 
 def test_no_tool_available_returns_empty() -> None:
-    with mock.patch.object(_common.shutil, "which", return_value=None):
+    with mock.patch.object(_common, "which_excluding_cwd", return_value=None):
         assert commit._existing_mr_for_branch("feature/x") == ""
 
 
@@ -105,7 +105,7 @@ def test_glab_empty_list_falls_through_to_gh() -> None:
             return _proc("[]")  # glab: no MR
         return _proc('[{"number": 9}]')  # gh: PR exists
 
-    with mock.patch.object(_common.shutil, "which", fake_which), \
+    with mock.patch.object(_common, "which_excluding_cwd", fake_which), \
          mock.patch.object(_common.subprocess, "run", _runs(fake_run)), \
          mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "#9"
@@ -121,7 +121,7 @@ def test_glab_timeout_falls_through() -> None:
             raise subprocess.TimeoutExpired(cmd="glab", timeout=5)
         return _proc('[{"number": 42}]')
 
-    with mock.patch.object(_common.shutil, "which", fake_which), \
+    with mock.patch.object(_common, "which_excluding_cwd", fake_which), \
          mock.patch.object(_common.subprocess, "run", _runs(fake_run)), \
          mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "#42"
@@ -137,7 +137,7 @@ def test_glab_malformed_json_falls_through() -> None:
             return _proc("[not json")
         return _proc('[{"number": 7}]')
 
-    with mock.patch.object(_common.shutil, "which", fake_which), \
+    with mock.patch.object(_common, "which_excluding_cwd", fake_which), \
          mock.patch.object(_common.subprocess, "run", _runs(fake_run)), \
          mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "#7"

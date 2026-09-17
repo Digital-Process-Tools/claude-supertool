@@ -70,7 +70,7 @@ def test_incoming_info_merge_includes_author_branch_and_mr() -> None:
         stdout='[{"iid": 21803, "title": "Rename underscore properties"}]\n'
     ))
     with mock.patch.object(conflicts, "_git", fake_git), \
-         mock.patch.object(conflicts.shutil, "which", fake_which), \
+         mock.patch.object(conflicts, "which_excluding_cwd", fake_which), \
          mock.patch.object(conflicts.subprocess, "run", fake_run):
         lines = conflicts._incoming_info("foo.py", "merge")
     assert lines == [
@@ -95,7 +95,7 @@ def test_incoming_info_no_mr_tool_available() -> None:
         _git_result(stdout="feature/x\n"),
     ])
     with mock.patch.object(conflicts, "_git", fake_git), \
-         mock.patch.object(conflicts.shutil, "which", return_value=None):
+         mock.patch.object(conflicts, "which_excluding_cwd", return_value=None):
         lines = conflicts._incoming_info("foo.py", "merge")
     assert lines == [
         f"  Last touched (theirs): {log_line}",
@@ -117,7 +117,7 @@ def test_incoming_info_swallows_glab_timeout() -> None:
         raise _sub.TimeoutExpired(cmd="glab", timeout=5)
 
     with mock.patch.object(conflicts, "_git", fake_git), \
-         mock.patch.object(conflicts.shutil, "which", fake_which), \
+         mock.patch.object(conflicts, "which_excluding_cwd", fake_which), \
          mock.patch.object(conflicts.subprocess, "run", side_effect=boom):
         lines = conflicts._incoming_info("foo.py", "merge")
     assert lines == [

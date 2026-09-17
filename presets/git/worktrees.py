@@ -69,6 +69,7 @@ from _git_common import (  # noqa: E402
 from _env import env_int  # noqa: E402
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 import _untrusted  # noqa: E402  (filenames in a worktree are not our text — #876)
+from _spawnable import which_excluding_cwd  # noqa: E402  (cwd-excluding which, #2596)
 
 STATE_OCCUPIED = "occupied"
 STATE_IDLE = "idle"
@@ -884,7 +885,7 @@ def _read_cwd_table_uncached():
         return rows, (f"{scanned} processes scanned via /proc"
                       + (f", {unreadable} unreadable (other users)" if unreadable else ""))
 
-    lsof = shutil.which("lsof")
+    lsof = which_excluding_cwd("lsof")
     if not lsof:
         return None, (f"no way to read process cwds on this platform ({sys.platform}): "
                       "/proc is absent and lsof is not installed — occupancy undecidable")

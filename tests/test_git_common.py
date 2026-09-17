@@ -140,7 +140,7 @@ def test_query_glab_match_returns_gitlab_fields() -> None:
     fake_run = _runs(_proc(
         '[{"iid": 21816, "target_branch": "master", '
         '"pipeline": {"status": "running"}}]'))
-    with mock.patch.object(common.shutil, "which", fake_which), \
+    with mock.patch.object(common, "which_excluding_cwd", fake_which), \
          mock.patch.object(common.subprocess, "run", fake_run), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         mr = common.query_open_mr("feature/x")
@@ -153,7 +153,7 @@ def test_query_glab_match_returns_gitlab_fields() -> None:
 def test_query_glab_no_pipeline_yields_none_status() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
     fake_run = _runs(_proc('[{"iid": 5, "target_branch": "main"}]'))
-    with mock.patch.object(common.shutil, "which", fake_which), \
+    with mock.patch.object(common, "which_excluding_cwd", fake_which), \
          mock.patch.object(common.subprocess, "run", fake_run), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         mr = common.query_open_mr("feature/x")
@@ -163,7 +163,7 @@ def test_query_glab_no_pipeline_yields_none_status() -> None:
 def test_query_gh_fallback_returns_github_fields() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/gh" if c == "gh" else None)
     fake_run = _runs(_proc('[{"number": 172, "baseRefName": "main"}]'))
-    with mock.patch.object(common.shutil, "which", fake_which), \
+    with mock.patch.object(common, "which_excluding_cwd", fake_which), \
          mock.patch.object(common.subprocess, "run", fake_run), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         mr = common.query_open_mr("feature/x")
@@ -174,7 +174,7 @@ def test_query_gh_fallback_returns_github_fields() -> None:
 
 
 def test_query_no_tool_returns_none() -> None:
-    with mock.patch.object(common.shutil, "which", return_value=None):
+    with mock.patch.object(common, "which_excluding_cwd", return_value=None):
         assert common.query_open_mr("feature/x") is None
 
 
@@ -188,7 +188,7 @@ def test_query_glab_empty_falls_through_to_gh() -> None:
             return _proc("[]")
         return _proc('[{"number": 9, "baseRefName": "dev"}]')
 
-    with mock.patch.object(common.shutil, "which", fake_which), \
+    with mock.patch.object(common, "which_excluding_cwd", fake_which), \
          mock.patch.object(common.subprocess, "run", _runs(fake_run)), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         mr = common.query_open_mr("feature/x")
@@ -205,7 +205,7 @@ def test_query_glab_timeout_falls_through() -> None:
             raise subprocess.TimeoutExpired(cmd="glab", timeout=5)
         return _proc('[{"number": 42, "baseRefName": "main"}]')
 
-    with mock.patch.object(common.shutil, "which", fake_which), \
+    with mock.patch.object(common, "which_excluding_cwd", fake_which), \
          mock.patch.object(common.subprocess, "run", _runs(fake_run)), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         mr = common.query_open_mr("feature/x")
@@ -222,7 +222,7 @@ def test_query_glab_malformed_json_falls_through() -> None:
             return _proc("[not json")
         return _proc('[{"number": 7, "baseRefName": "main"}]')
 
-    with mock.patch.object(common.shutil, "which", fake_which), \
+    with mock.patch.object(common, "which_excluding_cwd", fake_which), \
          mock.patch.object(common.subprocess, "run", _runs(fake_run)), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         mr = common.query_open_mr("feature/x")

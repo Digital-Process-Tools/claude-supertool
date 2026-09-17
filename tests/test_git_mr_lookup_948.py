@@ -121,7 +121,7 @@ def test_a_timeout_is_not_an_absence() -> None:
     def timeout(cmd):
         raise subprocess.TimeoutExpired(cmd="gh", timeout=5)
 
-    with mock.patch.object(common.shutil, "which", _only("gh")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("gh")), \
          mock.patch.object(common.subprocess, "run", _runs(timeout)), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         res = common.query_open_mr_result("feature/x")
@@ -134,7 +134,7 @@ def test_a_timeout_is_not_an_absence() -> None:
 
 
 def test_an_expired_token_is_not_an_absence() -> None:
-    with mock.patch.object(common.shutil, "which", _only("gh")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("gh")), \
          mock.patch.object(common.subprocess, "run", _runs(_proc(
              4, stderr="gh: To get started with GitHub CLI, please run: "
                        "gh auth login" + chr(10)))), \
@@ -146,7 +146,7 @@ def test_an_expired_token_is_not_an_absence() -> None:
 
 
 def test_output_that_is_not_json_is_not_an_absence() -> None:
-    with mock.patch.object(common.shutil, "which", _only("gh")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
                            _runs(_proc(0, stdout="<html>proxy</html>"))), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
@@ -157,7 +157,7 @@ def test_output_that_is_not_json_is_not_an_absence() -> None:
 
 def test_an_empty_list_is_an_answer() -> None:
     """The healthy "no PR yet" case has to stay a fact, or the fix is noise."""
-    with mock.patch.object(common.shutil, "which", _only("gh")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
                            _runs(_proc(0, stdout="[]"))), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
@@ -176,7 +176,7 @@ def test_the_other_hosts_cli_declining_is_an_answer_not_a_failure() -> None:
     push of every repo that is not on GitHub, which is how a warning stops
     being read.
     """
-    with mock.patch.object(common.shutil, "which", _only("gh")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("gh")), \
          mock.patch.object(common.subprocess, "run", _runs(_proc(
              1, stderr="none of the git remotes configured for this "
                        "repository point to a known GitHub host" + chr(10)))):
@@ -195,12 +195,12 @@ def test_glab_answering_none_is_not_undone_by_gh_failing_after_it() -> None:
     bug traded for the quiet one, in the direction that makes the tool useless.
     """
     def cli(cmd):
-        if cmd[0] == "glab":
+        if cmd[0].endswith("glab"):
             return _proc(0, stdout="[]")
         return _proc(4, stderr="gh: could not determine base repository" +
                                 chr(10))
 
-    with mock.patch.object(common.shutil, "which", lambda n: f"/usr/bin/{n}"), \
+    with mock.patch.object(common, "which_excluding_cwd", lambda n: f"/usr/bin/{n}"), \
          mock.patch.object(common.subprocess, "run", _runs(cli)), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         res = common.query_open_mr_result("feature/x")
@@ -210,7 +210,7 @@ def test_glab_answering_none_is_not_undone_by_gh_failing_after_it() -> None:
 
 
 def test_no_cli_at_all_is_not_an_absence_either() -> None:
-    with mock.patch.object(common.shutil, "which", return_value=None):
+    with mock.patch.object(common, "which_excluding_cwd", return_value=None):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is False
@@ -218,7 +218,7 @@ def test_no_cli_at_all_is_not_an_absence_either() -> None:
 
 
 def test_a_found_pr_is_answered() -> None:
-    with mock.patch.object(common.shutil, "which", _only("gh")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
                            _runs(_proc(0, stdout=_PR_JSON))), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
@@ -231,7 +231,7 @@ def test_a_found_pr_is_answered() -> None:
 
 def test_the_thin_wrapper_still_returns_the_dict() -> None:
     """`git-commit`'s post-commit hint keeps its old signature."""
-    with mock.patch.object(common.shutil, "which", _only("gh")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
                            _runs(_proc(0, stdout=_PR_JSON))), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
@@ -268,7 +268,7 @@ def test_the_glab_call_uses_flags_this_glab_actually_has() -> None:
         seen.append(cmd)
         return _proc(0, stdout="[]")
 
-    with mock.patch.object(common.shutil, "which", _only("glab")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("glab")), \
          mock.patch.object(common.subprocess, "run", _runs(cli)), \
          mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         common.query_open_mr_result("feature/x")
@@ -278,7 +278,7 @@ def test_the_glab_call_uses_flags_this_glab_actually_has() -> None:
     assert "--state" not in argv, (
         "glab 1.86 exits 1 with `Unknown flag: --state.` — the GitLab arm "
         f"cannot answer at all: {argv}")
-    assert argv[:3] == ["glab", "mr", "list"], argv
+    assert argv[0].endswith("glab") and argv[1:3] == ["mr", "list"], argv
     assert "--source-branch" in argv and "feature/x" in argv, argv
     assert "--output" in argv and "json" in argv, argv
 
@@ -358,7 +358,7 @@ def _lookup_against(url: str, cli):
     only the path shape of whichever machine ran it — which is exactly how the
     first version of this test passed on Linux and macOS and failed on Windows.
     """
-    with mock.patch.object(common.shutil, "which", _only("gh")), \
+    with mock.patch.object(common, "which_excluding_cwd", _only("gh")), \
          mock.patch.object(common.subprocess, "run", _runs_in_repo(cli)), \
          mock.patch.object(common.subprocess, "Popen",
                            _git_remote_popen_for(url)):

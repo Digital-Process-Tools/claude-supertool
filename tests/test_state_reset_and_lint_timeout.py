@@ -94,7 +94,7 @@ def test_a_missing_binary_still_lints_silently(tmp_path: Path, monkeypatch) -> N
     """
     real_which = shutil.which
     monkeypatch.setattr(
-        supertool.shutil, "which",
+        supertool, "_which_excluding_cwd",
         lambda name, *a, **k: None if name == "php" else real_which(name, *a, **k),
     )
     f = tmp_path / "x.php"

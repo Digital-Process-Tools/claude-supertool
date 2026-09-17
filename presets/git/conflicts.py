@@ -24,6 +24,7 @@ from _git_common import (  # noqa: E402
 )
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (a conflicted PATH is a real name now — #1708)
+from _spawnable import which_excluding_cwd  # noqa: E402  (cwd-excluding which, #2596)
 
 DEFAULT_PREVIEW_LINES = 12
 
@@ -90,10 +91,11 @@ def _incoming_mr(branch: str) -> str:
     """
     if not branch:
         return ""
-    if shutil.which("glab"):
+    glab_bin = which_excluding_cwd("glab")
+    if glab_bin:
         try:
             res = subprocess.run(
-                ["glab", "mr", "list", "--source-branch", branch, "--state", "opened", "--output", "json"],
+                [glab_bin, "mr", "list", "--source-branch", branch, "--state", "opened", "--output", "json"],
                 capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )
             if res.returncode == 0 and res.stdout.strip().startswith("["):
@@ -103,10 +105,11 @@ def _incoming_mr(branch: str) -> str:
                     return f"!{mr.get('iid', '?')} {mr.get('title', '')}".strip()
         except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
             pass
-    if shutil.which("gh"):
+    gh_bin = which_excluding_cwd("gh")
+    if gh_bin:
         try:
             res = subprocess.run(
-                ["gh", "pr", "list", "--head", branch, "--state", "open",
+                [gh_bin, "pr", "list", "--head", branch, "--state", "open",
                  "--json", "number,title", "--limit", "1"],
                 capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
             )

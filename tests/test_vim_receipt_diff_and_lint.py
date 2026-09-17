@@ -155,7 +155,7 @@ def test_vim_receipt_reports_a_lint_decline_not_a_verdict(
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=k.get("timeout", 5))
         return real_run(*a, **k)
 
-    monkeypatch.setattr(supertool.shutil, "which", fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", fake_which)
     monkeypatch.setattr(subprocess, "run", timing_out_xmllint)
 
     f = tmp_path / "x.xml"
@@ -208,7 +208,7 @@ def test_missing_binary_silently_omitted(tmp_path: Path, monkeypatch) -> None:
             return None
         return real_which(name, *a, **kw)
 
-    monkeypatch.setattr(supertool.shutil, "which", fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", fake_which)
     f = tmp_path / "x.php"
     f.write_text("<?php\necho 'hi';\n")
     out = supertool.op_vim(str(f), "G␞oecho 'bye';")
@@ -268,7 +268,7 @@ def _force_xmllint_to_time_out(monkeypatch) -> None:
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=k.get("timeout", 5))
         return real_run(*a, **k)
 
-    monkeypatch.setattr(supertool.shutil, "which", fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", fake_which)
     monkeypatch.setattr(subprocess, "run", timing_out_xmllint)
 
 

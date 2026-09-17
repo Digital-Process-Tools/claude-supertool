@@ -14833,6 +14833,47 @@ def _lint_declined(tool: str, reason: str) -> str:
     )
 
 
+#: `_supertool.py`'s own copy of `which_excluding_cwd` (#2596). The core
+#: cannot reach into `validators/common` (`_VALIDATOR_RESOLVE_ERROR_PREFIX`'s
+#: own comment, same trade), so this is a third stated copy of the same
+#: algorithm -- `validators/common/spawnable.py`, `presets/_spawnable.py`,
+#: and here -- pinned equal to the other two by
+#: `tests/test_bare_spawn_cwd_gate_2596.py` rather than trusted to stay in
+#: sync by hand. See `validators/common/spawnable.py::which_excluding_cwd`
+#: for the full rationale (#2575): `shutil.which()` inserts the current
+#: directory ahead of every real PATH entry on Windows, even with an
+#: explicit `path=`, so a repository shipping `php.exe`/`xmllint.exe` at its
+#: own root would have that file resolved -- and spawned, since the lint
+#: subprocess below passes no `cwd=` -- ahead of the real tool.
+def _which_excluding_cwd(name: str) -> Optional[str]:
+    if os.path.dirname(name):
+        return shutil.which(name)
+    path_env = os.environ.get("PATH")
+    if not path_env:
+        return None
+    here = os.path.normcase(os.path.abspath(os.curdir))
+    exts = [""]
+    if os.name == "nt":
+        raw_pathext = os.getenv("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        exts = [""] + [e for e in raw_pathext.split(os.pathsep) if e]
+    seen = set()
+    for entry in path_env.split(os.pathsep):
+        if not entry:
+            continue
+        entry_abs = os.path.abspath(entry)
+        norm = os.path.normcase(entry_abs)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if norm == here:
+            continue
+        for ext in exts:
+            candidate = os.path.join(entry, name + ext)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
 def _vim_render_lint(path: str) -> str:
     """Post-edit syntax lint based on file extension.
 
@@ -14863,18 +14904,20 @@ def _vim_render_lint(path: str) -> str:
     parse_inline = False
 
     if ext == ".php":
-        if not shutil.which("php"):
+        php_bin = _which_excluding_cwd("php")
+        if not php_bin:
             return ""
         tool = "php -l"
-        cmd = ["php", "-l", path]
+        cmd = [php_bin, "-l", path]
     elif ext == ".json":
         tool = "json"
         parse_inline = True
     elif ext == ".xml":
-        if not shutil.which("xmllint"):
+        xmllint_bin = _which_excluding_cwd("xmllint")
+        if not xmllint_bin:
             return ""
         tool = "xmllint"
-        cmd = ["xmllint", "--noout", path]
+        cmd = [xmllint_bin, "--noout", path]
     elif ext == ".py":
         tool = "py_compile"
         if not sys.executable:

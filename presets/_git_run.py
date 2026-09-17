@@ -57,6 +57,7 @@ if _HERE not in sys.path:
 
 from _env import env_int, env_float  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (a child stream, and a path off disk, are somebody else's text -- #1475, #1557)
+from _spawnable import which_excluding_cwd  # noqa: E402  (cwd-excluding which, #2596)
 
 
 #: Budget for one git call when the call site does not name its own.
@@ -240,7 +241,7 @@ def _lock_fd_holder(lock_path: str, scan_timeout: float = 3.0):
     codebase keeps re-filing, an absence produced by the tool read as an
     absence in the world.
     """
-    lsof = shutil.which("lsof")
+    lsof = which_excluding_cwd("lsof")
     if lsof:
         try:
             proc = subprocess.run(

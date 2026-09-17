@@ -37,6 +37,7 @@ if os.path.dirname(_HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(_HERE))
 
 import _untrusted  # noqa: E402  (a child stream, and a path off disk, are somebody else's text — #1475, #1557)
+from _spawnable import which_excluding_cwd  # noqa: E402  (cwd-excluding which, #2596)
 
 
 def use_utf8_stdout() -> None:
@@ -1258,7 +1259,8 @@ def query_open_mr_result(branch: str) -> MrLookup:
         # deliberately falls through to the probes rather than claiming this.
         return MrLookup(None)
     probes = []
-    if shutil.which("glab"):
+    glab_bin = which_excluding_cwd("glab")
+    if glab_bin:
         # No `--state opened`: glab has no such flag (1.86 exits 1 with
         # `Unknown flag: --state.`) and open is `mr list`'s default anyway —
         # `--closed` is the opt-out. This arm therefore failed at argument
@@ -1266,11 +1268,12 @@ def query_open_mr_result(branch: str) -> MrLookup:
         # found out for as long as the fallback to `gh` also said nothing
         # (#948). Found by the disclosure above, on its first run.
         probes.append((
-            ["glab", "mr", "list", "--source-branch", branch,
+            [glab_bin, "mr", "list", "--source-branch", branch,
              "--output", "json"], _glab_fields))
-    if shutil.which("gh"):
+    gh_bin = which_excluding_cwd("gh")
+    if gh_bin:
         probes.append((
-            ["gh", "pr", "list", "--head", branch, "--state", "open",
+            [gh_bin, "pr", "list", "--head", branch, "--state", "open",
              "--json", "number,baseRefName,mergeable", "--limit", "1"],
             _gh_fields))
     if not probes:
