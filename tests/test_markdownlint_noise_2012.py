@@ -80,14 +80,19 @@ into MD022/MD025/MD001 -- a worse document, not a linted one.
   sets the document's expected code-block style to "indented", and its
   later fenced ` ```bash ` block breaks that consistency -- a same-file
   style clash, not a repo-wide convention issue. This file is scaffolded
-  wholesale (this repo's own `CLAUDE.md`); a local edit to the fenced block
+  wholesale by `/oss:scaffold --apply` from the `claude-oss` plugin's own
+  template (confirmed against #2586's own reproduction; CLAUDE.md documents
+  the same scaffolded-wholesale-and-lost-on-re-scaffold pattern for other
+  owned files, e.g. `.oss/statusline.py` and the `supertool-required.md`
+  jit rule, though not this file by name); a local edit to the fenced block
   would be lost at the next `/oss:scaffold --apply` run, so the fix belongs
   in the `claude-oss` template rather than here. Reported as a defect in
   that declared dependency (`Digital-Process-Tools/claude-oss`) rather than
   patched around locally.
 
-Post-fix: 27 findings across 3 of 138 tracked `.md` files (all named
-above), down from 846 across 50 of 82.
+Post-fix: 27 findings across 3 of 139 tracked `.md` files (all named
+above, and including this fix's own changelog fragment), down from 846
+across 50 of 82.
 """
 from __future__ import annotations
 
@@ -113,8 +118,8 @@ MUST_STAY_ON = ["MD031", "MD022", "MD018"]
 # A ceiling, not the exact count: this repo's tracked `.md` files change
 # over time, and a new file with a genuine, unrelated formatting slip
 # should fail *that* file's own lint, not this test. 40 gives headroom
-# above the 26 measured at fix time without being wide enough to hide a
-# regression back toward hundreds.
+# above the 27 measured as of #2586 (26 at #2012 fix time) without being
+# wide enough to hide a regression back toward hundreds.
 FINDINGS_CEILING = 40
 
 # Files this issue's own fix leaves with residual findings, and why --
