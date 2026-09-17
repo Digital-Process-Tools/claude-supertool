@@ -93,7 +93,13 @@ def _drive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *,
     mod = _load()
     target = tmp_path / "A.php"
     target.write_text("<?php" + chr(10), encoding="utf-8")
-    monkeypatch.setattr(mod.shutil, "which", lambda _b: "/usr/bin/php")
+    # #2581: the gate resolves through spawnable(), whose module-bound
+    # name is patched directly -- phpstan.py's own `import shutil` was
+    # removed once its gate stopped calling shutil.which() (now dead),
+    # so `mod.shutil` no longer exists to patch. The resolved answer is
+    # also reused as the argv element phpstan_bin reaches, so this needs
+    # an absolute path, not just a presence bit.
+    monkeypatch.setattr(mod, "spawnable", lambda _b: "/usr/bin/phpstan")
     monkeypatch.setattr(
         mod.subprocess, "run",
         lambda *a, **k: types.SimpleNamespace(stdout=stdout, stderr=stderr,

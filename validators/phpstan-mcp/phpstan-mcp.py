@@ -18,7 +18,6 @@ import random
 import socket
 import sys
 import time
-from shutil import which
 
 DAEMON_NAME = os.environ.get("MCP_PHPSTAN_DAEMON_NAME", "phpstan-warm")
 DAEMON_PROC = os.environ.get("MCP_PHPSTAN_BIN", "mcp-phpstan-warm")
@@ -47,6 +46,7 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "common"))
 import refusal as _refusal  # noqa: E402
 import ndjson_scan as _ndjson_scan  # noqa: E402  (#1924: a response glued to noise)
 from source_context import context_fields  # noqa: E402
+from spawnable import which_excluding_cwd  # noqa: E402
 
 
 def sock_paths(cwd: str, name: str) -> tuple[str, str]:
@@ -67,7 +67,7 @@ def resolve_bin(cwd: str) -> str:
                     f"mcp-phpstan-warm not found at: {candidate}")
             bin_path = candidate
         else:
-            resolved = which(bin_path)
+            resolved = which_excluding_cwd(bin_path)
             if resolved is None:
                 raise _refusal.DaemonUnavailable(
                     "mcp-phpstan-warm not found on $PATH — install via: "

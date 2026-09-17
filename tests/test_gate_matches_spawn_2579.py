@@ -20,12 +20,14 @@ This is the register that keeps the class closed, the same shape as
 spawn already goes through the cwd-excluding chokepoint (`argv0`, `spawnable`,
 or `resolve_bin_cmd`) must not gate on a raw `shutil.which()` call instead.
 
-`validators/phpstan/phpstan.py` is the one adapter deliberately left off this
-register (see the module-level `ALLOWLIST` below): its resolved `_BIN` value
-is never passed through `argv0()`/`spawnable()`/`resolve_bin_cmd()` at all --
-it is spliced as a literal script argument to `php`, not spawned as argv[0] --
-so fixing its gate alone would not make it consistent with anything, and
-migrating it properly is a separate, larger change than this register's scope.
+`validators/phpstan/phpstan.py` was the one adapter deliberately left off this
+register, tracked separately (#2581): its resolved `_BIN` value is spliced as
+a literal script argument to `php`, not spawned as argv[0], so its own gate
+had nothing to be inconsistent WITH until that resolution was itself routed
+through `spawnable()` and the resolved answer reused as the argv element --
+done now, so the `ALLOWLIST` below is empty rather than removed outright
+(kept as the register's own escape hatch for the next adapter shaped this
+way, not because this one still needs it).
 """
 from __future__ import annotations
 
@@ -42,12 +44,13 @@ ADAPTER_DIRS = ("validators", "formatters")
 #: implementation, not an instance of the defect.
 CHOKEPOINT_FILES = {"spawnable.py", "bin_resolve.py"}
 
-#: `phpstan_bin` is spliced into `php`'s argv as a literal script path, never
-#: resolved through `argv0()`/`spawnable()`/`resolve_bin_cmd()` -- there is no
-#: chokepoint-routed spawn for its gate to be inconsistent WITH. Tracked
-#: separately (see the module docstring); fixing its gate alone would not
-#: close anything.
-ALLOWLIST = {"validators/phpstan/phpstan.py"}
+#: `phpstan_bin` was spliced into `php`'s argv as a literal script path, with
+#: nothing to check it against -- no chokepoint-routed spawn its gate could
+#: disagree with. Fixed by #2581 (the resolved `spawnable()` answer is now
+#: reused as that argv element), so nothing needs allowlisting here today;
+#: kept empty rather than removed as the register's own escape hatch for the
+#: next adapter shaped this way.
+ALLOWLIST: set = set()
 
 
 def _adapter_sources() -> "list[pathlib.Path]":

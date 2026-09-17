@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import pathlib
@@ -23,6 +22,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import guard_main, is_refusal, skipped
 from linebreaks import split_lines
+from spawnable import spawnable
 
 # Extra refusal substrings (comma-separated), opt-in per repo.
 SKIP_PATTERNS_ENV = "PHPSTAN_SKIP_PATTERNS"
@@ -137,8 +137,14 @@ def main() -> None:
     phpstan_config = os.environ.get("PHPSTAN_CONFIG", "")
     phpstan_level = os.environ.get("PHPSTAN_LEVEL", "")
 
-    # Guard: binary must exist
-    if not shutil.which(phpstan_bin) and not (pathlib.Path(phpstan_bin).exists() and os.access(phpstan_bin, os.X_OK)):
+    # Guard: binary must exist. The resolved answer is reused as the argv
+    # phpstan_bin then reaches -- unlike every other adapter here phpstan is
+    # not argv[0] (`php` is), so a spawnable() gate whose resolved path was
+    # then discarded in favour of the raw, unresolved name would leave php
+    # itself opening a bare "phpstan" relative to cwd -- the repository
+    # under inspection -- on the default config (#2581).
+    resolved_phpstan = spawnable(phpstan_bin)
+    if not resolved_phpstan:
         emit({
             "tool": "phpstan", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
@@ -147,7 +153,7 @@ def main() -> None:
         })
         return
 
-    cmd = ["php", f"-d", f"memory_limit={phpstan_memory}", phpstan_bin, "analyse"]
+    cmd = ["php", f"-d", f"memory_limit={phpstan_memory}", resolved_phpstan, "analyse"]
     if phpstan_config:
         cmd += ["-c", phpstan_config]
     if phpstan_level:
