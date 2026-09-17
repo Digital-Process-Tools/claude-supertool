@@ -7725,6 +7725,13 @@ def op_between_pattern(start: str, end: str, path: str) -> str:
     if not os.path.isfile(path):
         return f"ERROR: file not found: {path}\n"
 
+    start, start_refusal, _start_note = _pattern_gate(start)
+    if start_refusal:
+        return start_refusal
+    end, end_refusal, _end_note = _pattern_gate(end)
+    if end_refusal:
+        return end_refusal
+
     try:
         start_re = re.compile(start)
     except re.error:
