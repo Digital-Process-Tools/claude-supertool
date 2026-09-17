@@ -267,7 +267,21 @@ def authorize(*, open_browser: bool = True) -> dict:
     url = f"{AUTH_URI}?{urllib.parse.urlencode(params)}"
 
     _CallbackHandler.result = {}
-    server = http.server.HTTPServer(("127.0.0.1", port), _CallbackHandler)
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", port), _CallbackHandler)
+    except OSError as e:
+        # _free_loopback_port() frees the socket before this re-binds it --
+        # another local process can take the port in that window. Benign (it
+        # cannot pass the `state` check below), but left uncaught this was a
+        # raw traceback instead of the sentence-naming-the-next-command
+        # contract every other failure path here keeps
+        # (trap.d/227.oauth-loopback-port-race-raw-traceback.md).
+        raise OAuthError(
+            f"could not bind the loopback callback server on "
+            f"127.0.0.1:{port}: {e}. Another local process took the port "
+            "between the free-port probe and this bind. Nothing was stored; "
+            "run youtube_auth again."
+        ) from e
     server.timeout = _BROWSER_WAIT_S
     thread = threading.Thread(target=server.handle_request, daemon=True)
     thread.start()

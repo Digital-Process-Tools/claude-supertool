@@ -241,7 +241,45 @@ def test_verify_treats_an_empty_result_as_unverified(
     assert verdict == "could-not-verify"
 
 
+def test_could_not_verify_detail_has_no_raw_newline(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The could-not-verify arm must flatten/escape the error body the same
+    way the MISMATCH arm already does two lines below it (trap.d/
+    227.oauth-error-body-unescaped-in-receipt.md) -- a newline embedded in an
+    HTTP error body must not put the remainder at column 0 of a receipt the
+    calling agent parses."""
+    _stub_authorized(monkeypatch, comment_op.YouTubeAPIError(
+        "commentThreads", "503\nSecond line pretending to be a new field"))
+    verdict, detail = comment_op.verify("t1", "tok", "hello")
+    assert verdict == "could-not-verify"
+    assert "\n" not in detail, f"raw newline leaked into the receipt: {detail!r}"
+    assert "503" in detail
+
+
 # --- OAuth ---------------------------------------------------------------
+
+def test_authorize_reports_a_loopback_port_race_as_oautherror(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_free_loopback_port` frees the socket before `HTTPServer` re-binds
+    it, and another local process can take the port in that window --
+    `HTTPServer(...)` then raises a bare OSError. `auth.py:main` only catches
+    `OAuthError` (trap.d/227.oauth-loopback-port-race-raw-traceback.md), so
+    an uncaught OSError here would surface as a raw traceback instead of the
+    sentence-naming-the-next-command contract this module's docstring
+    promises for every failure path."""
+    (config_home / "client_secret.json").write_text(
+        json.dumps({"installed": {"client_id": "cid", "client_secret": "s"}}),
+        encoding="utf-8")
+    (config_home / "client_secret.json").chmod(0o600)
+
+    def boom(*_a, **_k):
+        raise OSError(48, "Address already in use")
+    monkeypatch.setattr(oauth.http.server, "HTTPServer", boom)
+
+    with pytest.raises(oauth.OAuthError) as e:
+        oauth.authorize(open_browser=False)
+    assert "youtube_auth" in str(e.value)
+
 
 def test_an_absent_token_names_youtube_auth(config_home: Path) -> None:
     """A write op must never open a browser: see _oauth's docstring."""
