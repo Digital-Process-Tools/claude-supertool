@@ -6783,17 +6783,26 @@ def _pattern_gate(
 
     `check_saturation=False` (#2573) exists for callers whose semantics are a
     single-match position search rather than a filtered count -- `op_vim`'s
-    `/`, `?`, `n`/`N`, `:s`, `:g`/`:v` and operator motion forms. There, "the
-    whole pattern matches every line" is not a meaningless result the way it
-    is for `grep`/`around`: a bare `|` is a completely ordinary, previously-
+    `/`, `?`, `n`/`N`, the inline `o`/`O` search-then-open reflex, the `:d
+    /PAT/` address resolver and the operator motion forms. There, "the whole
+    pattern matches every line" is not a meaningless result the way it is
+    for `grep`/`around`: a bare `|` is a completely ordinary, previously-
     working vim search for a literal pipe character (`_saturating_branch`
     sees the empty alternation branch and refuses it), and vim has no result
-    count for the refusal's own rationale to apply to. The length cap and the
-    ReDoS backtracking guard still apply unconditionally -- this only turns
-    off the one check whose rationale does not transfer. `trap.d/2571.
-    between-saturating-refusal.md` flagged the identical mismatch for
-    `op_between_pattern`, left unresolved there; `op_vim` is the first call
-    site to actually need the opt-out rather than merely note the mismatch.
+    count for the refusal's own rationale to apply to. `op_vim`'s `:s` and
+    `:g`/`:v` do NOT pass `check_saturation=False`, on the same reasoning in
+    reverse: those two act on every match (substitute every occurrence,
+    delete every matching line), so a saturating pattern is exactly as
+    destructive there as it is for `grep`/`around` -- a bare `|` as `:s`'s
+    PAT would silently interleave every character of the buffer with the
+    replacement, and as `:g`'s PAT would silently delete the whole file. The
+    length cap and the ReDoS backtracking guard still apply unconditionally
+    everywhere -- this parameter only turns off the one check whose
+    rationale does not transfer, and only where it does not transfer.
+    `trap.d/2571.between-saturating-refusal.md` flagged the identical
+    mismatch for `op_between_pattern`, left unresolved there; `op_vim` is the
+    first call site to actually need the opt-out rather than merely note the
+    mismatch.
     """
     if len(pattern) > 1000:
         return pattern, (
@@ -17258,8 +17267,11 @@ def _op_vim_impl(path: str, script: str) -> str:
             spat, srepl, sflags = parts[0], parts[1], parts[2]
             if not spat:
                 return f"ERROR: action {i} '{action}': :s needs non-empty PAT\n"
-            spat, _gate_refusal, _gate_note = _pattern_gate(
-                spat, check_saturation=False)
+            # check_saturation stays on (the default) here: unlike the search
+            # motions above, :s substitutes every match it finds, so a
+            # saturating pattern (a bare `|`) is not a harmless single-match
+            # position -- it silently rewrites the whole buffer. #2573 review.
+            spat, _gate_refusal, _gate_note = _pattern_gate(spat)
             if _gate_refusal:
                 return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
             flags_re = re.MULTILINE
@@ -17770,8 +17782,12 @@ def _op_vim_impl(path: str, script: str) -> str:
                 pat = spec[2:]
                 if not pat:
                     return f"ERROR: action {i} '{action}': :{mode}/PAT/d needs non-empty PAT\n"
-                pat, _gate_refusal, _gate_note = _pattern_gate(
-                    pat, check_saturation=False)
+                # check_saturation stays on (the default) here: :g/:v delete
+                # every matching (or non-matching) line, so a saturating
+                # pattern (a bare `|`) is not a harmless single-match
+                # position -- it silently deletes the whole buffer. #2573
+                # review.
+                pat, _gate_refusal, _gate_note = _pattern_gate(pat)
                 if _gate_refusal:
                     return f"ERROR: action {i} '{action}': {_gate_refusal[len('ERROR: '):]}"
                 try:
