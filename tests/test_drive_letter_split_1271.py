@@ -34,12 +34,28 @@ scoped to the test's own sandbox.
 Every "must fire" case is paired with a "must not fire" one in the same
 fixture, per the same-fixture rule for a silence assertion (CLAUDE.md, "A
 negative assertion needs a positive control").
+
+Known, accepted limitation (#1271 follow-up, CI: windows-latest, all four
+interpreters): on a single-drive Windows machine -- every windows-latest
+runner observed so far -- the "must fire" test's own precondition (the
+naive, drive-letter-stripped path does not resolve) is structurally
+unreachable, because dropping the only drive's letter from an absolute
+path never fails to resolve on such a machine: the naive and corrected
+forms name the identical file. `test_drive_letter_after_space_is_
+recognised_and_rejoined` detects this at runtime and skips loudly rather
+than asserting something that cannot be constructed there. Making the
+diagnosis fire anyway (tried once, reverted) turns a working call into a
+false "path not found" whenever a caller's own pattern coincidentally ends
+in whitespace plus the drive letter -- see the comment on `_colon_split_
+hint`'s `os.path.exists(path)` branch for the mechanism and a repro.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import pytest
 
 import supertool
 import _supertool as core
@@ -65,6 +81,23 @@ def test_drive_letter_after_space_is_recognised_and_rejoined(
     monkeypatch.chdir(tmp_path)
     candidate = _drive_qualified_target(tmp_path)
     assert candidate[1] == ":"
+    naive = candidate[2:]
+    if _ON_WINDOWS and Path(naive).exists():
+        # (#1271 follow-up, CI: windows-latest, all four interpreters) On a
+        # single-drive machine -- every windows-latest runner observed so
+        # far -- dropping the drive letter from an absolute path under the
+        # current (only) drive never fails to resolve: `naive` and
+        # `candidate` name the identical file. The "path does not exist"
+        # precondition this diagnosis needs is therefore structurally
+        # unreachable here, not flaky -- see the comment on the `os.path.
+        # exists(path)` branch in `_colon_split_hint` for why firing anyway
+        # was tried and reverted (it turns a working call into a false
+        # positive whenever a pattern coincidentally ends in the drive
+        # letter). Skipped loudly rather than silently passing vacuously.
+        pytest.skip(
+            f"single-drive Windows: {naive!r} already resolves to the same "
+            f"file as {candidate!r}, so the not-found precondition this "
+            f"test needs cannot be constructed here")
     out = supertool.dispatch(f"grep:pattern:file.py {candidate}")
     assert "Windows absolute path" in out, out
     assert candidate in out, out
@@ -110,39 +143,6 @@ def test_drive_letter_swap_suggest_unit_candidate_must_exist(
     monkeypatch.chdir(tmp_path)
     out = core._drive_letter_swap_suggest("read", "leading C", r"\does-not-exist.py")
     assert out == ""
-
-
-def test_drive_letter_after_space_still_fires_when_the_naive_path_also_exists(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """CI (windows-latest, all four interpreters) failure this pins: on a
-    real Windows machine, dropping the drive letter from an absolute path
-    leaves a bare "\\coincidence.py" shape, which Windows resolves against
-    the CURRENT drive rather than failing -- so whenever `cwd` shares a
-    drive with the intended target (a single-drive machine, i.e. virtually
-    every real Windows install and every windows-latest runner), the naive,
-    mis-tokenized path coincidentally EXISTS too. The old
-    "os.path.exists(path): return \"\"" early-out in `_colon_split_hint`
-    swallowed the diagnosis right there, before it ever reached
-    `_drive_letter_swap_suggest`.
-
-    Reproduced here via `os.name`, not a real Windows box: the new branch is
-    gated on `os.name == "nt"`, and POSIX's own `os.path.splitdrive` always
-    reports "no drive" regardless of content, so mocking just that one
-    attribute reaches the exact branch real Windows takes -- the two literal
-    filenames below stand in for "the naive path exists" and "the corrected
-    one exists too", the same technique `_drive_qualified_target` already
-    uses for the positive-control test above."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(core.os, "name", "nt")
-    naive = r"\coincidence.py"
-    (tmp_path / naive).write_text("naive\n", encoding="utf-8")
-    candidate = r"C:\coincidence.py"
-    (tmp_path / candidate).write_text("real\n", encoding="utf-8")
-
-    out = core._colon_split_hint("grep", "pattern:file.py C", naive)
-    assert "Windows absolute path" in out, out
-    assert candidate in out, out
 
 
 # --- regression: the WORKING (non-whitespace) drive-letter cases in
