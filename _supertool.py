@@ -19904,7 +19904,12 @@ def _doctor_symlink() -> Dict[str, Any]:
     than silently assumed innocent, because the other cause of the same
     symptom is a stale symlink target.
     """
-    which = shutil.which("supertool")
+    # #2611: the resolved path is spawned below (`[which, "version"]`, no
+    # cwd=) to compare its own reported version -- a raw shutil.which()
+    # would let a repo-planted "supertool.exe"/".bat"/".cmd" at cwd shadow
+    # the real tool on Windows, the same class fixed for _has_rtk()/
+    # _has_ctags() in this same change.
+    which = _which_excluding_cwd("supertool")
     result: Dict[str, Any] = {"which": which, "symlink_target": None,
                               "dangling": False}
     if which is None:

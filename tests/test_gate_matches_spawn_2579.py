@@ -164,47 +164,87 @@ def _mentions_any_name(expr: "ast.expr | None", names: "set[str]") -> bool:
     return False
 
 
-def _contains_dirname_call(node: ast.AST) -> bool:
-    """Is there a `dirname(...)` call (attribute OR bare-imported style)
-    anywhere in this subtree -- not only as a *direct* value of an
-    enclosing BoolOp? #2606 bullet 3: `bool(os.path.dirname(X)) and ...`
-    nests the dirname call one level down, inside `bool(...)`, and the
-    old walker -- which only inspected a BoolOp's immediate values -- read
-    that as an ungated existence check and flagged a safe expression."""
-    for n in ast.walk(node):
-        if not isinstance(n, ast.Call):
-            continue
-        fn = n.func
-        if isinstance(fn, ast.Attribute) and fn.attr == "dirname":
-            return True
-        if isinstance(fn, ast.Name) and fn.id == "dirname":
-            return True
-    return False
+def _might_be_true_without_dirname_call(node: "ast.expr") -> bool:
+    """Could this boolean sub-expression evaluate True without a
+    `dirname(...)` call anywhere in it having been required true first?
+
+    Pure truth-table reasoning over AND/OR, not a structural search of a
+    fixed BoolOp's direct values (#2606 review finding, second round): an
+    earlier draft climbed only to the NEAREST enclosing `ast.BoolOp(And)`
+    and searched it (and any subtree nested under it) for a `dirname`
+    call anywhere at all. That is wrong in both directions the moment an
+    `Or` sits between the existence check and its dirname guard --
+    `dirname(X) or Path(X).exists()` is exactly as unguarded as no dirname
+    check at all (an `or`'s truth needs only ONE operand true, so a bare
+    relative name matching in cwd makes the whole expression true on its
+    own), and that shape was read as SAFE because the nearest enclosing
+    `BoolOp(And)` a level up happened to contain a `dirname` call
+    somewhere in it. Conversely `dirname(X) and (Y or (Z and
+    Path(X).exists()))` is genuinely safe -- the existence check can only
+    be reached once `dirname(X)` has already been required true -- but
+    was flagged as an offender because the nearest enclosing And is the
+    *inner* one, which does not itself contain `dirname`.
+
+    An `and`'s truth requires EVERY operand true, so if even one operand
+    guarantees dirname (`might` is False for it), the whole and's truth
+    entails dirname's truth regardless of how deeply that operand is
+    nested. An `or`'s truth needs only ONE operand true, so unless EVERY
+    operand individually guarantees dirname, the or's truth does not.
+    `bool(dirname(X))` is unwrapped transparently, the same nested
+    spelling `spawnable._already_a_path` itself uses.
+    """
+    if isinstance(node, ast.BoolOp):
+        if isinstance(node.op, ast.And):
+            return all(_might_be_true_without_dirname_call(v) for v in node.values)
+        return any(_might_be_true_without_dirname_call(v) for v in node.values)
+    if isinstance(node, ast.Call):
+        fn = node.func
+        fname = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+        if fname == "dirname":
+            return False
+        if fname == "bool" and len(node.args) == 1:
+            return _might_be_true_without_dirname_call(node.args[0])
+    return True
+
+
+def _boolop_scope(node: ast.AST, parents: "dict[ast.AST, ast.AST]") -> "ast.BoolOp | None":
+    """Climb from `node` through nested `ast.BoolOp` ancestors only,
+    stopping at the first ancestor that is not itself a BoolOp (an `if`
+    test boundary, a `not (...)` wrapper, an assignment, ...). Returns the
+    OUTERMOST BoolOp reachable this way, or None when there is no
+    enclosing BoolOp at all -- climbing only to the nearest one, rather
+    than the outermost, is the mistake `_might_be_true_without_dirname_call`'s
+    own docstring explains."""
+    scope = None
+    cur: ast.AST = node
+    while cur in parents:
+        cur = parents[cur]
+        if isinstance(cur, ast.BoolOp):
+            scope = cur
+        else:
+            break
+    return scope
 
 
 def _bare_existence_check_without_dirname_guard(tree: ast.AST) -> bool:
     """Does this file check `X.exists()`/`X.is_file()`/`os.path.isfile(X)`
     (or the bare-imported spelling of any of those) -- for the SAME name a
-    chokepoint call resolves -- with no `os.path.dirname(X)` guard
-    anywhere in its enclosing `and`-chain, or with no enclosing `and`-chain
-    at all (#2602, widened by #2606)?
+    chokepoint call resolves -- in a way that could evaluate true without
+    a `dirname(X)` guard having been required true first, or with no
+    enclosing boolean expression at all to guard it (#2602, widened by
+    #2606)?
 
     This is the second-disjunct shape #2575/#2579/#2581 never touched:
     `if not spawnable(X) and not (Path(X).exists() and os.access(X,
     os.X_OK)):`. A bare, separator-free name checked this way resolves
     relative to the current directory exactly like the raw `which()` call
     the first disjunct was already fixed to stop -- see
-    `spawnable._already_a_path`'s own docstring. Walks up to the nearest
-    *enclosing* `ast.BoolOp(And)` (via a parent map) rather than only
-    looking at a fixed set of direct siblings, so a dirname guard nested
-    inside `bool(...)` is still seen, and an existence check with no
-    surrounding `and` at all -- nothing could possibly guard it -- is
-    still flagged rather than silently passing for lack of a BoolOp to
-    inspect. Scoped to existence checks that mention a name a chokepoint
-    call in the SAME file also resolves: an adapter's unrelated
-    file-discovery existence check (does `Cargo.toml`/`go.mod` exist?) is
-    not a tool-presence gate at all and must not be flagged just for
-    lacking a dirname guard it was never a candidate for.
+    `spawnable._already_a_path`'s own docstring. Scoped to existence
+    checks that mention a name a chokepoint call in the SAME file also
+    resolves: an adapter's unrelated file-discovery existence check (does
+    `Cargo.toml`/`go.mod` exist?) is not a tool-presence gate at all and
+    must not be flagged just for lacking a dirname guard it was never a
+    candidate for.
     """
     chokepoint_names = _chokepoint_arg_names(tree)
     if not chokepoint_names:
@@ -216,14 +256,8 @@ def _bare_existence_check_without_dirname_guard(tree: ast.AST) -> bool:
         subject = _existence_check_subject(node)
         if not _mentions_any_name(subject, chokepoint_names):
             continue
-        guard_scope = None
-        cur: ast.AST = node
-        while cur in parents:
-            cur = parents[cur]
-            if isinstance(cur, ast.BoolOp) and isinstance(cur.op, ast.And):
-                guard_scope = cur
-                break
-        if guard_scope is None or not _contains_dirname_call(guard_scope):
+        scope = _boolop_scope(node, parents)
+        if scope is None or _might_be_true_without_dirname_call(scope):
             return True
     return False
 
@@ -484,6 +518,61 @@ def test_a_dirname_call_nested_inside_bool_is_not_a_false_positive() -> None:
     assert not _bare_existence_check_without_dirname_guard(tree), (
         "a dirname() call nested inside bool(...) still guards the "
         "expression -- this must not be flagged as an offender"
+    )
+
+
+def test_an_existence_check_reachable_via_or_is_still_caught() -> None:
+    """#2606, second self-review round: `dirname(X) or Path(X).exists()`
+    is exactly as unguarded as no dirname check at all -- an `or` needs
+    only ONE operand true, so a bare relative name matching in cwd makes
+    the whole expression true regardless of dirname. An earlier draft of
+    this walker climbed only to the NEAREST enclosing `BoolOp(And)`,
+    which for THIS shape is a level further out and happens to contain a
+    `dirname` call, so it read this as guarded when it is not.
+    """
+    vulnerable = (
+        "import subprocess, os, pathlib\n"
+        "from spawnable import argv0, spawnable\n"
+        "if not spawnable(TOOL) and not (\n"
+        "    os.path.dirname(TOOL) or pathlib.Path(TOOL).exists()\n"
+        "):\n"
+        "    absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(vulnerable)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert _bare_existence_check_without_dirname_guard(tree), (
+        "an existence check reachable via `or` without dirname also being "
+        "required must still be caught"
+    )
+
+
+def test_a_dirname_guarded_or_branch_is_not_a_false_positive() -> None:
+    """Mirror of the test above: `dirname(X) and (Y or (Z and
+    Path(X).exists()))` IS safe -- the existence check can only be
+    reached once `dirname(X)` has already been required true, however
+    deep the `or` nesting between them. An earlier draft flagged this,
+    because the NEAREST enclosing `BoolOp(And)` is the inner `(Z and
+    ...)`, which does not itself contain `dirname`.
+    """
+    fine = (
+        "import subprocess, os, pathlib\n"
+        "from spawnable import argv0, spawnable\n"
+        "if not spawnable(TOOL) and not (\n"
+        "    os.path.dirname(TOOL) and (Y or (Z and pathlib.Path(TOOL).exists()))\n"
+        "):\n"
+        "    absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(fine)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert not _bare_existence_check_without_dirname_guard(tree), (
+        "an existence check nested inside an `or` that is itself gated "
+        "by a required dirname() one level further out must not be "
+        "flagged -- it cannot be reached at all unless dirname was "
+        "already true"
     )
 
 

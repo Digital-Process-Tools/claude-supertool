@@ -35,13 +35,18 @@ Three things this file checks:
    (`shutil.which("bash")`, tracked separately as #2610), which sits in
    `hooks/`, a directory none of this repo's three spawn registers ever
    walked -- was structurally invisible to it (#2611). Walking the actual
-   directories instead of naming files by hand found two more real,
-   previously invisible instances in the same sweep: `_has_rtk()` and
-   `_has_ctags()` in `_supertool.py` each cached a raw `which()` result and
-   spawned it, the exact #2596/#2575 shape, fixed here the same way
-   `_which_excluding_cwd()` already exists in this same file to fix it --
-   ALLOWLIST below is for the one remaining, separately-tracked instance
-   only.
+   directories instead of naming files by hand found three more real,
+   previously invisible instances in the same sweep, all in `_supertool.py`:
+   `_has_rtk()` and `_has_ctags()` each cached a raw `which()` result and
+   spawned it, and `_doctor_symlink()` did the same to compare its own
+   reported version -- the exact #2596/#2575 shape, fixed here the same
+   way `_which_excluding_cwd()` already exists in this same file to fix
+   it. (An earlier draft of this fix excused `_doctor_symlink()`'s
+   instance with a `DIAGNOSTIC_ONLY` exclusion and the claim it "never
+   executes" the resolved path -- wrong, per self-review: `[which,
+   "version"]` is spawned two lines later. Fixed rather than excused, and
+   the exclusion mechanism removed along with it.) ALLOWLIST below is for
+   the one remaining, separately-tracked instance only.
 """
 from __future__ import annotations
 
@@ -187,15 +192,6 @@ ALLOWLIST = {
     ("hooks/guard-selftest.py", "bash"): "#2610",
 }
 
-#: Names a bare `which()` call proves here, but that are never spawned --
-#: purely diagnostic uses this register would otherwise flag for no
-#: reason. `doctor()`'s own dangling-symlink probe reports where
-#: `supertool` resolves to for the human to read; it never executes it.
-DIAGNOSTIC_ONLY = {
-    ("_supertool.py", "supertool"),
-}
-
-
 def _walked_sources() -> "list[pathlib.Path]":
     out = []
     for d in WALK_DIRS:
@@ -230,7 +226,7 @@ def _offenders() -> "list[str]":
         rel = path.relative_to(ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for name in sorted(_bare_which_calls(tree)):
-            if (rel, name) in ALLOWLIST or (rel, name) in DIAGNOSTIC_ONLY:
+            if (rel, name) in ALLOWLIST:
                 continue
             hits.append(f"{rel}: {name!r}")
     return hits

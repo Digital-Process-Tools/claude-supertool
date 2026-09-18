@@ -34,7 +34,7 @@ def test_launcher_at_current_version_gets_no_stale_note(monkeypatch, tmp_path) -
     no NOTE about a possible stale build.
     """
     fake_which = str(tmp_path / "supertool")
-    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", lambda name: fake_which)
     monkeypatch.setattr(supertool.os.path, "islink", lambda p: False)
 
     def _fake_run(cmd, **kwargs):
@@ -59,7 +59,7 @@ def test_genuinely_stale_path_entry_still_warns_with_its_version(monkeypatch, tm
     this one.
     """
     fake_which = str(tmp_path / "supertool")
-    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", lambda name: fake_which)
     monkeypatch.setattr(supertool.os.path, "islink", lambda p: False)
 
     def _fake_run(cmd, **kwargs):
@@ -83,7 +83,7 @@ def test_path_entry_that_cannot_be_run_is_reported_as_unknown(monkeypatch, tmp_p
     would false-alarm a healthy one).
     """
     fake_which = str(tmp_path / "supertool")
-    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", lambda name: fake_which)
     monkeypatch.setattr(supertool.os.path, "islink", lambda p: False)
 
     def _boom(cmd, **kwargs):
@@ -107,7 +107,7 @@ def test_a_dangling_symlink_does_not_claim_version_was_run(
     diagnosis -- hedging under it says less than the line it follows.
     """
     fake_which = str(tmp_path / "supertool")
-    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", lambda name: fake_which)
     monkeypatch.setattr(supertool.os.path, "islink", lambda p: p == fake_which)
     monkeypatch.setattr(supertool.os, "readlink",
                         lambda p: str(tmp_path / "gone" / "_supertool.py"))
