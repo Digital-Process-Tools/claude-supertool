@@ -165,11 +165,6 @@ def _names_mentioned(expr: "ast.expr | None", names: "set[str]") -> "set[str]":
     return found
 
 
-def _mentions_any_name(expr: "ast.expr | None", names: "set[str]") -> bool:
-    """Does this subtree reference one of `names` at all?"""
-    return bool(_names_mentioned(expr, names))
-
-
 def _might_be_true_without_dirname_call(node: "ast.expr", subject_names: "set[str]") -> bool:
     """Could this boolean sub-expression evaluate True without a
     `dirname(...)` call ON ONE OF `subject_names` anywhere in it having
@@ -192,15 +187,25 @@ def _might_be_true_without_dirname_call(node: "ast.expr", subject_names: "set[st
     was flagged as an offender because the nearest enclosing And is the
     *inner* one, which does not itself contain `dirname`.
 
-    `subject_names` -- the same names `_mentions_any_name` matched the
-    existence check's own subject against -- is what a `dirname(...)`
-    call's OWN argument must also mention before it counts as guarding
-    anything (both reviewers, second round): matching on the `dirname`
-    function name alone, with no check on what it was CALLED WITH, let
-    `dirname(OTHER) and Path(TOOL).exists()` read as "TOOL is guarded"
-    when the dirname call never touches TOOL at all. This gap predates
-    the AND/OR rewrite -- the original `_contains_dirname_call` had the
-    identical blind spot.
+    `subject_names` -- the names `_names_mentioned` found in the existence
+    check's own subject -- is what a `dirname(...)` call's OWN argument
+    must directly BE (a bare Name or a matching string literal) before it
+    counts as guarding anything. Two rounds of review findings shaped
+    this:
+
+    - Second round, both reviewers: matching on the `dirname` function
+      name alone, with no check on what it was CALLED WITH, let
+      `dirname(OTHER) and Path(TOOL).exists()` read as "TOOL is guarded"
+      when the dirname call never touches TOOL at all. This gap predates
+      the AND/OR rewrite -- the original `_contains_dirname_call` had the
+      identical blind spot.
+    - Third round, both reviewers: an intermediate fix that required the
+      argument to *mention* a subject name anywhere in its own subtree
+      (rather than requiring the argument to directly BE that name) still
+      accepted `dirname(LOOKUP[TOOL])`, `dirname(A or B)` guarding `B`, and
+      a never-taken ternary branch -- none of those calls actually take
+      dirname of the checked value at runtime, they merely contain a
+      matching `Name`/string node somewhere inside a larger expression.
 
     An `and`'s truth requires EVERY operand true, so if even one operand
     guarantees dirname (`might` is False for it), the whole and's truth
@@ -219,7 +224,19 @@ def _might_be_true_without_dirname_call(node: "ast.expr", subject_names: "set[st
         fname = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
         if fname == "dirname":
             arg = node.args[0] if node.args else None
-            if arg is not None and _mentions_any_name(arg, subject_names):
+            # Third self-review round, both reviewers independently: a
+            # subtree walk over the WHOLE argument (`_mentions_any_name`)
+            # matched `dirname(LOOKUP[TOOL])`, `dirname(A or B)` and a
+            # never-taken ternary branch just for containing a Name node
+            # equal to the checked name somewhere inside them -- none of
+            # those calls actually take dirname of the checked value at
+            # runtime. Require the argument to BE one of subject_names
+            # directly (a bare Name or a matching string literal), not
+            # merely to mention one somewhere in a larger expression.
+            if isinstance(arg, ast.Name) and arg.id in subject_names:
+                return False
+            if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                    and arg.value in subject_names):
                 return False
             return True
         if fname == "bool" and len(node.args) == 1:
@@ -569,6 +586,77 @@ def test_a_dirname_call_on_an_unrelated_name_does_not_guard_anything() -> None:
     assert _bare_existence_check_without_dirname_guard(tree), (
         "a dirname() call that never mentions the name being existence-"
         "checked must not be read as guarding that check"
+    )
+
+
+def test_a_dirname_call_that_merely_mentions_the_name_is_not_enough() -> None:
+    """Third self-review round, both reviewers independently: a subtree
+    walk over a `dirname(...)` call's ENTIRE argument -- rather than
+    requiring the argument to BE the checked name -- accepted
+    `dirname(LOOKUP[TOOL])` and a never-taken ternary branch as guards on
+    `TOOL`, just because a `Name(TOOL)` node happened to appear somewhere
+    inside the argument's own subtree. Neither call actually takes
+    dirname of the checked value at runtime.
+    """
+    dict_lookup = (
+        "import os, pathlib, subprocess\n"
+        "from spawnable import argv0, spawnable\n"
+        "LOOKUP = {'TOOL': 'unrelated/other/path'}\n"
+        "if not spawnable(TOOL) and not (\n"
+        "    os.path.dirname(LOOKUP[TOOL]) and pathlib.Path(TOOL).exists()\n"
+        "):\n"
+        "    absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(dict_lookup)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert _bare_existence_check_without_dirname_guard(tree), (
+        "dirname(LOOKUP[TOOL]) never takes dirname of TOOL itself -- "
+        "must not be read as a guard on TOOL just for mentioning it"
+    )
+
+    never_taken_ternary = (
+        "import os, pathlib, subprocess\n"
+        "from spawnable import argv0, spawnable\n"
+        "if not spawnable(TOOL) and not (\n"
+        "    os.path.dirname(OTHER if TOOL == TOOL else OTHER)\n"
+        "    and pathlib.Path(TOOL).exists()\n"
+        "):\n"
+        "    absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree2 = ast.parse(never_taken_ternary)
+    assert _bare_existence_check_without_dirname_guard(tree2), (
+        "dirname(...) always evaluates to dirname(OTHER) here -- TOOL "
+        "only appears in the ternary's condition, never its value -- "
+        "must not be read as a guard on TOOL"
+    )
+
+
+def test_a_dirname_call_gating_a_different_chokepoint_name_does_not_cross_guard() -> None:
+    """oss:auditor, third round: `dirname(A or B) and isfile(B)` must not
+    be read as a guard on `B` -- `dirname`'s argument subtree contains the
+    name `B`, but at runtime `dirname` only ever receives whichever of
+    `A`/`B` is truthy first, which is not a sound proof that `B` was
+    dirname-checked at all.
+    """
+    vulnerable = (
+        "import os, pathlib, subprocess\n"
+        "from spawnable import argv0, spawnable\n"
+        "if not spawnable(A) and not spawnable(B) and not (\n"
+        "    os.path.dirname(A or B) and pathlib.Path(B).exists()\n"
+        "):\n"
+        "    absent()\n"
+        "cmd = [argv0(A), argv0(B)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(vulnerable)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert _bare_existence_check_without_dirname_guard(tree), (
+        "dirname(A or B) does not soundly guard B's existence check -- "
+        "must still be caught"
     )
 
 
