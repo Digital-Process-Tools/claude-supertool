@@ -44,11 +44,33 @@ def _load_record(record=None):
         return {}
 
 
+def _version_key(version):
+    """Numeric sort key for a dotted version string, e.g. `"0.9.0"`.
+
+    A plain `sorted(strings)` is lexicographic: `"0.9.0" > "0.10.0"` as
+    strings, so the highest-scope version selection below would silently
+    pick the OLDER release the moment two versions straddle a
+    single-digit/double-digit boundary in any segment -- already true today
+    for any `0.40.x` line the moment two patch releases straddle `0.40.9`/
+    `0.40.10` (#1985 self-review). Split on `.` and compare as ints; a
+    non-numeric segment falls back to the raw string so a malformed version
+    still sorts (last, deterministically) rather than raising.
+    """
+    parts = []
+    for segment in str(version).split("."):
+        try:
+            parts.append((0, int(segment)))
+        except ValueError:
+            parts.append((1, segment))
+    return tuple(parts)
+
+
 def _active_version(name, record=None):
     """The version actually enabled for `name`, or `None`.
 
     One entry per scope is possible; the highest wins, matching
     `claude-oss`'s own `active_versions` (the scope that wins at load).
+    Compared numerically via `_version_key`, never as plain strings.
     """
     doc = _load_record(record)
     plugins = doc.get("plugins") if isinstance(doc, dict) else None
@@ -63,7 +85,7 @@ def _active_version(name, record=None):
                 versions.append(str(entry["version"]))
     if not versions:
         return None
-    return sorted(versions)[-1]
+    return sorted(versions, key=_version_key)[-1]
 
 
 def _install_roots(name, version, record=None, cache_root=None):

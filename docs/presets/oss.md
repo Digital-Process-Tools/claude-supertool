@@ -4,7 +4,7 @@
 supertool 'oss-tick'
 ```
 
-Requires `git`, and Claude Code's own `oss` plugin (`Digital-Process-Tools/claude-oss`) installed. Runs `git fetch` and, if that succeeds, `git pull --ff-only`. Reads `.oss.json` (and, for the state-file rows, the git-excluded `.oss.local.json` beside it) from the current working directory.
+Requires `git`, and Claude Code's own `oss` plugin (`Digital-Process-Tools/claude-oss`) installed. Runs `git fetch` and, if that succeeds, `git pull --ff-only`. Runs from the current working directory: the git-excluded `.oss.local.json` beside `.oss.json` there names the state file the state-file rows read -- `.oss.json` itself is never read directly by this shim.
 
 ## The question
 
@@ -22,7 +22,7 @@ One receipt, every row three-state, never two -- a step that is skipped and a st
 
 | Row | States |
 | --- | --- |
-| plugin identity | `resolved <version>` / `resolved, but ... different version` / `could-not-resolve` |
+| plugin identity | `resolved <version>` / `resolved, but its install carries no scripts/ directory` / `could-not-resolve` |
 | last state entry | entry / `no entries yet` / `FAIL` naming what is wrong |
 | pending wait | `cleared` / `holds` / `could-not-evaluate` |
 | plugin identity vs last recorded | `unchanged` / `changed` / `could-not-tell` |

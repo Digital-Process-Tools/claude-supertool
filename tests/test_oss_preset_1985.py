@@ -157,7 +157,14 @@ def _fake_run_factory(git_ok=True, board_ok=True, radar="registered"):
             return _FakeCompleted(1, b"unhandled oss_state.py call")
         if "radar:--state" in argv:
             if radar == "not-configured":
-                return _FakeCompleted(1, b"radar: not configured")
+                # The real refusal string (presets/watch/radar.py's
+                # NO_TIERS): "no tiers configured", not "not configured" --
+                # matched on the wrong substring once (#1985 self-review).
+                return _FakeCompleted(
+                    1,
+                    b"radar: no tiers configured. Add ops.radar.radar_tiers "
+                    b"to .supertool.json",
+                )
             return _FakeCompleted(0 if radar == "registered" else 1, b"registered")
         # board ops: gh-prs, gh-issues, gh-branch, git-worktrees
         return _FakeCompleted(0 if board_ok else 1, b"" if board_ok else b"failed")
@@ -314,3 +321,129 @@ def test_state_file_resolves_relative_to_declared_clone(tmp_path):
     path, reason = tick.state_file(str(worktree))
     assert reason is None
     assert path == str((clone / ".max" / "oss-watch.json").resolve())
+
+
+# --- self-review findings (#1985) -----------------------------------------
+#
+# resolved-but-different is a broken-install state, never a version
+# mismatch -- there is no declared-version concept in shim.py at all;
+# that comparison is the separate plugin_identity_check row.
+
+
+def test_resolved_but_different_names_the_missing_scripts_dir_not_a_version(
+    tmp_path,
+):
+    def _broken(record=None, cache_root=None):
+        return (
+            "resolved-but-different",
+            "oss 0.40.0 resolved to X, but it carries no scripts dir",
+        )
+
+    rows = tick.compose(cwd=str(tmp_path), run=_fake_run_factory(), resolve_fn=_broken)
+    assert rows["plugin_identity"].startswith(
+        "resolved, but its install carries no scripts/ directory"
+    )
+    assert "version" not in rows["plugin_identity"].lower()
+
+
+# The one branch a reviewer found untested: pending_wait starting with
+# holds must produce the do-not-dispatch NEXT line.
+def test_pending_wait_holds_stops_the_next_step(tmp_path):
+    (tmp_path / ".oss.local.json").write_text(
+        json.dumps({"clone": str(tmp_path), "state_file": ".max/oss-watch.json"}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".max").mkdir()
+    (tmp_path / ".max" / "oss-watch.json").write_text("{}", encoding="utf-8")
+
+    def _run_with_holding_wait(argv, **kwargs):
+        joined = " ".join(str(a) for a in argv)
+        if "oss_state.py" in joined and "--pending-wait" in argv:
+            return _FakeCompleted(0, b"holds -- release soak window open")
+        return _fake_run_factory()(argv, **kwargs)
+
+    rows = tick.compose(
+        cwd=str(tmp_path),
+        run=_run_with_holding_wait,
+        resolve_fn=_resolved(tmp_path),
+    )
+    assert rows["pending_wait"].startswith("holds")
+    assert rows["next"] == "pending wait holds -- do not dispatch yet"
+
+
+# A render() that stringified the dict, or swapped which row got which
+# value, must not satisfy this: each assertion is a whole line.
+def test_render_pairs_each_label_with_its_own_value_on_one_line():
+    rows = {
+        "plugin_identity": "resolved 0.40.0",
+        "last_state_entry": "no entries yet",
+        "pending_wait": "cleared",
+        "plugin_identity_check": "unchanged",
+        "git_sync": "up to date",
+        "board": {op: "read" for op in tick._BOARD_OPS},
+        "radar_tier": "registered",
+        "next": "proceed to dispatch",
+    }
+    lines = tick.render(rows).splitlines()
+    assert "plugin identity: resolved 0.40.0" in lines
+    assert "last state entry: no entries yet" in lines
+    assert "pending wait: cleared" in lines
+    assert "plugin identity vs last recorded: unchanged" in lines
+    assert "git fetch && pull --ff-only: up to date" in lines
+    assert "radar tier: registered" in lines
+    assert "NEXT: proceed to dispatch" in lines
+    for op in tick._BOARD_OPS:
+        assert "board {}: read".format(op) in lines
+
+
+# 0.9.0 sorts after 0.10.0 as a bare string but is numerically older -- the
+# highest-scope pick must not silently choose the older release across a
+# single-digit/double-digit boundary.
+def test_active_version_compares_numerically_not_lexicographically(tmp_path):
+    record = _write_record(
+        tmp_path,
+        {
+            "oss@marketplace": [
+                {"version": "0.9.0"},
+                {"version": "0.10.0"},
+            ]
+        },
+    )
+    assert shim._active_version("oss", record=record) == "0.10.0"
+
+
+def test_version_key_orders_multi_digit_segments_correctly():
+    versions = ["0.9.0", "0.10.0", "0.2.0", "0.40.9", "0.40.10"]
+    assert sorted(versions, key=shim._version_key) == [
+        "0.2.0", "0.9.0", "0.10.0", "0.40.9", "0.40.10",
+    ]
+
+
+# A console codepage that cannot represent a byte in the render must not
+# crash main() after git fetch/pull and every row have already run --
+# errors=replace instead of a UnicodeEncodeError killing the print.
+def test_main_survives_a_console_that_cannot_encode_the_render(monkeypatch):
+    class _StubbornStream:
+        encoding = "cp1252"
+
+        def reconfigure(self, **kwargs):
+            raise AttributeError("no reconfigure on this stub")
+
+        def write(self, text):
+            text.encode("cp1252")
+
+    def _fake_compose(*args, **kwargs):
+        return {
+            "plugin_identity": "could-not-resolve -- arrow glyph here",
+            "last_state_entry": "FAIL -- plugin not resolved",
+            "pending_wait": "could-not-evaluate -- plugin not resolved",
+            "plugin_identity_check": "could-not-tell -- plugin not resolved",
+            "git_sync": "up to date",
+            "board": {op: "read" for op in tick._BOARD_OPS},
+            "radar_tier": "not-configured",
+            "next": "resolve the oss plugin install before proceeding",
+        }
+
+    monkeypatch.setattr(tick, "compose", _fake_compose)
+    monkeypatch.setattr(sys, "stdout", _StubbornStream())
+    assert tick.main() == 0

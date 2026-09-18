@@ -2,9 +2,11 @@
 """oss_tick -- the mechanical opening of the `claude-oss` maintainer tick,
 composed into one receipt whose every row is three-state (#1985).
 
-Reads `.oss.json` from the current working directory, the same way that
-file's other readers already do, so no fact about any particular repository
-ever enters this codebase.
+Runs from the current working directory: the git-excluded `.oss.local.json`
+beside `.oss.json` there names the state file the three oss_state.py rows
+read (never `.oss.json` itself directly -- this shim's own logic needs
+nothing from it, though the plugin it execs into may). No fact about any
+particular repository enters this codebase either way.
 
 The reason to compose the seven checks below rather than leave them as
 prose-ordered commands: a step that is *skipped* and a step that *found
@@ -117,10 +119,14 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
         version, scripts_dir = detail
         rows["plugin_identity"] = "resolved {}".format(version)
     elif state == "resolved-but-different":
+        # `shim.resolve`'s own docstring: this state means an active version
+        # was found and a root resolved for it, but that root carries no
+        # scripts/ directory -- a broken/partial install, never a version
+        # comparison (there is no "declared version" concept in shim.py at
+        # all; that is the separate plugin_identity_check row below).
         rows["plugin_identity"] = (
-            "resolved, but the tree here declares a different version -- {}".format(
-                detail
-            )
+            "resolved, but its install carries no scripts/ directory -- "
+            "{}".format(detail)
         )
     else:
         rows["plugin_identity"] = "could-not-resolve -- {}".format(detail)
@@ -199,7 +205,12 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
         )
         if code is None:
             rows["radar_tier"] = "probe-did-not-answer -- {}".format(out)
-        elif code != 0 and "not configured" in (out or "").lower():
+        elif code != 0 and "no tiers configured" in (out or "").lower():
+            # `radar`'s own refusal string (presets/watch/radar.py's NO_TIERS)
+            # is "no tiers configured", not "not configured" -- matched on
+            # the wrong substring here once, and it is the majority-case
+            # outcome for any repo with no ops.radar.radar_tiers set (#1985
+            # self-review).
             rows["radar_tier"] = "not-configured"
         elif code == 0:
             rows["radar_tier"] = "registered"
@@ -249,7 +260,24 @@ def render(rows):
 
 def main(argv=None):
     rows = compose()
-    print(render(rows))
+    text = render(rows)
+    # Every row here can carry subprocess output verbatim (a GitHub issue
+    # title, an oss_state.py state entry), and stdout's encoding is the
+    # CONSOLE's codepage, not this file's -- typically cp1252 on Windows,
+    # where a non-ASCII byte raises UnicodeEncodeError and kills the
+    # process at this print, after git fetch/pull and every other row have
+    # already run (#1985 self-review). `errors="replace"` never fails; the
+    # worst case is a `?` in place of a glyph the console cannot show.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass  # a stream with no reconfigure (or already detached): fall
+              # through and let the encode below carry the same fallback
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode(sys.stdout.encoding or "utf-8", "replace")
+              .decode(sys.stdout.encoding or "utf-8", "replace"))
     return 0
 
 
