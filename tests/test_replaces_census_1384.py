@@ -229,6 +229,13 @@ _ABSENT = {
                   "at all); " + _SUPERTOOL_OWN + " -- there is no raw shell "
                   "invocation a status line hook would otherwise run, since "
                   "the whole point is that one did not exist before this op",
+
+    # --- presets/oss.json (#1985) -------------------------------------------
+    "oss-tick": "a composite of seven prose-ordered maintainer-tick calls "
+                "(state file, pending wait, plugin identity, git fetch+pull, "
+                "the four-op board and radar tier) run through a shim that "
+                "locates the installed oss plugin -- no single raw command "
+                "is the same call",
 }
 
 

@@ -1,0 +1,15 @@
+{
+  "description": "The mechanical opening of the claude-oss maintainer tick, composed into one round-trip receipt whose every row is three-state (#1985). A thin shim: it locates the installed oss plugin and runs its own scripts, so all judgment stays versioned with claude-oss and this repository carries only the shim plus the op declaration.",
+  "requires": "git",
+  "ops": {
+    "oss-tick": {
+      "safety": "acts",
+      "cmd": "{python} {path}oss/tick.py {args}",
+      "timeout": 180,
+      "hint": true,
+      "description": "Composes the tick's mechanical preflight -- last state entry, pending wait, plugin identity vs last recorded, `git fetch && git pull --ff-only`, the board (gh-prs/gh-issues/gh-branch/git-worktrees), and radar tier resolution -- into one receipt, then a NEXT: line chosen by the findings rather than by prose. Every row always runs and is always one of three states; a step that is skipped and a step that found nothing must never render alike. Resolves the installed `oss` plugin from Claude Code's own install record (active version, then its recorded installPath, falling back to a cache-directory glob) and execs that plugin's own oss_state.py for the state-file rows -- so this op is a shim only: no maintainer-loop judgment lives here, and a plugin that cannot be resolved is reported as could-not-resolve rather than silently skipped. Reads .oss.json from the current working directory; carries no fact about any particular repository. Enforces nothing: the raw-command guard hooks Bash only, a harness Edit/Write bypasses every op, and the Bash grant handed to agents is total.",
+      "syntax": "oss-tick",
+      "example": "oss-tick"
+    }
+  }
+}
