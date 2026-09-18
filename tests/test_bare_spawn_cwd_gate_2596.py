@@ -161,6 +161,63 @@ def test_the_three_duplicated_copies_agree(tmp_path, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2b) PATH unset falls back like shutil.which() does (#2603)
+# ---------------------------------------------------------------------------
+#
+# `shutil.which()` distinguishes an UNSET PATH (falls back to
+# `os.confstr("CS_PATH")`/`os.defpath`) from an explicitly EMPTY one
+# (`PATH=""`, returns None per bpo-35755). All three copies used to collapse
+# both to `if not path_env: return None` -- stricter than the function they
+# wrap, and able to report a genuinely installed tool as absent when a
+# caller's PATH is merely unset (a stripped `env=` on a parent spawn, some
+# cron/launchd contexts) rather than deliberately empty.
+
+@IMPLS
+def test_unset_path_falls_back_to_defpath(which_fn, tmp_path, monkeypatch) -> None:
+    """No PATH key at all -- must still find a tool on the platform default
+    search path, the same way `shutil.which()` does, rather than reporting
+    it absent."""
+    real = _shim(tmp_path / "realbin")
+    monkeypatch.delenv("PATH", raising=False)
+    monkeypatch.delattr(os, "confstr", raising=False)
+    monkeypatch.setattr(os, "defpath", str(tmp_path / "realbin"))
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    assert which_fn(TOOL) == str(real)
+
+
+@IMPLS
+def test_unset_path_fallback_still_excludes_cwd(which_fn, tmp_path, monkeypatch) -> None:
+    """The defpath fallback must not reopen the #2596 hole. Unlike a bare
+    `is None` assertion (which the pre-#2603 code also satisfies, by never
+    even reaching the fallback -- self-review caught this as vacuous), this
+    puts a genuine match further down the fallback path so the three
+    possible answers are distinguishable: pre-#2603 code returns None
+    (never falls back at all); a fallback that forgot cwd-exclusion returns
+    the cwd-planted shim; only a correct fallback returns `real`."""
+    planted = _shim(tmp_path)  # the attacker's plant, at cwd
+    real = _shim(tmp_path / "realbin")
+    monkeypatch.delenv("PATH", raising=False)
+    monkeypatch.delattr(os, "confstr", raising=False)
+    monkeypatch.setattr(os, "defpath", str(tmp_path) + os.pathsep + str(tmp_path / "realbin"))
+    monkeypatch.chdir(tmp_path)
+    assert which_fn(TOOL) == str(real)
+    del planted
+
+
+@IMPLS
+def test_explicitly_empty_path_still_refuses(which_fn, tmp_path, monkeypatch) -> None:
+    """`PATH=""` is not the same as an unset PATH (bpo-35755): `shutil.
+    which()` returns None for it rather than falling back, and this must
+    match -- a real tool on the platform defpath must NOT be found."""
+    _shim(tmp_path / "realbin")
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(os, "defpath", str(tmp_path / "realbin"))
+    monkeypatch.chdir(tmp_path)
+    assert which_fn(TOOL) is None
+
+
+# ---------------------------------------------------------------------------
 # 3) Static register over the six #2596 call sites
 # ---------------------------------------------------------------------------
 
