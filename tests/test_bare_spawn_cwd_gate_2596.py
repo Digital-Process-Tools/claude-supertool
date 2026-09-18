@@ -184,13 +184,13 @@ EXTRA_FILES = ("_supertool.py",)
 #: Known, real, unfixed instances of this exact class, tracked separately
 #: rather than fixed in this change -- (relative path, tool name): reason.
 #: An allowlist entry here means "this is real and tracked elsewhere", not
-#: "this is a false positive" -- `hooks/guard-selftest.py`'s own
-#: `bash_candidates()` genuinely resolves "bash" via a raw `shutil.which()`
-#: and then spawns whatever it returns. Removing an entry is the signal
-#: one has actually been fixed.
-ALLOWLIST = {
-    ("hooks/guard-selftest.py", "bash"): "#2610",
-}
+#: "this is a false positive". Empty as of #2610: `hooks/guard-selftest.py`'s
+#: `bash_candidates()` now resolves "bash" through `which_excluding_cwd()`
+#: rather than a raw `shutil.which()` -- the one remaining entry this
+#: register carried was that call, and it is gone. Removing an entry is the
+#: signal one has actually been fixed; re-add one here, never re-open the
+#: call site, if a future change needs to excuse a new instance.
+ALLOWLIST = {}
 
 def _walked_sources() -> "list[pathlib.Path]":
     out = []
@@ -274,17 +274,25 @@ def test_the_allowlisted_instance_is_still_real() -> None:
 
 def test_the_register_covers_a_population_it_can_name() -> None:
     """A register over zero files is green and means nothing (same
-    convention as #2579's/#2540's/#2605's own registers)."""
+    convention as #2579's/#2540's/#2605's own registers).
+
+    Only the walk-root check remains here. The sibling "does the register
+    find a real, live bare `which()` call anywhere in the actual codebase"
+    assertion this test used to carry stopped being satisfiable once #2610
+    fixed the last real instance ALLOWLIST tracked -- the walked population
+    is now, correctly, empty of real offenders, which is the goal state
+    this whole effort works toward, not a broken walker. That the walker
+    itself can still see the defect shape is `test_the_walker_can_actually_
+    see_the_defect`'s own job, proven synthetically rather than by requiring
+    a live bug to exist somewhere in this repo -- a register that only
+    stays green while a bug it is meant to prevent still exists elsewhere
+    in the tree is the wrong invariant to hold.
+    """
     sources = _walked_sources()
     assert len(sources) >= 100, (
         f"only {len(sources)} sources found under {WALK_DIRS} plus "
         f"{EXTRA_FILES} -- the walk root is wrong, and an empty walk reads "
         "exactly like a clean one"
-    )
-    assert any(_bare_which_calls(ast.parse(p.read_text(encoding="utf-8")))
-               for p in sources), (
-        "no file calls shutil.which()/which() at all, so this register is "
-        "asserting nothing about anything"
     )
 
 
