@@ -77,6 +77,14 @@ def which_excluding_cwd(name: str) -> "str | None":
     if os.path.dirname(name):
         return shutil.which(name)
     path_env = os.environ.get("PATH")
+    if path_env is None:
+        # Mirror shutil.which(): PATH unset (not merely empty, see below)
+        # falls back to the platform default search path rather than
+        # reporting every tool absent (#2603).
+        try:
+            path_env = os.confstr("CS_PATH")
+        except (AttributeError, ValueError):
+            path_env = os.defpath
     if not path_env:
         return None
     here = os.path.normcase(os.path.abspath(os.curdir))
