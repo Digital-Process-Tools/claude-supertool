@@ -24,7 +24,7 @@ What the corpus costs, over the whole shipped tree (128 documented ops):
     total 74,679   median 152   p90 1,732   max 6,578 (`channel`)
     top 10 rows    35,290 = 47% of the corpus, in 8% of the ops
 
-`_HOOK_OUTPUT_CAP_BYTES` is 7,168 and `ops:full` renders far past it (tens of
+`_HOOK_OUTPUT_CAP_BYTES` is 10,000 and `ops:full` renders far past it (tens of
 KB, and checkout-path-dependent to the byte — `tests/test_render_size_claims_1877.py`
 is where an exact figure is pinned, not here). That gap is why `ops:full` is
 never what a SessionStart-style injection sends; `ops:roster` (names plus

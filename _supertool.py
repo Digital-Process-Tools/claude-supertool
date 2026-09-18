@@ -21266,7 +21266,7 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
 
     **The default is signatures** (#1774). Every op, every name, the shape of
     the call — and nothing else. The descriptive render is `ops:full`, which is
-    what this op used to be: tens of KB in this tree against a 7,168-byte
+    what this op used to be: tens of KB in this tree against a 10,000-byte
     SessionStart cap (`tests/test_render_size_claims_1877.py` pins the exact,
     checkout-path-dependent figure — not a literal here, per #1813), ~19k
     tokens spent by a caller whose question was which op lists PRs. The cost
@@ -21534,7 +21534,7 @@ _CLASS_LEGEND = (
 _ROSTER_LEGEND = (
     "Every op loaded here, and nothing else — the complete list, which the "
     "descriptive\n`ops` listing stops being once a project has enough ops to "
-    "pass the ~7KB\nSessionStart cap. Class is declared, never guessed.\n\n"
+    "pass the ~10KB\nSessionStart cap. Class is declared, never guessed.\n\n"
     "- unmarked — read-only. Call it blind; its own error teaches the "
     "signature.\n"
     "- `*` — writes files in this tree.\n"
@@ -21547,7 +21547,7 @@ _ROSTER_LEGEND = (
     # (#1671). The raw-command guard is a PreToolUse hook whose matcher is
     # `Bash|PowerShell`, so `Edit`/`Write` never reach it: the same one-key
     # change was denied through a heredoc and unremarkable through `Edit`,
-    # minutes apart. One line, ~150 bytes of a ~7KB session budget, because
+    # minutes apart. One line, ~150 bytes of a ~10KB session budget, because
     # what it changes is what a reader believes about a boundary they are
     # inside — and a listing of ops is exactly where that belief forms.
     "Ops are one route to disk, not the only one: the raw-command guard "
