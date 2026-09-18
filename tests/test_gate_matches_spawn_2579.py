@@ -151,22 +151,29 @@ def _existence_check_subject(node: ast.Call) -> "ast.expr | None":
     return None
 
 
-def _mentions_any_name(expr: "ast.expr | None", names: "set[str]") -> bool:
-    """Does this subtree reference one of `names`, as either a bare
-    identifier or a matching string literal, anywhere inside it?"""
+def _names_mentioned(expr: "ast.expr | None", names: "set[str]") -> "set[str]":
+    """Which of `names` does this subtree actually reference, as either a
+    bare identifier or a matching string literal, anywhere inside it?"""
+    found: "set[str]" = set()
     if expr is None:
-        return False
+        return found
     for n in ast.walk(expr):
         if isinstance(n, ast.Name) and n.id in names:
-            return True
+            found.add(n.id)
         if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in names:
-            return True
-    return False
+            found.add(n.value)
+    return found
 
 
-def _might_be_true_without_dirname_call(node: "ast.expr") -> bool:
+def _mentions_any_name(expr: "ast.expr | None", names: "set[str]") -> bool:
+    """Does this subtree reference one of `names` at all?"""
+    return bool(_names_mentioned(expr, names))
+
+
+def _might_be_true_without_dirname_call(node: "ast.expr", subject_names: "set[str]") -> bool:
     """Could this boolean sub-expression evaluate True without a
-    `dirname(...)` call anywhere in it having been required true first?
+    `dirname(...)` call ON ONE OF `subject_names` anywhere in it having
+    been required true first?
 
     Pure truth-table reasoning over AND/OR, not a structural search of a
     fixed BoolOp's direct values (#2606 review finding, second round): an
@@ -185,6 +192,16 @@ def _might_be_true_without_dirname_call(node: "ast.expr") -> bool:
     was flagged as an offender because the nearest enclosing And is the
     *inner* one, which does not itself contain `dirname`.
 
+    `subject_names` -- the same names `_mentions_any_name` matched the
+    existence check's own subject against -- is what a `dirname(...)`
+    call's OWN argument must also mention before it counts as guarding
+    anything (both reviewers, second round): matching on the `dirname`
+    function name alone, with no check on what it was CALLED WITH, let
+    `dirname(OTHER) and Path(TOOL).exists()` read as "TOOL is guarded"
+    when the dirname call never touches TOOL at all. This gap predates
+    the AND/OR rewrite -- the original `_contains_dirname_call` had the
+    identical blind spot.
+
     An `and`'s truth requires EVERY operand true, so if even one operand
     guarantees dirname (`might` is False for it), the whole and's truth
     entails dirname's truth regardless of how deeply that operand is
@@ -195,15 +212,18 @@ def _might_be_true_without_dirname_call(node: "ast.expr") -> bool:
     """
     if isinstance(node, ast.BoolOp):
         if isinstance(node.op, ast.And):
-            return all(_might_be_true_without_dirname_call(v) for v in node.values)
-        return any(_might_be_true_without_dirname_call(v) for v in node.values)
+            return all(_might_be_true_without_dirname_call(v, subject_names) for v in node.values)
+        return any(_might_be_true_without_dirname_call(v, subject_names) for v in node.values)
     if isinstance(node, ast.Call):
         fn = node.func
         fname = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
         if fname == "dirname":
-            return False
+            arg = node.args[0] if node.args else None
+            if arg is not None and _mentions_any_name(arg, subject_names):
+                return False
+            return True
         if fname == "bool" and len(node.args) == 1:
-            return _might_be_true_without_dirname_call(node.args[0])
+            return _might_be_true_without_dirname_call(node.args[0], subject_names)
     return True
 
 
@@ -254,10 +274,11 @@ def _bare_existence_check_without_dirname_guard(tree: ast.AST) -> bool:
         if not _is_existence_call(node):
             continue
         subject = _existence_check_subject(node)
-        if not _mentions_any_name(subject, chokepoint_names):
+        subject_names = _names_mentioned(subject, chokepoint_names)
+        if not subject_names:
             continue
         scope = _boolop_scope(node, parents)
-        if scope is None or _might_be_true_without_dirname_call(scope):
+        if scope is None or _might_be_true_without_dirname_call(scope, subject_names):
             return True
     return False
 
@@ -518,6 +539,36 @@ def test_a_dirname_call_nested_inside_bool_is_not_a_false_positive() -> None:
     assert not _bare_existence_check_without_dirname_guard(tree), (
         "a dirname() call nested inside bool(...) still guards the "
         "expression -- this must not be flagged as an offender"
+    )
+
+
+def test_a_dirname_call_on_an_unrelated_name_does_not_guard_anything() -> None:
+    """Second self-review round, both spawned reviewers independently: a
+    `dirname(...)` call only guarantees the guard for the SAME name the
+    existence check is testing -- `dirname(OTHER) and Path(TOOL).exists()`
+    must not read as "TOOL's existence check is guarded" just because
+    some unrelated dirname() call sits in the same expression. This gap
+    predates this file's #2606 rewrite (the pre-diff `_contains_dirname_call`
+    had the identical shape: it matched on the dirname *function name*
+    only, never on its argument), and neither the earlier widening nor
+    the AND/OR truth-table rewrite closed it until now.
+    """
+    vulnerable = (
+        "import os, pathlib, subprocess\n"
+        "from spawnable import argv0, spawnable\n"
+        "OTHER = 'some/other/thing'\n"
+        "if not spawnable(TOOL) and not (\n"
+        "    os.path.dirname(OTHER) and pathlib.Path(TOOL).exists()\n"
+        "):\n"
+        "    absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(vulnerable)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert _bare_existence_check_without_dirname_guard(tree), (
+        "a dirname() call that never mentions the name being existence-"
+        "checked must not be read as guarding that check"
     )
 
 
