@@ -116,6 +116,63 @@ def test_phpstan_missing_binary_emits_json(tmp_path: Path) -> None:
     assert "errors" in data
 
 
+def test_php_missing_binary_emits_json(tmp_path: Path) -> None:
+    """#2605 regression: if `php` itself cannot be resolved, the adapter
+    must decline with a descriptive `adapter` error -- the same third
+    state `test_phpstan_missing_binary_emits_json` already proves for
+    `phpstan_bin` -- rather than ever reaching `subprocess.run(["php", ...])`
+    with the bare, unresolved literal (#2605's own defect: `php` was never
+    gated or resolved through `spawnable()`/`argv0()` at all).
+
+    `PHPSTAN_BIN` is pointed at a real, absolute-path executable so the
+    *earlier* gate (`spawnable(phpstan_bin)`) passes cleanly and this test
+    exercises only the new `php` gate, not the pre-existing one.
+
+    The dummy binary's own name is platform-gated rather than a bare
+    extension-less `phpstan_dummy` on every OS: `shutil.which()`'s Windows
+    branch applies PATHEXT filtering even to a dirname-bearing (absolute)
+    path (`cpython/Lib/shutil.py`, the `sys.platform == "win32"` block runs
+    unconditionally after the dirname branch) and only inserts a direct,
+    no-extension match when the name already ends in a PATHEXT extension --
+    so an extension-less file that plainly exists and is `chmod`'d
+    executable is still invisible to `spawnable(phpstan_bin)` on Windows,
+    and this test's *earlier* gate failed with "PHPSTAN_BIN not found"
+    before ever reaching the `php` gate it means to exercise (observed on
+    windows-latest/3.12, #2605 CI). A `.cmd` suffix is in the default
+    PATHEXT list and is spawnable outright on Windows; POSIX needs no
+    extension and keeps the executable-bit shim.
+
+    `PATH` is pointed at a real, guaranteed-nonexistent directory rather
+    than merely one with nothing copied into it, so `php` cannot resolve
+    regardless of what else this runner happens to have installed
+    (deterministic per the docstring above, not "probably absent").
+    """
+    f = tmp_path / "ok.php"
+    f.write_text("<?php\n$x = 1;\n")
+    if os.name == "nt":
+        dummy_phpstan = tmp_path / "phpstan_dummy.cmd"
+        dummy_phpstan.write_text("@echo off\r\n")
+    else:
+        dummy_phpstan = tmp_path / "phpstan_dummy"
+        dummy_phpstan.write_text("#!/bin/sh\n:\n")
+        dummy_phpstan.chmod(0o755)
+    empty_path_dir = tmp_path / "empty-bin-2605-does-not-exist"
+    env = {**os.environ,
+           "PATH": str(empty_path_dir),
+           "PHPSTAN_BIN": str(dummy_phpstan)}
+    r = subprocess.run(
+        [sys.executable, str(PHPSTAN_PY), str(f)],
+        capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY),
+        env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert data["tool"] == "phpstan"
+    assert_declined(data)
+    assert data["errors"][0]["msg"] == "php not found"
+    assert "errors" in data
+
+
 # ---------------------------------------------------------------------------
 # Hermetic adapter coverage — fake `php` shim emitting canned phpstan JSON.
 # Exercises the parse/aggregate path with no real phpstan/php, so coverage holds

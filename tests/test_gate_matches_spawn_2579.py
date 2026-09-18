@@ -26,9 +26,18 @@ a literal script argument to `php`, not spawned as argv[0], so its own gate
 had nothing to be inconsistent WITH until it gated on `spawnable()` too --
 matching every other `_BIN` adapter's own convention, `spawnable()` there is
 a presence-only check and `argv0(phpstan_bin)` builds the actual argv element
-separately. Done now, so the `ALLOWLIST` below is empty rather than removed
-outright (kept as the register's own escape hatch for the next adapter shaped
-this way, not because this one still needs it).
+separately. Done, for what THIS register checks (gate vs. spawn agreement) --
+the `ALLOWLIST` below is empty rather than removed outright (kept as the
+register's own escape hatch for the next adapter shaped this way).
+
+That is not the same claim as "phpstan.py's argv construction has no bare,
+unresolved literal": #2605 found one anyway, one argv slot over -- `php`
+itself, at argv[0], was never passed to `spawnable()`/`argv0()` at all, so
+this register's own gate-vs-spawn check had nothing to disagree with (the
+chokepoint WAS imported and used, just not for `php`). That variant needed
+a register that inspects argv construction directly,
+`tests/test_bare_argv0_construction_2605.py` -- "done now" above is scoped
+to this file's own detection mechanism, not to phpstan.py as a subject.
 """
 from __future__ import annotations
 
