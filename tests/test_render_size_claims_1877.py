@@ -465,15 +465,18 @@ def test_two_disagreeing_figures_are_refused(shipped_config) -> None:
 #: each with the reason. They are listed rather than omitted because a file
 #: absent from `REGISTERED_FILES` is indistinguishable from a file with nothing
 #: in it -- and these have something in them.
-UNCOVERED = (
-    ("_supertool.py:2575", "`ops` 47,254 and `ops-compact` 9,067, both pre-#1774",
-     "held by another lane when #1877 was implemented; the file was out of bounds"),
-    ("_supertool.py:17101", "`ops:full` 74,838",
-     "held by another lane when #1877 was implemented; the file was out of bounds"),
-    ("tests/test_ops_roster_1231.py:3,181,292",
-     "`ops` 47,254, `ops-compact` 9,067, `ops` ~47KB -- an undated docstring",
-     "tests/ was held by another lane when #1877 was implemented"),
-)
+#: #1887 re-walked all three rows this tuple used to carry. Two were already
+#: fixed by unrelated, later commits before #1887's own lane reached them:
+#: `_supertool.py:2575`'s comment was rewritten by d6c03b9e into a dated
+#: correction (see its own text), and `_supertool.py:17101`'s `74,838` figure
+#: is gone -- `git log -S"74,838" -- _supertool.py` finds it removed by
+#: 327eb74b. Neither is a row `SITES` can grade: both are prose beside a
+#: constant in a `.py` file, the same "nothing re-runs a comment" shape the
+#: `_supertool.py` correction itself names, so they are simply gone rather
+#: than replaced. `tests/test_ops_roster_1231.py:3`'s docstring was the one
+#: live instance and #1887 corrected it directly; it is not added here either,
+#: same reasoning -- it is prose beside a fixture, not a `SITES` claim.
+UNCOVERED: tuple = ()
 
 
 @pytest.mark.parametrize("site, states, why", UNCOVERED,

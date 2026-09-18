@@ -39,7 +39,10 @@ import supertool
 _ROOT = Path(__file__).resolve().parent.parent
 
 #: The SessionStart budget `hooks/session-start.sh` is written against.
-_SESSION_CAP = 7168
+#: Derived from the real constant rather than a copied literal (#1887): a
+#: hardcoded 7168 here outlived #2029 correcting the source to 10000 by
+#: several releases, silently testing against a stricter, wrong budget.
+_SESSION_CAP = supertool._HOOK_OUTPUT_CAP_BYTES
 
 
 # --- the SessionStart roster states the scope ------------------------------
@@ -65,7 +68,7 @@ def test_session_start_payload_still_fits_its_cap(shipped_config) -> None:
     """A bound on the disclosure above, not a pin on it.
 
     `hooks/session-start.sh` emits `introduction`, `output-format` and
-    `ops:roster` into a ~7KB budget. #1231 exists because that budget was
+    `ops:roster` into a ~10KB budget. #1231 exists because that budget was
     already blown once and the truncation hid whole op families.
     """
     payload = (supertool.op_introduction()
