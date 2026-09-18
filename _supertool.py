@@ -21550,12 +21550,14 @@ def _ops_argument_refusal(arg: str, op_name: str = "ops") -> str:
     arguments exist, in a tool whose rule is that an unrecognised token is
     refused rather than ignored.
 
-    Refused rather than made a filter. ``help:OP`` already answers the question
-    a filter would, and answers it with strictly more — full contract, semantics
-    and a worked example, against the listing's one line. A second lookup path
-    would also re-create this issue in miniature: ``ops:gh-labl`` matching
-    nothing renders identically to an op that does not exist, which is the
-    absence-as-answer defect the roster exists to remove.
+    Refused rather than made a filter for the three fixed modes below.
+    ``help:OP`` already answers what a filter on an *exact* name would, and
+    answers it with strictly more — full contract, semantics and a worked
+    example, against the listing's one line. A search across names, syntax
+    and descriptions is a different question, and `ops:grep=PATTERN` (#1318)
+    answers that one directly, disclosing `N of M matched` so a pattern that
+    matches nothing cannot render like an op that does not exist — the
+    absence-as-answer defect this function's own history is about.
     """
     if arg in _roster_classes():
         return (f"ERROR: `{op_name}` takes no filter, and '{arg}' is an op "
@@ -21567,9 +21569,96 @@ def _ops_argument_refusal(arg: str, op_name: str = "ops") -> str:
     return (f"ERROR: unknown argument to `{op_name}`: '{arg}'.\n"
             f"  Accepted: `ops` (every signature), `ops:full` (every "
             f"signature plus its description), `ops:roster` (every name plus "
-            f"its safety class), `ops-compact` (the capped listing).\n"
+            f"its safety class), `ops-compact` (the capped listing), "
+            f"`ops:grep=PATTERN` (rows whose name, syntax or description "
+            f"match PATTERN).\n"
             f"  '{arg}' is also not an op name loaded here — `ops:roster` "
             f"lists the ones that are.\n")
+
+
+def op_ops_filter(pattern: str) -> str:
+    """`ops:grep=PATTERN` — search the roster instead of piping it (#1318).
+
+    Three independent agents hit the same detour in one week: `ops` prints
+    the whole roster, piping it through `grep` is what the shipped
+    raw-command guard correctly blocks, and the only route left was a
+    redirect-to-a-temp-file workaround — the exact motion the guard exists
+    to prevent, reached by obeying it.
+
+    Matches op name, syntax and description — the description because that
+    is often the only place the words in "which op creates a file" actually
+    appear, even though bare `ops` withholds it by default (#1774). A matched
+    row is printed with its description regardless, since the match reason
+    would otherwise be invisible.
+
+    Reuses `_pattern_gate`, the one chokepoint every other pattern-taking op
+    goes through (#2574 did the same for `between`'s start/end), so the BRE
+    rewrite, the length cap and the ReDoS backtracking guard all apply here
+    too. `check_saturation=False`: the saturation refusal exists because a
+    pattern matching every line renders identically to an unfiltered read,
+    which is exactly the defect this op avoids a different way — by always
+    stating `N of M`, so `87 of 87 ops matched` is still an honest answer
+    rather than a silent full listing (the same reasoning #2573 gave `op_vim`
+    for opting out of the same check).
+
+    Always states the count, including `0 of M` — the issue's own requirement
+    — so an empty result can never be misread as a short roster.
+    """
+    effective, refusal, note = _pattern_gate(pattern, check_saturation=False)
+    if refusal:
+        return refusal
+    try:
+        rx = re.compile(effective, re.IGNORECASE)
+    except re.error as exc:
+        return f"ERROR: invalid pattern `{pattern}`: {exc}\n"
+
+    config = _load_config()
+    builtin_ops = config.get("builtin-ops", {})
+    custom_ops = config.get("ops", {})
+    alias_defs = config.get("aliases", {})
+
+    if not builtin_ops and not custom_ops and not alias_defs:
+        return (f"0 of 0 ops matched `{pattern}` — no descriptions "
+                f"configured in .supertool.json.\n")
+
+    marks = _roster_classes()
+
+    def _row(name: str, syntax: str, desc: str) -> str:
+        mark_ = _SAFETY_MARKERS.get(marks.get(name, "acts"), "!")
+        head_ = f"- `{syntax}`{(' ' + mark_) if mark_ else ''}"
+        return f"{head_} — {desc}" if desc else head_
+
+    entries: List[Tuple[str, str, str]] = []
+    for name, info in builtin_ops.items():
+        if not isinstance(info, dict) or not info.get("status", 1):
+            continue
+        entries.append((info.get("form") or name,
+                        info.get("syntax", name), info.get("description", "")))
+    for name, info in custom_ops.items():
+        if not isinstance(info, dict) or not info.get("status", 1):
+            continue
+        entries.append((name, info.get("syntax", f"{name}:PATH"),
+                        info.get("description", "")))
+    for name, info in alias_defs.items():
+        if not isinstance(info, dict) or not info.get("status", 1):
+            continue
+        entries.append((name, info.get("syntax", f"{name}:PATH"),
+                        info.get("description", "")))
+
+    total = len(entries)
+    matched = [(n, s, d) for n, s, d in entries
+              if rx.search(n) or rx.search(s) or rx.search(d)]
+    matched.sort(key=lambda t: t[0])
+
+    lines = [f"## Ops matching `{pattern}`\n"]
+    if note:
+        lines.append(note)
+    lines.append(f"{len(matched)} of {total} ops matched `{pattern}`.\n")
+    if matched:
+        lines.append(_CLASS_LEGEND)
+        for name, syntax, desc in matched:
+            lines.append(_row(name, syntax, desc))
+    return "\n".join(lines) + "\n"
 
 
 class OpOrigin(NamedTuple):
@@ -33428,6 +33517,16 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     # default. Named on the default listing's own footer, with
                     # the byte count it is asking the caller to spend.
                     body = op_ops(full=True)
+                elif ops_arg.startswith("grep=") and op == "ops":
+                    # #1318 — the one filter, scoped to bare `ops` the same
+                    # way roster/session/full are: `ops-compact:grep=X` still
+                    # falls to the refusal below, naming this token.
+                    grep_pattern = ops_arg[len("grep="):]
+                    if not grep_pattern:
+                        body = ("ERROR: `ops:grep=` needs a pattern after "
+                                "`grep=` — `ops:grep=PATTERN`.\n")
+                    else:
+                        body = op_ops_filter(grep_pattern)
                 else:
                     body = _ops_argument_refusal(ops_arg, op)
         else:
