@@ -19,7 +19,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import guard_main, skipped
-from spawnable import argv0, spawnable
+from spawnable import already_a_path, argv0, spawnable
 
 TOOL = "prettier-check"
 
@@ -148,10 +148,7 @@ def main() -> None:
     prettier_config = os.environ.get("PRETTIER_CONFIG", "")
     prettier_ignore_path = os.environ.get("PRETTIER_IGNORE_PATH", "")
 
-    if not spawnable(prettier_bin) and not (
-        pathlib.Path(prettier_bin).exists()
-        and os.access(prettier_bin, os.X_OK)
-    ):
+    if not spawnable(prettier_bin) and not already_a_path(prettier_bin):
         emit({
             "tool": "prettier-check", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
