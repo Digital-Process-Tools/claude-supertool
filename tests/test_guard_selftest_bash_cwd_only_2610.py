@@ -28,7 +28,23 @@ _spec = importlib.util.spec_from_file_location("guard_selftest_2610", _SELFTEST)
 selftest = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(selftest)
 
-TOOL = "bash"
+#: `bash_candidates()` always searches for the bare literal "bash" -- that
+#: is the string under test, not a fixture choice. What filename actually
+#: gets found by that search is platform-dependent, and this is the same
+#: mismatch `tests/test_which_excludes_cwd_2575.py` documents and fixes by
+#: naming its own probe `st-probe-2575.cmd`: CPython's `shutil.which()` on
+#: Windows only tries `cmd + ext` for `ext` in PATHEXT when `cmd` does not
+#: already end in a recognised extension -- for an extension-less search
+#: term like "bash" it builds `["bash.COM", "bash.EXE", "bash.BAT",
+#: "bash.CMD"]` and never tries the bare name at all. A shim literally
+#: named "bash" (no extension) is therefore invisible to a real Windows
+#: `shutil.which("bash")`, even though `which_excluding_cwd()`'s own loop
+#: (which always tries `ext=""` first) would find it fine -- planting the
+#: wrong filename would make this fixture's own precondition fail on
+#: Windows without ever reaching the guard under test, exactly as it did
+#: for #2575's first draft (see that file's own comment on the point).
+SEARCH_TERM = "bash"
+TOOL = SEARCH_TERM + ".cmd" if os.name == "nt" else SEARCH_TERM
 
 
 def _shim(d: "pathlib.Path") -> "pathlib.Path":
@@ -50,7 +66,7 @@ def test_a_bash_that_only_exists_in_cwd_is_not_the_first_candidate(
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + "/nonexistent-bin")
 
     import shutil
-    found = shutil.which(TOOL)
+    found = shutil.which(SEARCH_TERM)
     assert found is not None and os.path.abspath(found) == str(planted), (
         "fixture does not reproduce cwd-first resolution -- shutil.which() "
         "did not find the planted shim, so the assertion below tests nothing"
