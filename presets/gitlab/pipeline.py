@@ -130,7 +130,7 @@ def main() -> int:
     pipeline_id = sys.argv[1]
     mode = sys.argv[2].lower() if len(sys.argv) > 2 and sys.argv[2] else "full"
     if mode not in _FILTERS:
-        print(f"ERROR: unknown filter {mode!r} — use 'full', 'active', 'failed', or omit for the full board")
+        print(f"ERROR: unknown filter {mode!r} — use 'full', 'active', 'failed', 'traces', or omit for the full board")
         return 1
 
     # glab ci view doesn't support --output json directly for pipelines,
