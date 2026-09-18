@@ -116,6 +116,39 @@ def test_phpstan_missing_binary_emits_json(tmp_path: Path) -> None:
     assert "errors" in data
 
 
+def test_php_missing_binary_emits_json(tmp_path: Path) -> None:
+    """#2605 regression: if `php` itself cannot be resolved, the adapter
+    must decline with a descriptive `adapter` error -- the same third
+    state `test_phpstan_missing_binary_emits_json` already proves for
+    `phpstan_bin` -- rather than ever reaching `subprocess.run(["php", ...])`
+    with the bare, unresolved literal (#2605's own defect: `php` was never
+    gated or resolved through `spawnable()`/`argv0()` at all).
+
+    `PHPSTAN_BIN` is pointed at a real, absolute-path executable so the
+    *earlier* gate (`spawnable(phpstan_bin)`) passes cleanly and this test
+    exercises only the new `php` gate, not the pre-existing one.
+    """
+    f = tmp_path / "ok.php"
+    f.write_text("<?php\n$x = 1;\n")
+    dummy_phpstan = tmp_path / "phpstan_dummy"
+    dummy_phpstan.write_text("#!/bin/sh\n:\n")
+    dummy_phpstan.chmod(0o755)
+    env = {**os.environ,
+           "PATH": str(tmp_path / "empty-bin-2605"),
+           "PHPSTAN_BIN": str(dummy_phpstan)}
+    r = subprocess.run(
+        [sys.executable, str(PHPSTAN_PY), str(f)],
+        capture_output=True, text=True, timeout=adapter_budget(PHPSTAN_PY),
+        env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert data["tool"] == "phpstan"
+    assert_declined(data)
+    assert data["errors"][0]["msg"] == "php not found"
+    assert "errors" in data
+
+
 # ---------------------------------------------------------------------------
 # Hermetic adapter coverage — fake `php` shim emitting canned phpstan JSON.
 # Exercises the parse/aggregate path with no real phpstan/php, so coverage holds

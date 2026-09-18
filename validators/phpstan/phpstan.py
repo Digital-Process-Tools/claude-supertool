@@ -159,7 +159,25 @@ def main() -> None:
         })
         return
 
-    cmd = ["php", f"-d", f"memory_limit={phpstan_memory}", argv0(phpstan_bin), "analyse"]
+    # `php` itself needs the identical gate-and-resolve treatment as
+    # `phpstan_bin` above -- it was left as the bare literal "php" at argv[0]
+    # (#2605): the program subprocess.run below actually executes, with no
+    # `spawnable()`/`argv0()` lookup at all, while only phpstan_bin (placed
+    # at argv[2]) was routed through the cwd-excluding chokepoint. Since the
+    # spawn below passes no `cwd=`, the adapter inherits supertool's own
+    # cwd -- the repository under inspection -- so a repo-planted `php.exe`
+    # at the project root would be resolved ahead of the real interpreter
+    # on Windows (`spawnable.which_excluding_cwd`'s own docstring).
+    if not spawnable("php"):
+        emit({
+            "tool": "phpstan", "file": file, "ok": False, "count": 1,
+            "errors": [{"line": None, "col": None, "severity": "error",
+                        "code": "adapter", "msg": "php not found"}],
+            "duration_ms": 0,
+        })
+        return
+
+    cmd = [argv0("php"), "-d", f"memory_limit={phpstan_memory}", argv0(phpstan_bin), "analyse"]
     if phpstan_config:
         cmd += ["-c", phpstan_config]
     if phpstan_level:
