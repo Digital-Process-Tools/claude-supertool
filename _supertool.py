@@ -325,6 +325,11 @@ MAX_BATCH_OPS = 1000
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
 MAX_AUTOREAD_LINES = 60  # glob:/grep: auto-read line cap (#362) — a file under the
 # byte cap but with many lines still overshoots context; skip auto-read above this.
+FOOTER_ECHO_MIN_LINES = 60  # read:'s OFFSET/LIMIT window note is echoed at the foot
+# only above this many printed lines (#1777) — the same "a screen's worth of content"
+# figure as MAX_AUTOREAD_LINES above, reused rather than duplicated with a different
+# number. Below it, the established "one disclosure, above the body" contract from
+# #1489/#382 stays exactly as those tests pin it (48 printed lines in both).
 MAX_AROUND_BYTES = 16000  # per-op cap for around:/grep_around: context windows (#241)
 MAX_GREP_LINE_CHARS = 500  # per-line cap on grep output (#363) — one 25KB single-line
 # PHPDoc/@extends annotation used to eat a screenful for a single hit.
@@ -5804,15 +5809,22 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             skipped_by=("the grep= filter" if filter_regex
                         else "compact mode" if compact else ""))
         out.insert(1, window_note)
-        # Repeated at the foot, not only the head (#1777): the header copy is
-        # what a caller reading top-down sees first, but a window long enough
-        # to fill the context (`read:PATH:195:300`, a 189-line window in the
-        # reported case) pushes it off-screen before the content it corrects
-        # is even reached. The foot is what a caller who jumps to the tail of
-        # a long read actually lands on, so the same correction has to be
-        # there too — the identical string, not a shortened restatement, so
-        # the two copies cannot drift apart.
-        out.append(window_note)
+        # Repeated at the foot too, but only above FOOTER_ECHO_MIN_LINES
+        # printed lines (#1777): the header copy is what a caller reading
+        # top-down sees first, but a window long enough to fill the context
+        # (`read:PATH:195:300`, a 189-line window in the reported case)
+        # pushes it off-screen before the content it corrects is even
+        # reached. The foot is what a caller who jumps to the tail of a long
+        # read actually lands on, so the same correction has to be there too
+        # -- the identical string, not a shortened restatement, so the two
+        # copies cannot drift apart. Gated rather than unconditional: #1489
+        # and #382 already pin "one disclosure, above the body" for a window
+        # that fits on a screen (48 printed lines, neither test's window
+        # anywhere near this one's problem size), and an unconditional
+        # second copy broke that contract on CI for every offset>0 read,
+        # however small (review round found after this PR opened).
+        if printed > FOOTER_ECHO_MIN_LINES:
+            out.append(window_note)
     out.append("\n")
     return "".join(out)
 
