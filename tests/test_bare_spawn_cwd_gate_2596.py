@@ -188,14 +188,20 @@ def test_unset_path_falls_back_to_defpath(which_fn, tmp_path, monkeypatch) -> No
 
 @IMPLS
 def test_unset_path_fallback_still_excludes_cwd(which_fn, tmp_path, monkeypatch) -> None:
-    """The defpath fallback must not reopen the #2596 hole: a match that
-    exists only via cwd, with PATH unset, is still refused."""
-    planted = _shim(tmp_path)
+    """The defpath fallback must not reopen the #2596 hole. Unlike a bare
+    `is None` assertion (which the pre-#2603 code also satisfies, by never
+    even reaching the fallback -- self-review caught this as vacuous), this
+    puts a genuine match further down the fallback path so the three
+    possible answers are distinguishable: pre-#2603 code returns None
+    (never falls back at all); a fallback that forgot cwd-exclusion returns
+    the cwd-planted shim; only a correct fallback returns `real`."""
+    planted = _shim(tmp_path)  # the attacker's plant, at cwd
+    real = _shim(tmp_path / "realbin")
     monkeypatch.delenv("PATH", raising=False)
     monkeypatch.delattr(os, "confstr", raising=False)
-    monkeypatch.setattr(os, "defpath", str(tmp_path))
+    monkeypatch.setattr(os, "defpath", str(tmp_path) + os.pathsep + str(tmp_path / "realbin"))
     monkeypatch.chdir(tmp_path)
-    assert which_fn(TOOL) is None
+    assert which_fn(TOOL) == str(real)
     del planted
 
 
