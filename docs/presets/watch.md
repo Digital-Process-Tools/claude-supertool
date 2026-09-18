@@ -1679,8 +1679,11 @@ set it keeps getting silence no matter what `SUPERTOOL_WATCH_DESKTOP` says —
 the existing key means "never", and a key that means never must not be
 overridable by one that means "yes please".
 `watches` and `radar` both state a desktop configuration that departs from
-the default -- ON when opted in, OFF when opted out -- through
-`channel_disclosure()` rather than going quiet about it. The default itself
+the default -- ON when opted in and `osascript` resolves, a third state when
+opted in but `osascript` did not resolve (absent, or excluded by the cwd
+guard -- #2612, since `desktop_notify` itself would silently no-op right
+there), OFF when opted out -- through `channel_disclosure()` rather than
+going quiet about it. The default itself
 (neither knob set) stays silent: since #2544 flipped it to off, silence now
 means exactly one thing (off, nothing configured), the same way it used to
 mean exactly one thing (on) before the flip -- a line on every render

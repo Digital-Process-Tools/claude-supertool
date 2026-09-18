@@ -304,11 +304,31 @@ def test_channel_disclosure_says_nothing_extra_on_the_default(monkeypatch):
 
 
 def test_channel_disclosure_states_the_opted_in_state(monkeypatch):
+    """Opted in AND osascript resolves -- the will-fire state, not just the
+    env var being set (#2612): a disclosure keyed on the env var alone cannot
+    tell this apart from the unresolved case below."""
     monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
     monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    monkeypatch.setattr(transport, "which_excluding_cwd", lambda _n: "/usr/bin/osascript")
     blob = "\n".join(transport.channel_disclosure())
     assert transport.DESKTOP_ENV in blob, blob
     assert "ON" in blob, blob
+    assert "OFF" not in blob, blob
+
+
+def test_channel_disclosure_states_opted_in_but_osascript_unresolved(monkeypatch):
+    """#2612: opted in but `osascript` does not resolve must read as a third
+    state, not as ON -- `desktop_notify` itself no-ops right after this same
+    probe misses (transport.py:978-980), so an operator told ON here gets
+    silence forever with nothing in the receipt to explain why."""
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    monkeypatch.setattr(transport, "which_excluding_cwd", lambda _n: None)
+    blob = "\n".join(transport.channel_disclosure())
+    assert transport.DESKTOP_ENV in blob, blob
+    assert "osascript" in blob.lower(), blob
+    assert "no notification will fire" in blob.lower(), blob
+    assert "notifications are ON" not in blob, blob
     assert "OFF" not in blob, blob
 
 
