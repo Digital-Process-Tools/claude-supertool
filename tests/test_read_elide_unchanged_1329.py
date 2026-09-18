@@ -28,7 +28,17 @@ def elide_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return tmp_path
 
 
-def test_second_identical_read_is_elided_and_says_how_to_undo_it(elide_on: Path) -> None:
+def test_second_identical_read_is_elided_and_says_how_to_undo_it(
+    elide_on: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #2619: frozen for the same reason as
+    # test_the_environment_switch_turns_it_off below -- two back-to-back
+    # op_read() calls on real time.time() can see a backward clock step
+    # (NTP correction, VM clock skew under a loaded/parallel CI runner) that
+    # makes _read_elide's `0 <= now - prior[1]` guard correctly decline to
+    # elide, which this test's own assertion would then misread as a bug.
+    base = 1_755_000_000.0
+    monkeypatch.setattr(supertool.time, "time", lambda: base)
     f = elide_on / "a.py"
     f.write_bytes(b"x = 1\n" * 40)
     first = supertool.op_read(str(f))
@@ -153,7 +163,15 @@ def test_the_window_edge_is_inclusive_and_one_second_past_it_is_not(
         assert ("elided" in out) is elided, f"{name}: {out[:80]}"
 
 
-def test_full_never_elides_and_is_named_by_the_elision(elide_on: Path) -> None:
+def test_full_never_elides_and_is_named_by_the_elision(
+    elide_on: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #2619: same frozen-time treatment as the sibling tests in this file --
+    # unfrozen, this baseline elision assertion is exposed to a backward
+    # clock step between the two calls making _read_elide's `0 <=` guard
+    # correctly decline to elide.
+    base = 1_755_000_000.0
+    monkeypatch.setattr(supertool.time, "time", lambda: base)
     f = elide_on / "h.py"
     f.write_bytes(b"r = 4\n")
     supertool.op_read(str(f))
@@ -260,7 +278,29 @@ def test_a_missing_file_is_not_recorded_or_elided(elide_on: Path) -> None:
 def test_the_environment_switch_turns_it_off(
     elide_on: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """#2619: failed once under xdist (ubuntu-latest/3.11, popen-gw3) on the
+    baseline assertion below -- content came back on the second, still-unchanged
+    read, before the switch was even touched. No sibling-test state leak could
+    be found (session key, cache root and _CONFIG are all isolated per test),
+    but the two `op_read` calls here used real `time.time()`, unlike the
+    otherwise-identical pattern in `test_full_returns_content_and_rearms_the_window`
+    and `test_the_config_switch_turns_it_off` below, both already frozen for the
+    same class of race (#2354).
+
+    Reproduced directly: `_read_elide`'s guard is `0 <= now - prior[1] <=
+    window` -- deliberately conservative, so it declines to elide rather than
+    guess when the gap is negative. A backward step of the wall clock as small
+    as 50ms between the two calls (an NTP correction or VM clock skew under a
+    loaded, parallel CI runner is exactly the shape sibling tests were fixed
+    for) makes `now - prior[1]` negative and the elision is correctly refused
+    -- which is what this test's own assertion then reads as a failure of the
+    switch, when nothing about the switch was exercised yet. Freezing time
+    removes that wall-clock dependency, the same fix already applied to this
+    file's siblings.
+    """
     f = elide_on / "l.py"
+    base = 1_755_000_000.0
+    monkeypatch.setattr(supertool.time, "time", lambda: base)
     f.write_bytes(b"u = 7\n")
     supertool.op_read(str(f))
     # Establish the contrast first: without it, "content came back" is equally
@@ -268,6 +308,29 @@ def test_the_environment_switch_turns_it_off(
     assert "elided" in supertool.op_read(str(f))
     monkeypatch.setenv("SUPERTOOL_READ_NO_ELIDE", "1")
     assert "     1→u = 7" in supertool.op_read(str(f))
+
+
+def test_a_backward_clock_step_still_correctly_declines_to_elide(
+    elide_on: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive control for #2619: pins the guard the flake above actually hit.
+
+    `_read_elide`'s window check is `0 <= now - prior[1] <= window`, not just
+    `now - prior[1] <= window` -- the `0 <=` half declines rather than treating
+    a negative gap (the clock stepped backward between the two reads, e.g. an
+    NTP correction or VM clock skew) as "recent". Nothing pinned that half
+    before this. A file byte-identical to its last read still must not be
+    elided when the clock disagrees about which read was first.
+    """
+    f = elide_on / "l2.py"
+    f.write_bytes(b"u = 7\n")
+    base = 1_755_000_000.0
+    monkeypatch.setattr(supertool.time, "time", lambda: base)
+    supertool.op_read(str(f))
+    monkeypatch.setattr(supertool.time, "time", lambda: base - 0.05)
+    out = supertool.op_read(str(f))
+    assert "     1→u = 7" in out
+    assert "elided" not in out
 
 
 def test_the_config_switch_turns_it_off(
