@@ -60,6 +60,16 @@ def test_a_bash_that_only_exists_in_cwd_is_not_the_first_candidate(
     """The exploit shape: nothing legitimate is on PATH, only a cwd-planted
     shim resolves -- the fixture's own precondition proves raw
     `shutil.which()` would have found it before asserting the guard does not.
+
+    Comparisons below go through `os.path.normcase` (#2610 review, CI-caught:
+    4/4 windows-latest legs, `bash.CMD` vs `bash.cmd`). `shutil.which()` and
+    `which_excluding_cwd()` build the matched path by concatenating the
+    search term with a `PATHEXT` entry -- `os.environ.get("PATHEXT")` or the
+    default `".COM;.EXE;.BAT;.CMD"`, uppercase -- so the returned string
+    reads `bash.CMD` even though the file the case-insensitive Windows
+    filesystem actually matched is named `bash.cmd` on disk (`_shim()`
+    writes the lowercase name `TOOL` builds). The two strings name the same
+    file and differ only in case; a bare `==` does not know that.
     """
     planted = _shim(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -67,27 +77,35 @@ def test_a_bash_that_only_exists_in_cwd_is_not_the_first_candidate(
 
     import shutil
     found = shutil.which(SEARCH_TERM)
-    assert found is not None and os.path.abspath(found) == str(planted), (
+    found_norm = os.path.normcase(os.path.abspath(found)) if found else found
+    assert found is not None and found_norm == os.path.normcase(str(planted)), (
         "fixture does not reproduce cwd-first resolution -- shutil.which() "
         "did not find the planted shim, so the assertion below tests nothing"
     )
 
     candidates = selftest.bash_candidates({})
-    assert candidates[0] != str(planted) and candidates[0] != found, (
+    first_norm = os.path.normcase(candidates[0]) if candidates[0] else candidates[0]
+    same_as_planted = first_norm == os.path.normcase(str(planted))
+    same_as_found = first_norm == os.path.normcase(found)
+    assert not same_as_planted and not same_as_found, (
         "bash_candidates() put the cwd-only match first, so "
         "first_bash_that_runs_a_script() would spawn it directly (#2610)"
     )
 
 
 def test_a_real_path_entry_still_resolves_first(tmp_path, monkeypatch) -> None:
-    """Positive control: the guard must not blind the ordinary case."""
+    """Positive control: the guard must not blind the ordinary case.
+
+    `os.path.normcase` on both sides for the same reason as the test above.
+    """
     real_dir = tmp_path / "realbin"
     real = _shim(real_dir)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     monkeypatch.setenv("PATH", str(real_dir))
-    assert selftest.bash_candidates({})[0] == str(real)
+    first = selftest.bash_candidates({})[0]
+    assert os.path.normcase(first) == os.path.normcase(str(real))
 
 
 def test_the_report_says_when_the_cwd_guard_is_unavailable(monkeypatch) -> None:
