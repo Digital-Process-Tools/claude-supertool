@@ -128,3 +128,28 @@ def test_hint_stays_silent_past_a_dotted_key() -> None:
         "bad line no equals here\n"
     )
     assert supertool._toml_delimiter_hint(raw) == ""
+
+
+def test_hint_stays_silent_when_neither_closer_is_the_cause() -> None:
+    """CI finding on #2545 (second regression, caught after the dotted-key
+    fix landed): two entirely well-formed ''' blocks, EACH with its closer
+    alone on its own line -- the idiomatic way to end one -- followed by
+    one unrelated line that is simply bad TOML on its own. Neither closer
+    caused the failure, so neither may be named. The cross-line lookahead
+    must only fire when the closer has real content BEFORE it on its own
+    line (prose ending mid-sentence); a closer sitting alone on its line
+    is never the cause, however odd what follows looks.
+    """
+    raw = (
+        'path = "x.py"\n'
+        "old = '''\n"
+        "def f():\n"
+        "    return 1\n"
+        "'''\n"
+        "new = '''\n"
+        "def f():\n"
+        "    return 2\n"
+        "'''\n"
+        "this line is the unrelated syntax error\n"
+    )
+    assert supertool._toml_delimiter_hint(raw) == ""

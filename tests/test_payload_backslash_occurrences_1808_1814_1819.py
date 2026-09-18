@@ -378,7 +378,20 @@ def test_an_odd_delimiter_run_is_already_explained(tmp_path: Path) -> None:
     content quotes the delimiter cannot be pasted, and the reporter read the
     downstream TOML syntax error as unrecoverable. `_toml_delimiter_hint`
     (#394) already names the cause and both escapes; this asserts it, so the
-    ask is answered by evidence rather than by a second implementation."""
+    ask is answered by evidence rather than by a second implementation.
+
+    #2545 widened the structural check to also catch this exact shape --
+    the embedded run has real content before it on its own line ('quoting
+    the delimiter: ') -- so this now gets the SPECIFIC early-close message
+    naming the payload line/column, superseding the generic odd-count
+    fallback it used to fall through to. That is #1830's own stated
+    design ("the structural check leads and the parity one is kept behind
+    it"), not a behaviour change worth re-litigating: the odd-count
+    fallback is still pinned on its own by
+    test_two_delimiter_runs_inside_values_fire_the_hint's sibling tests in
+    tests/test_toml_delimiter_inside_value_1830.py, so #394's guarantee
+    (SOME explanation is given, never a bare parse error) is unaffected.
+    """
     target = tmp_path / "created.md"
     body = (
         "path = " + _toml_path(target) + NL
@@ -387,5 +400,6 @@ def test_an_odd_delimiter_run_is_already_explained(tmp_path: Path) -> None:
     )
     out = supertool.dispatch("paste:" + _payload(tmp_path, body))
     assert "ERROR" in out, out
-    assert "odd number of " + Q3 + " runs" in out, out
+    assert "closed the block early" in out, out
+    assert "payload line 3" in out, out
     assert not target.exists(), out

@@ -29660,9 +29660,28 @@ def _toml_delimiter_early_close(raw: str) -> int:
         rest = (raw[nxt:] if stop < 0 else raw[nxt:stop]).strip()
         if rest and not rest.startswith("#"):
             return run
-        beyond = _toml_skip_blank_and_comments(raw, nxt)
-        if beyond < len(raw) and not _TOML_NEXT_STATEMENT.match(raw, beyond):
-            return run
+        # Self-review (CI) finding, #2545: the cross-line walk below must NOT
+        # fire when the closing run sits ALONE on its own line -- that is the
+        # idiomatic way to end a legitimate multi-line block, and firing there
+        # means "some later, unrelated content in the payload does not parse"
+        # gets blamed on THIS closer with a specific (wrong) line/column.
+        # Reproduced against a payload with two entirely well-formed blocks
+        # followed by one unrelated bad line: both closers sit alone on their
+        # own line, and the real cause is neither of them.
+        #
+        # A closing run with real content BEFORE it on the same line (prose
+        # ending a sentence with the delimiter, `line two ends with a run '''`)
+        # has no such legitimate reading -- a literal block's closer is never
+        # idiomatically preceded by prose on its own line, so this is the
+        # signal that distinguishes "the run embedded in prose closed this
+        # block early" from "this block closed exactly where intended, and
+        # the payload breaks somewhere else entirely".
+        line_start = raw.rfind(chr(10), 0, run) + 1
+        before = raw[line_start:run]
+        if before.strip():
+            beyond = _toml_skip_blank_and_comments(raw, nxt)
+            if beyond < len(raw) and not _TOML_NEXT_STATEMENT.match(raw, beyond):
+                return run
         at = nxt
 
 
