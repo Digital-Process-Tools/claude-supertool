@@ -434,7 +434,13 @@ def test_main_survives_a_console_that_cannot_encode_the_render(monkeypatch):
 
     def _fake_compose(*args, **kwargs):
         return {
-            "plugin_identity": "could-not-resolve -- arrow glyph here",
+            # An actual non-cp1252-representable character, not the WORDS
+            # "arrow glyph" -- a first draft of this test used ASCII text
+            # describing the risk instead of a byte that reproduces it,
+            # which encoded to cp1252 without error and never exercised the
+            # except UnicodeEncodeError branch this test exists to pin
+            # (found on the second-pass review of this fix, #1985).
+            "plugin_identity": "could-not-resolve -- → not representable",
             "last_state_entry": "FAIL -- plugin not resolved",
             "pending_wait": "could-not-evaluate -- plugin not resolved",
             "plugin_identity_check": "could-not-tell -- plugin not resolved",
