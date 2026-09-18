@@ -124,25 +124,39 @@ FINDINGS_CEILING = 40
 
 # Files this issue's own fix leaves with residual findings, and why --
 # see the module docstring. A tracked `.md` file NOT in this set that
-# still has findings is what this test exists to catch.
+# still has findings is what this test exists to catch. Keyed by
+# (file, rule_id) rather than by file alone (#2598): a set of bare file
+# paths made a *second*, unrelated rule's finding in an already-exempted
+# file invisible to `test_known_residue_files_are_the_only_ones_left_with_findings`
+# -- only the aggregate FINDINGS_CEILING would ever have caught it, and
+# that had 13 findings of headroom. Populated from the rule codes actually
+# measured in each file as of #2598 (verified via the adapter directly).
 KNOWN_RESIDUE = {
-    "CHANGELOG.md",
-    ".claude/jit-context/paths/00-manual/changelog-d.md",
-    ".claude/jit-context/paths/01-oss/changelog-fragments.md",
+    ("CHANGELOG.md", "MD012"),
+    ("CHANGELOG.md", "MD022"),
+    ("CHANGELOG.md", "MD032"),
+    ("CHANGELOG.md", "MD049"),
+    (".claude/jit-context/paths/00-manual/changelog-d.md", "MD022"),
+    (".claude/jit-context/paths/00-manual/changelog-d.md", "MD023"),
+    (".claude/jit-context/paths/00-manual/changelog-d.md", "MD031"),
+    (".claude/jit-context/paths/01-oss/changelog-fragments.md", "MD046"),
 }
 
 
-def _lint_all_tracked_md() -> dict[str, int]:
+def _lint_all_tracked_md_with_rules() -> dict[str, dict]:
     """Run the shipped adapter directly against every tracked `.md` file,
-    the same way the issue's own measurement loop did. Returns {path: count}
-    for every file with at least one finding; a `skipped` verdict (no
-    markdownlint on PATH) is excluded rather than counted as zero, so a
-    missing tool cannot masquerade as a clean repo."""
+    the same way the issue's own measurement loop did. Returns
+    {path: {"count": N, "codes": {rule_id, ...}}} for every file with at
+    least one finding; a `skipped` verdict (no markdownlint on PATH) is
+    excluded rather than counted as zero, so a missing tool cannot
+    masquerade as a clean repo. Keeps each finding's own rule code (#2598)
+    so a residue exemption can be checked per (file, rule) rather than
+    swallowing every future rule that lands in an already-exempted file."""
     files = subprocess.run(
         ["git", "ls-files", "*.md"], capture_output=True, text=True, cwd=REPO,
         encoding="utf-8", errors="replace",
     ).stdout.splitlines()
-    per_file: dict[str, int] = {}
+    per_file: dict[str, dict] = {}
     for f in files:
         result = subprocess.run(
             [sys.executable, str(ADAPTER), f],
@@ -157,8 +171,33 @@ def _lint_all_tracked_md() -> dict[str, int]:
             continue
         count = data.get("count", 0)
         if count:
-            per_file[f] = count
+            codes = {
+                str(e.get("code", "")).split("/")[0]
+                for e in data.get("errors", [])
+            }
+            per_file[f] = {"count": count, "codes": codes}
     return per_file
+
+
+def _lint_all_tracked_md() -> dict[str, int]:
+    """Back-compat view of `_lint_all_tracked_md_with_rules`: {path: count}
+    for every file with at least one finding."""
+    return {f: v["count"] for f, v in _lint_all_tracked_md_with_rules().items()}
+
+
+def _residue_violations(per_file_rules: dict) -> set:
+    """Given {file: {rule codes seen}} (or the richer per-file dict
+    `_lint_all_tracked_md_with_rules` returns), return every (file, rule)
+    pair with findings that KNOWN_RESIDUE does not document. Pulled out as
+    a pure function so the #2598 regression can be pinned with synthetic
+    data rather than depending on markdownlint's real, changing output."""
+    unexpected = set()
+    for f, v in per_file_rules.items():
+        codes = v["codes"] if isinstance(v, dict) else v
+        for code in codes:
+            if (f, code) not in KNOWN_RESIDUE:
+                unexpected.add((f, code))
+    return unexpected
 
 
 def _markdownlint_absent_reason() -> str | None:
@@ -264,19 +303,38 @@ def test_markdownlint_positive_control_a_real_finding_is_still_caught() -> None:
 
 
 def test_known_residue_files_are_the_only_ones_left_with_findings() -> None:
-    """Pins the residue named in the module docstring to specific files,
-    so a *new* file joining the noisy set is a red here rather than
-    quietly padding out the ceiling above."""
+    """Pins the residue named in the module docstring to specific
+    (file, rule) pairs, so a *new* file, or a *new rule* inside an
+    already-exempted file (#2598), joining the noisy set is a red here
+    rather than quietly padding out the ceiling above."""
     absent = _markdownlint_absent_reason()
     if absent is not None:
         pytest.skip(
             "markdownlint not on PATH -- cannot verify the residue set, "
             f"see {absent}"
         )
-    per_file = _lint_all_tracked_md()
-    unexpected = set(per_file) - KNOWN_RESIDUE
+    per_file = _lint_all_tracked_md_with_rules()
+    unexpected = _residue_violations(per_file)
     assert not unexpected, (
-        "a tracked .md file outside the documented #2012 residue now has "
-        f"markdownlint findings: {sorted(unexpected)} -- either fix it or "
-        "add it to KNOWN_RESIDUE with a reason in this module's docstring"
+        "a tracked .md file has markdownlint findings outside the "
+        f"documented #2012/#2598 residue: {sorted(unexpected)} -- either "
+        "fix it or add the (file, rule) pair to KNOWN_RESIDUE with a "
+        "reason in this module's docstring"
+    )
+
+
+def test_a_new_rule_in_an_already_exempted_file_is_still_caught() -> None:
+    """The defect #2598 found: keying KNOWN_RESIDUE by file alone made a
+    *second*, unrelated rule's finding in an already-exempted file
+    invisible to the test above. Exercise the pure comparison directly
+    with synthetic data instead of depending on markdownlint's real,
+    changing output, so this runs on every platform with no
+    `_markdownlint_absent_reason` skip needed."""
+    exempted_file = next(iter({f for f, _rule in KNOWN_RESIDUE}))
+    known_rule = next(rule for f, rule in KNOWN_RESIDUE if f == exempted_file)
+    synthetic = {exempted_file: {"count": 2, "codes": {known_rule, "MD999-NOT-REAL"}}}
+    unexpected = _residue_violations(synthetic)
+    assert unexpected == {(exempted_file, "MD999-NOT-REAL")}, (
+        "a second, unrelated rule's finding in an already-exempted file "
+        f"must still be visible to the residue check: {unexpected}"
     )

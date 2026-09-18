@@ -83,35 +83,147 @@ def _calls_raw_which(tree: ast.AST) -> bool:
     return False
 
 
+CHOKEPOINT_ARG_FUNCS = {"spawnable", "argv0", "which_excluding_cwd", "resolve_bin_cmd", "already_a_path"}
+
+
+def _parent_map(tree: ast.AST) -> "dict[ast.AST, ast.AST]":
+    """Every node's immediate parent, since vanilla `ast` carries no
+    back-reference and finding an existence check's *enclosing* and-chain
+    (rather than only its direct siblings) needs one (#2606)."""
+    parents: "dict[ast.AST, ast.AST]" = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    return parents
+
+
+def _chokepoint_arg_names(tree: ast.AST) -> "set[str]":
+    """The variable name or literal string every
+    spawnable()/argv0()/which_excluding_cwd()/resolve_bin_cmd()/
+    already_a_path() call resolves -- what an existence check has to be
+    testing before it can be "the same gate", rather than an unrelated
+    file-existence check elsewhere in the adapter (#2606: widening the
+    existence-check walker to also catch a bare-imported spelling or a
+    missing and-chain, with no correlation to what is actually being
+    resolved, produced five false positives -- `cargo-check.py` checking
+    `Cargo.toml`, `go-vet.py` checking `go.mod`, etc.)."""
+    names: "set[str]" = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and node.args):
+            continue
+        fn = node.func
+        fname = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+        if fname not in CHOKEPOINT_ARG_FUNCS:
+            continue
+        arg0 = node.args[0]
+        if isinstance(arg0, ast.Name):
+            names.add(arg0.id)
+        elif isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+            names.add(arg0.value)
+    return names
+
+
+def _is_existence_call(node: ast.AST) -> bool:
+    """`X.exists()`/`X.is_file()`/`os.path.isfile(X)` (attribute style) OR
+    a bare `isfile(X)`/`exists(X)` reached via `from os.path import isfile`
+    (#2606 bullet 2 -- the old walker only ever recognised the attribute
+    spelling)."""
+    if not isinstance(node, ast.Call):
+        return False
+    fn = node.func
+    if isinstance(fn, ast.Attribute):
+        return fn.attr in ("exists", "isfile", "is_file")
+    if isinstance(fn, ast.Name):
+        return fn.id in ("exists", "isfile", "is_file")
+    return False
+
+
+def _existence_check_subject(node: ast.Call) -> "ast.expr | None":
+    """The expression an existence check actually tests: the sole
+    argument for `isfile(X)`/`os.path.isfile(X)`, or the receiver for
+    `X.exists()`/`X.is_file()` -- a method call, so what is being tested
+    is `fn.value`, not an argument (there is none)."""
+    fn = node.func
+    if isinstance(fn, ast.Attribute) and fn.attr in ("exists", "is_file") and not node.args:
+        return fn.value
+    if node.args:
+        return node.args[0]
+    return None
+
+
+def _mentions_any_name(expr: "ast.expr | None", names: "set[str]") -> bool:
+    """Does this subtree reference one of `names`, as either a bare
+    identifier or a matching string literal, anywhere inside it?"""
+    if expr is None:
+        return False
+    for n in ast.walk(expr):
+        if isinstance(n, ast.Name) and n.id in names:
+            return True
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in names:
+            return True
+    return False
+
+
+def _contains_dirname_call(node: ast.AST) -> bool:
+    """Is there a `dirname(...)` call (attribute OR bare-imported style)
+    anywhere in this subtree -- not only as a *direct* value of an
+    enclosing BoolOp? #2606 bullet 3: `bool(os.path.dirname(X)) and ...`
+    nests the dirname call one level down, inside `bool(...)`, and the
+    old walker -- which only inspected a BoolOp's immediate values -- read
+    that as an ungated existence check and flagged a safe expression."""
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Call):
+            continue
+        fn = n.func
+        if isinstance(fn, ast.Attribute) and fn.attr == "dirname":
+            return True
+        if isinstance(fn, ast.Name) and fn.id == "dirname":
+            return True
+    return False
+
+
 def _bare_existence_check_without_dirname_guard(tree: ast.AST) -> bool:
     """Does this file check `X.exists()`/`X.is_file()`/`os.path.isfile(X)`
-    alongside `os.access(X, os.X_OK)` in the same boolean expression with no
-    `os.path.dirname(X)` guard anywhere in that same expression (#2602)?
+    (or the bare-imported spelling of any of those) -- for the SAME name a
+    chokepoint call resolves -- with no `os.path.dirname(X)` guard
+    anywhere in its enclosing `and`-chain, or with no enclosing `and`-chain
+    at all (#2602, widened by #2606)?
 
     This is the second-disjunct shape #2575/#2579/#2581 never touched:
     `if not spawnable(X) and not (Path(X).exists() and os.access(X,
     os.X_OK)):`. A bare, separator-free name checked this way resolves
     relative to the current directory exactly like the raw `which()` call
     the first disjunct was already fixed to stop -- see
-    `spawnable._already_a_path`'s own docstring. Scoped to a single
-    `and`-chain (`ast.BoolOp`) rather than the whole file: that is the
-    actual shape of the gate at every site #2602 fixed, and it is what
-    lets the dirname guard and the existence check be told apart once
-    both are added to the same expression.
+    `spawnable._already_a_path`'s own docstring. Walks up to the nearest
+    *enclosing* `ast.BoolOp(And)` (via a parent map) rather than only
+    looking at a fixed set of direct siblings, so a dirname guard nested
+    inside `bool(...)` is still seen, and an existence check with no
+    surrounding `and` at all -- nothing could possibly guard it -- is
+    still flagged rather than silently passing for lack of a BoolOp to
+    inspect. Scoped to existence checks that mention a name a chokepoint
+    call in the SAME file also resolves: an adapter's unrelated
+    file-discovery existence check (does `Cargo.toml`/`go.mod` exist?) is
+    not a tool-presence gate at all and must not be flagged just for
+    lacking a dirname guard it was never a candidate for.
     """
+    chokepoint_names = _chokepoint_arg_names(tree)
+    if not chokepoint_names:
+        return False
+    parents = _parent_map(tree)
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And)):
+        if not _is_existence_call(node):
             continue
-        has_existence = False
-        has_dirname = False
-        for value in node.values:
-            if not (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)):
-                continue
-            if value.func.attr in ("exists", "isfile", "is_file"):
-                has_existence = True
-            if value.func.attr == "dirname":
-                has_dirname = True
-        if has_existence and not has_dirname:
+        subject = _existence_check_subject(node)
+        if not _mentions_any_name(subject, chokepoint_names):
+            continue
+        guard_scope = None
+        cur: ast.AST = node
+        while cur in parents:
+            cur = parents[cur]
+            if isinstance(cur, ast.BoolOp) and isinstance(cur.op, ast.And):
+                guard_scope = cur
+                break
+        if guard_scope is None or not _contains_dirname_call(guard_scope):
             return True
     return False
 
@@ -163,6 +275,16 @@ def _offenders() -> "list[str]":
 
 
 def test_no_gate_calls_raw_which_when_the_spawn_is_already_cwd_safe() -> None:
+    """Scope note (#2606): this register only checks whether a NAMED gate
+    expression (a raw `shutil.which()` call, or a bare existence check for
+    a name a chokepoint call also resolves) disagrees with a spawn already
+    routed through the chokepoint. It says nothing about a file's argv
+    construction directly -- a bare, entirely ungated literal at argv[0]
+    (no gate of any shape, the #2605 phpstan.py shape) is invisible to
+    this walker by design and is `tests/test_bare_argv0_construction_2605.py`'s
+    job instead. A green result here is "this adapter's own gate, if it
+    has one, agrees with its spawn" -- not "no bare-argv[0] literal exists
+    anywhere in this file"."""
     offenders = _offenders()
     assert not offenders, (
         "these adapters spawn through the cwd-excluding chokepoint "
@@ -288,6 +410,80 @@ def test_the_register_can_actually_see_the_defect() -> None:
     assert _calls_raw_which(tree), "the shutil.which() walker is blind"
     assert _uses_the_chokepoint_at_spawn_time(tree), (
         "the chokepoint-import walker is blind"
+    )
+
+
+def test_bare_imported_isfile_with_no_and_chain_is_caught() -> None:
+    """#2606 bullet 2: `from os.path import isfile; if isfile(X):`, with
+    no surrounding `and`-chain at all, was invisible to the old walker --
+    it only recognised an `ast.Attribute` call (`os.path.isfile(X)`)
+    inside an `ast.BoolOp(And)`. Neither holds here: `isfile` is a bare
+    `ast.Name` (imported directly) and there is no `and`-chain for a
+    dirname guard to ever live in.
+    """
+    vulnerable = (
+        "import subprocess\n"
+        "from os.path import isfile\n"
+        "from spawnable import argv0, spawnable\n"
+        "if not spawnable(TOOL):\n"
+        "    if not isfile(TOOL):\n"
+        "        absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(vulnerable)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert _bare_existence_check_without_dirname_guard(tree), (
+        "a bare, directly-imported isfile(X) with no and-chain at all "
+        "must still be caught"
+    )
+
+
+def test_bare_path_exists_with_no_and_chain_is_caught() -> None:
+    """#2606 bullet 2's other half: `if Path(X).exists():` alone, with no
+    surrounding `and`, was invisible because the old walker only ever
+    looked inside an `ast.BoolOp(And)`.
+    """
+    vulnerable = (
+        "import subprocess, pathlib\n"
+        "from spawnable import argv0, spawnable\n"
+        "if not spawnable(TOOL):\n"
+        "    if not pathlib.Path(TOOL).exists():\n"
+        "        absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(vulnerable)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert _bare_existence_check_without_dirname_guard(tree), (
+        "a bare Path(X).exists() with no surrounding and-chain at all "
+        "must still be caught"
+    )
+
+
+def test_a_dirname_call_nested_inside_bool_is_not_a_false_positive() -> None:
+    """#2606 bullet 3: the old walker only recognised a *direct* `.dirname`
+    attribute call among a BoolOp's immediate values, so
+    `bool(os.path.dirname(X)) and ...` -- the exact spelling
+    `spawnable._already_a_path` itself uses -- registered as an OFFENDER
+    even though the expression IS guarded.
+    """
+    fine = (
+        "import os, pathlib, subprocess\n"
+        "from spawnable import argv0, spawnable\n"
+        "if not spawnable(TOOL) and not (\n"
+        "    bool(os.path.dirname(TOOL)) and pathlib.Path(TOOL).exists()\n"
+        "    and os.access(TOOL, os.X_OK)\n"
+        "):\n"
+        "    absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(fine)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert not _bare_existence_check_without_dirname_guard(tree), (
+        "a dirname() call nested inside bool(...) still guards the "
+        "expression -- this must not be flagged as an offender"
     )
 
 
