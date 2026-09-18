@@ -74,27 +74,24 @@ not the only platform that can't answer.
 
 # `gh-branch` streak sentence -- "most recently" still conflates the arm it names (#2537)
 
-`poller.py`'s `UNKNOWN_CONFIRM_STREAK` branch fires when `raw_needs_guard = raw_is_no_run or
-raw_is_unread_jobs` has held for N consecutive polls -- two independent failure boundaries (an
-empty `gh run list`, a missing `gh run view --json jobs`) share one counter, so a streak crossing
-the threshold need not be homogeneous. The `raw_is_unread_jobs` arm was reworded to name its own
-cause ("...failed to establish a leg count, most recently because the job list did not come
-back"). The `else` arm (open, unfixed) still reads "...have now come back with an empty run
-list, most recently" -- grammatically that attributes an empty run list to every one of the N
-polls, not just the most recent one, the same conflation the `if` arm was fixed to avoid. A
-streak of [job-list miss, empty run list] hits this arm and tells the operator both polls
-returned empty when one did not, sending them to `gh run list` when the failing call was `gh run
-view --json jobs`.
+`poller.py`'s `UNKNOWN_CONFIRM_STREAK` fires when `raw_needs_guard = raw_is_no_run or
+raw_is_unread_jobs` has held N polls -- two independent boundaries (empty `gh run list`, missing
+`gh run view --json jobs`) share one counter, so a streak need not be homogeneous. The
+`raw_is_unread_jobs` arm now names its own cause ("...most recently because the job list did not
+come back"). The `else` arm (open, unfixed) still reads "...come back with an empty run list,
+most recently" -- grammatically attributing an empty run list to every one of the N polls, the
+same conflation the `if` arm was fixed to avoid. A [job-list miss, empty run list] streak hits
+this arm and tells the operator both polls came back empty, pointing them at `gh run list` when
+the failing call was `gh run view --json jobs`.
 
 # `github-pr-feed/poller.py:pr_only()` -- one `except Exception` covers two different failures (#2560)
 
-`pr_only()` wraps its whole tier-resolution in `except Exception: _pr_only_cache = []`, cached
-for the process lifetime. Justified in the docstring for a malformed `pr_exclude_events`
-("radar already validated it once") -- but the same bare `except` also swallows an `ImportError`
-loading the tier module, a missing `radar.py`, or a `read_tiers()` decode failure, none of which
-radar validated. On any of those, every per-PR poller this feed forks gets no event filter at
-all, silently and permanently, and `terminal_coverage(spawned=True)` then reports `pr_only()`'s
-`[]` as a *known* filter (operator configured no exclusions) rather than "could not tell" --
-same `[]` renders for both causes, no diagnostic either way. Narrow the `except` to what radar
-actually validates, or give the except path a distinct could-not-resolve state
-`terminal_coverage` can read as unknown.
+`pr_only()` wraps its tier-resolution in `except Exception: _pr_only_cache = []`, cached for the
+process lifetime. Justified for a malformed `pr_exclude_events` ("radar already validated it
+once") -- but the same bare `except` also swallows an `ImportError` loading the tier module, a
+missing `radar.py`, or a `read_tiers()` decode failure, none of which radar validated. Any of
+those silently and permanently drops the event filter on every per-PR poller this feed forks, and
+`terminal_coverage(spawned=True)` reports `pr_only()`'s `[]` as a *known* filter (operator
+configured no exclusions) rather than "could not tell" -- same `[]`, no diagnostic either way.
+Narrow the `except` to what radar actually validates, or give it a distinct could-not-resolve
+state `terminal_coverage` can read as unknown.

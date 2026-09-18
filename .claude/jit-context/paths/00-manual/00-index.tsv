@@ -14,6 +14,7 @@ presets/watch/	presets-watch.md
 presets/youtube/	presets-youtube.md
 /scratchpad/	scratchpad-collisions.md
 tests/	tests-suite.md
+validators/	validators-spawnable.md
 validators/	validators.md
 .claude-plugin/|pyproject.toml	version-sites.md
 \.claude/jit-context/vocabulary/	vocabulary-index.md
