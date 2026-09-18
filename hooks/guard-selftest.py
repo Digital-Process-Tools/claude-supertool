@@ -59,6 +59,17 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "validators", "common"))
+try:
+    from spawnable import which_excluding_cwd  # noqa: E402
+except ImportError:
+    # Degrade to the pre-#2610 behaviour rather than crash a diagnostic that
+    # exists to run on hosts with the least tooling: `validators/common/` is
+    # shipped alongside `hooks/` in every normal install, but a partial or
+    # unusual layout should not turn a self-test into a traceback.
+    which_excluding_cwd = shutil.which
+
 #: One string a candidate has to print exactly. Same shape as the interpreter
 #: ladder's probe and for the same reason: exiting 0 is a property of every
 #: binary on the box.
@@ -73,13 +84,23 @@ _BACKSLASH = chr(92)
 
 
 def bash_candidates(environ=None):
-    """Where a bash that runs scripts might be, most likely first."""
+    """Where a bash that runs scripts might be, most likely first.
+
+    The first entry is resolved through `which_excluding_cwd()`, not raw
+    `shutil.which()` (#2610): on Windows, `shutil.which()` inserts the
+    current directory ahead of every real `PATH` entry, so a repo-planted
+    `bash.exe`/`bash.cmd` at cwd root would be resolved here. Because this
+    script's whole premise is diagnosing a host with no real bash, a planted
+    file may be the ONLY candidate that resolves, rather than merely
+    shadowing a real one -- and `first_bash_that_runs_a_script` below spawns
+    each candidate directly, with no further gate of its own.
+    """
     environ = os.environ if environ is None else environ
     override = environ.get(_CANDIDATES_ENV)
     if override is not None:
         return [part for part in override.split(os.pathsep) if part]
     git_bin = "C:" + _BACKSLASH + "Program Files" + _BACKSLASH + "Git"
-    return [shutil.which("bash"),
+    return [which_excluding_cwd("bash"),
             git_bin + _BACKSLASH + "bin" + _BACKSLASH + "bash.exe",
             git_bin + _BACKSLASH + "usr" + _BACKSLASH + "bin"
             + _BACKSLASH + "bash.exe",
