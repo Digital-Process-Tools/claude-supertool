@@ -169,8 +169,11 @@ def test_bin_resolve_spawnable_falls_back_to_the_bare_name(
 
 def test_an_explicit_path_is_never_routed_through_the_guard(
         tmp_path, monkeypatch) -> None:
-    """`name` already containing a directory carries no cwd risk -- it
-    never touches PATH at all -- and must resolve exactly as before.
+    """An **absolute** `name` (as tested here, `tmp_path` is always
+    absolute) carries no cwd risk -- it never touches PATH at all -- and
+    must resolve exactly as before. A relative directory component is a
+    different, deliberately-allowed case not covered by this fixture
+    (#2613).
     """
     exe = _shim(tmp_path / "explicit")
     monkeypatch.chdir(tmp_path)
