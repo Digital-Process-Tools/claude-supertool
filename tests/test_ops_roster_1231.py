@@ -1,10 +1,18 @@
 """#1231 — a names+safety roster that fits the SessionStart cap.
 
-`ops` is 47,254 bytes and `ops-compact` is 9,067 against a ~7,168-byte cap, so
-the startup listing is truncated *today* and everything alphabetically after
-`grep` is hidden — the whole `gh-*` and `git-*` families, `radar`, `watch`.
-What was lost was **existence**, and a reader cannot miss what they do not know
-to look for.
+**Every figure this docstring stated was wrong, and #1887 is the record of it.**
+It said "`ops` is 47,254 bytes and `ops-compact` is 9,067 against a
+~7,168-byte cap, so the startup listing is truncated *today* and everything
+alphabetically after `grep` is hidden". Measured on 2026-09-18: `ops` 4,710
+bytes, `ops-compact` 18,510 bytes, cap 10,000 — the `ops` figure predates
+#1774 moving the descriptions out of `ops` into `ops:full`, and 47,254 is
+roughly what `ops:full` costs today. Nothing here graded it: this is prose
+beside a fixture, and `tests/test_render_size_claims_1877.py` does not open
+this file, so a stale docstring sat undetected while the assertions below it
+kept passing.
+
+What stands unchanged is the defect this file is about. What was lost was
+**existence**, and a reader cannot miss what they do not know to look for.
 
 A roster of every name fits in ~1KB. But a name alone is only actionable for an
 op you may probe: `between:FILE:747:820` teaches its own signature from its
