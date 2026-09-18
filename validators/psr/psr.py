@@ -22,7 +22,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import guard_main
-from spawnable import argv0, spawnable
+from spawnable import already_a_path, argv0, spawnable
 
 
 def emit(obj: dict) -> None:
@@ -63,7 +63,7 @@ def main() -> None:
     psr_extensions = os.environ.get("PSR_EXTENSIONS", "php")
 
     # Guard: binary must exist
-    if not spawnable(psr_bin) and not (pathlib.Path(psr_bin).exists() and os.access(psr_bin, os.X_OK)):
+    if not spawnable(psr_bin) and not already_a_path(psr_bin):
         emit({
             "tool": "psr", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",

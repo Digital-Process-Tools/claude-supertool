@@ -146,6 +146,20 @@ def _already_a_path(name: str) -> bool:
     return bool(os.path.dirname(name)) and os.path.isfile(name) and os.access(name, os.X_OK)
 
 
+def already_a_path(name: str) -> bool:
+    """Public alias of `_already_a_path` (#2602).
+
+    Seven adapter gates each reimplemented this check inline as
+    `Path(X).exists() and os.access(X, os.X_OK)` -- with no dirname guard,
+    so a bare separator-free name resolved relative to the current
+    directory exactly like the `which()` curdir insertion this module
+    exists to stop (#2575 fixed the first disjunct of those same gates,
+    `shutil.which` -> `spawnable`, and left this second one behind). Call
+    this instead of duplicating the check.
+    """
+    return _already_a_path(name)
+
+
 def argv0(name: str) -> str:
     """The spawnable form of `name`, or `name` unchanged when it is absent.
 

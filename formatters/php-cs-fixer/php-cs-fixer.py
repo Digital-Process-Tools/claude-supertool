@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "validators" / "common"))
 from refusal import guard_main  # noqa: E402
 from bin_resolve import describe_unresolved, resolve_bin_cmd  # noqa: E402
-from spawnable import spawnable  # noqa: E402
+from spawnable import already_a_path, spawnable  # noqa: E402
 from line_diff import line_diff as _line_diff  # noqa: E402
 
 
@@ -58,9 +58,7 @@ def main() -> None:
     phpcsfixer_bin = bin_cmd[0]
     phpcsfixer_config = os.environ.get("PHPCSFIXER_CONFIG", "")
 
-    if not spawnable(phpcsfixer_bin) and not (
-        os.path.isfile(phpcsfixer_bin) and os.access(phpcsfixer_bin, os.X_OK)
-    ):
+    if not spawnable(phpcsfixer_bin) and not already_a_path(phpcsfixer_bin):
         emit({
             "tool": "php-cs-fixer", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
