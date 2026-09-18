@@ -587,7 +587,8 @@ def bits_not_enforced(monkeypatch: pytest.MonkeyPatch):
     regression test that finds the next one the same expensive way.
     """
     for mod in _module_aliases("_publish_safety", _publish_safety):
-        monkeypatch.setattr(mod, "_mode_bits_are_enforced", lambda: False)
+        monkeypatch.setattr(mod, "_mode_bits_are_enforced",
+                             lambda *a, **k: False)
 
 
 def test_a_token_file_is_usable_where_mode_bits_are_not_enforced(

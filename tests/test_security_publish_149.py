@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -174,7 +175,7 @@ class TestTokenFileMode:
         the way CI just did.
         """
         monkeypatch.setattr(_publish_safety, "_mode_bits_are_enforced",
-                            lambda: False)
+                            lambda *a, **k: False)
         tok = tmp_path / "tok"
         tok.write_text("SECRET")
         tok.chmod(0o644)
@@ -223,3 +224,67 @@ class TestTokenFileMode:
     def test_missing_file_noop(self, tmp_path):
         # No raise — caller surfaces the right error.
         _publish_safety.check_token_file_mode(tmp_path / "missing")
+
+    def test_probe_is_created_next_to_the_credential_not_in_tmpdir(
+            self, tmp_path, monkeypatch):
+        """#2597: the probe must measure the credential's own filesystem.
+
+        `tempfile.mkstemp()` with no `dir=` lands in `TMPDIR`, which can be
+        a different mount (exFAT/FAT/SMB, a container `/tmp`) than wherever
+        the credential actually lives. A real chmod on the credential's own
+        directory is the only thing worth asking the question about.
+        """
+        _publish_safety._mode_bits_are_enforced.cache_clear()
+        cred_dir = tmp_path / "creds"
+        cred_dir.mkdir()
+        tok = cred_dir / "tok"
+        tok.write_text("SECRET")
+        tok.chmod(0o644)
+
+        seen_dirs = []
+        real_mkstemp = tempfile.mkstemp
+
+        def spy_mkstemp(*args, **kwargs):
+            seen_dirs.append(kwargs.get("dir"))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
+        # Ask (and cache) the enforcement verdict for THIS directory first,
+        # so the assertion below is gated on what this filesystem actually
+        # does rather than assuming enforcement -- Windows does not (see
+        # `test_a_loose_mode_is_a_warning_where_the_bits_are_not_enforced`
+        # and this module's own docstring), and an ungated `SystemExit`
+        # assertion here would be exactly the kind of platform-vacuous test
+        # this file's class docstring already warns about (#227).
+        enforced = _publish_safety._mode_bits_are_enforced(str(cred_dir))
+        if enforced:
+            with pytest.raises(SystemExit):
+                _publish_safety.check_token_file_mode(tok)
+        else:
+            _publish_safety.check_token_file_mode(tok)  # must NOT raise
+        assert seen_dirs and seen_dirs[0] == str(cred_dir), (
+            f"probe was created in {seen_dirs!r}, not the credential's own "
+            f"directory {cred_dir} -- the filesystem judged is not the one "
+            "the credential lives on")
+
+    def test_probe_falls_back_and_reports_when_credential_dir_is_unusable(
+            self, tmp_path, monkeypatch, capsys):
+        """The fallback (#2597's own fix shape) must be visible, not silent.
+
+        A credential path whose directory does not exist (or is not
+        writable) cannot be probed there -- falling back to the old TMPDIR
+        behaviour is fine, but doing so without saying so reproduces the
+        exact silent-mismeasurement defect this issue is about.
+        """
+        _publish_safety._mode_bits_are_enforced.cache_clear()
+        missing_dir_tok = tmp_path / "does-not-exist" / "tok"
+
+        # The file itself doesn't need to exist for the probe-dir choice to
+        # be made, and `_probe_dir_for` never touches `tempfile.mkstemp`
+        # itself -- exercise the helper directly, with no mock needed.
+        chosen = _publish_safety._probe_dir_for(missing_dir_tok)
+        assert chosen != str(missing_dir_tok.parent)
+        err = capsys.readouterr().err
+        assert "cannot probe" in err or "falling back" in err, (
+            "the fallback away from the credential's own directory must be "
+            "reported, not silently swallowed")

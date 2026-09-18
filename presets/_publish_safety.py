@@ -375,26 +375,51 @@ def apply_disclosure(body: str, *, max_len: Optional[int] = None) -> tuple[str, 
 
 # --- token file mode check -----------------------------------------------
 
-@functools.lru_cache(maxsize=1)
-def _mode_bits_are_enforced() -> bool:
+def _probe_dir_for(path) -> str:
+    """Directory to probe for mode-bit enforcement, given a credential path.
+
+    The credential's own directory when it exists and is writable -- that
+    is the filesystem the answer actually needs to be about (#2597).
+    Falling back to the system temp directory is fine when that directory
+    is missing or not writable, but it is reported rather than silently
+    swallowed: a silent fallback reproduces the exact defect this exists
+    to fix, just one call removed.
+    """
+    candidate = os.path.dirname(os.fspath(path)) or "."
+    if os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+        return candidate
+    sys.stderr.write(
+        f"WARNING: cannot probe mode-bit enforcement in {candidate!r} "
+        "(missing or not writable) -- falling back to the system temp "
+        "directory, which may disagree with the credential's own "
+        "filesystem.\n"
+    )
+    return tempfile.gettempdir()
+
+
+@functools.lru_cache(maxsize=None)
+def _mode_bits_are_enforced(probe_dir=None) -> bool:
     """Does this filesystem keep the permission bits `chmod` is handed?
 
-    Asked of the filesystem, once per process, rather than read off
-    `os.name`. Windows is the platform that answers no today -- CPython
-    synthesises `0o666` (or `0o444` when the read-only attribute is set)
-    for every file and `os.chmod` cannot change that -- but the question
-    worth asking is about the filesystem in front of us, not its vendor:
-    `tests/_symlink.py` spends its whole docstring on what a hardcoded
-    platform name costs, and a FAT volume mounted under Linux gives the
-    same answer for the same reason.
+    Asked of the filesystem, once per (process, probe_dir) pair, rather
+    than read off `os.name`. Windows is the platform that answers no
+    today -- CPython synthesises `0o666` (or `0o444` when the read-only
+    attribute is set) for every file and `os.chmod` cannot change that --
+    but the question worth asking is about the filesystem in front of us,
+    not its vendor: `tests/_symlink.py` spends its whole docstring on what
+    a hardcoded platform name costs, and a FAT volume mounted under Linux
+    gives the same answer for the same reason.
 
-    A probe file in the system temp directory, not next to the credential:
-    creating and chmod-ing a scratch file inside somebody's `~/.config`
-    every time a token is read is a side effect a checker has no business
-    having.
+    `probe_dir` defaults to `None`, meaning `tempfile.gettempdir()` --
+    the old, direction-agnostic answer, kept as the default so a caller
+    with no specific credential in mind still gets an answer. A caller
+    that DOES have one (`check_token_file_mode`) passes the credential's
+    own directory via `_probe_dir_for`, because a probe file created in
+    `TMPDIR` answers a question about the wrong mount when `TMPDIR` and
+    the credential's directory are not the same filesystem (#2597).
     """
     try:
-        fd, probe = tempfile.mkstemp()
+        fd, probe = tempfile.mkstemp(dir=probe_dir)
     except OSError:
         return False
     os.close(fd)
@@ -441,7 +466,7 @@ def check_token_file_mode(path: Path) -> None:
     mode = stat.S_IMODE(st.st_mode)
     if not mode & 0o077:
         return
-    if not _mode_bits_are_enforced():
+    if not _mode_bits_are_enforced(_probe_dir_for(path)):
         sys.stderr.write(
             f"WARNING: could not verify the permissions on {path} -- this "
             f"filesystem reports {oct(mode)} for every file and does not "
