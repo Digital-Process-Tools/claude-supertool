@@ -2,23 +2,20 @@
 sweep, left out of PR #1313 because each needs a person to decide intent
 rather than a mechanical fix.
 
-Neither is settled here either. Both pins below record the CURRENT behaviour
-as undecided-but-real, per #1315's own closing line: "if you cannot settle
-one, say so and pin the current behaviour with a test that names it as
-undecided rather than as intended." The reasons neither was settled in this
-pass are recorded case by case.
+## 1. `gl-pipeline:ID:full` — SETTLED
 
-## 1. `gl-pipeline:ID:full`
-
-`presets/gitlab/pipeline.py` accepts `full` as a third segment (`_FILTERS =
-{"full", "active", "failed", "traces"}`) and its own refusal message never
-offers it ("use 'active', 'failed', or omit for the full board"). Fixing
-either side of that (the refusal text, or `presets/gitlab.json`'s `syntax` /
-`description`) means editing `presets/gitlab/pipeline.py` and/or
-`presets/gitlab.json` — both held by a concurrent lane (#1796) at the time
-this issue was worked, confirmed via `lane_setup.py --derive-held`. Editing a
-file another live lane holds is exactly what this developer's brief forbids,
-so this pins the current, contested behaviour instead of fixing it.
+Was pinned as undecided-but-real here because `presets/gitlab/pipeline.py`
+and `presets/gitlab.json` were held by a concurrent lane (#1796) when this
+issue was first worked. A later pass declared `full` explicitly in both the
+`syntax` string and the refusal text (see `presets/gitlab.json`'s `gl-pipeline`
+entry and the refusal message in `pipeline.py`'s `main()`) rather than
+rejecting it — the two pin tests that lived here
+(`test_gl_pipeline_accepts_full_but_its_own_refusal_never_offers_it` and
+`test_gitlab_json_syntax_still_omits_full_as_a_spellable_token`) are removed
+because they asserted the pre-fix state and are superseded by
+`tests/test_registry_declares_1315.py::test_gl_pipeline_syntax_declares_full_token`
+and `tests/test_gitlab_pipeline.py::test_unknown_filter_names_full_as_valid_token`
+/ `test_full_explicit_token_matches_omission`.
 
 ## 2. `mcp_stop:--all`
 
@@ -50,40 +47,6 @@ def _load(relpath: str, name: str):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def test_gl_pipeline_accepts_full_but_its_own_refusal_never_offers_it() -> None:
-    """Pin, not endorse: `full` dispatches, and the refusal text a caller who
-    guessed wrong actually reads never tells them it exists."""
-    pipe = _load("presets/gitlab/pipeline.py", "gitlab_pipeline_1315")
-    assert "full" in pipe._FILTERS
-    assert "active" in pipe._FILTERS and "failed" in pipe._FILTERS
-
-    # The refusal text is read straight from source rather than triggered via
-    # main(), because triggering it needs a live `glab` call this test does
-    # not want to make; the string itself is the thing under test.
-    src = (REPO_ROOT / "presets/gitlab/pipeline.py").read_text(encoding="utf-8")
-    assert "use 'active', 'failed', or omit for the full board" in src, (
-        "the refusal text moved — re-check whether it now names 'full' "
-        "explicitly, which would settle this half of #1315"
-    )
-    assert "'full'" not in src.split("use 'active'")[1].split("\n")[0], (
-        "the refusal text now names 'full' explicitly — #1315 instance 1 "
-        "may be settled; update this test and its docstring"
-    )
-
-
-def test_gitlab_json_syntax_still_omits_full_as_a_spellable_token() -> None:
-    """The JSON manifest's own `syntax` string for `gl-pipeline` is the other
-    surface of the same disagreement, and it is likewise unresolved here —
-    `presets/gitlab.json` is contested with a concurrent lane."""
-    import json
-    raw = json.loads((REPO_ROOT / "presets/gitlab.json").read_text(encoding="utf-8"))
-    syntax = raw["ops"]["gl-pipeline"]["syntax"]
-    assert "full" not in syntax, (
-        "presets/gitlab.json now names 'full' in gl-pipeline's syntax — "
-        "#1315 instance 1 may be settled; update this test and its docstring"
-    )
 
 
 def test_mcp_stop_dash_dash_all_and_mcp_stop_all_reach_the_identical_code_path() -> None:

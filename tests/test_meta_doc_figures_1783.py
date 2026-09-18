@@ -131,3 +131,50 @@ def test_the_footer_reports_the_render_and_the_doc_quotes_the_difference(
         "not this assertion relaxed")
     assert f"{descriptions:,}" in _meta(), (
         f"meta.md does not quote the descriptions' cost ({descriptions:,})")
+
+
+def test_no_other_figure_claims_a_different_descriptions_cost(
+        shipped_config) -> None:
+    """Item 6, continued (#1315 round 4). The sibling test above only checks
+    that the *correct* figure appears SOMEWHERE in the file -- it says
+    nothing about a *second*, independent quotation of the same number
+    going stale on its own. That happened: `ops`'s table row states the
+    descriptions' cost once (line 11), and the "How far it moves, measured"
+    paragraph (line ~306) restates it in prose -- "giving N bytes of
+    description at either path" -- and it drifted to 82,402 while the row
+    above it had already been corrected to 82,738, invisible to
+    `test_the_footer_reports_the_render_and_the_doc_quotes_the_difference`
+    because that test never looks for a *wrong* value, only for the right
+    one's presence.
+
+    So this test does the other half: find every "<N> bytes" figure in the
+    file whose surrounding sentence also talks about "description[s]", and
+    require every one of them to be the single live number. A dated
+    historical record ("Measured in this checkout ... 74,114 bytes") does
+    not match, because "descriptive" is not "description" as a substring --
+    confirmed directly rather than assumed, since that is exactly the kind
+    of near-miss this pattern needs to get right.
+    """
+    text = _meta()
+    body = supertool.op_ops()
+    full = supertool.op_ops(full=True)
+    descriptions = len(full.encode("utf-8")) - len(body.encode("utf-8"))
+    expected = f"{descriptions:,}"
+
+    claims = []
+    for m in re.finditer(r"(\d{1,3}(?:,\d{3})*)\s+bytes", text):
+        window = text[max(0, m.start() - 80):m.end() + 80]
+        if "description" in window.lower():
+            claims.append(m.group(1))
+
+    assert claims, (
+        "meta.md no longer states any '<N> bytes ... description' figure -- "
+        "either the sentence was reworded (update this pattern) or the claim "
+        "was deleted (then delete this test)")
+    wrong = sorted(set(claims) - {expected})
+    assert not wrong, (
+        f"meta.md states {wrong} bytes for the descriptions' cost somewhere "
+        f"in the file, but the live figure is {expected} -- a duplicate "
+        f"quotation of this number went stale independently of the one "
+        f"test_the_footer_reports_the_render_and_the_doc_quotes_the_difference "
+        f"checks")

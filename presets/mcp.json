@@ -22,7 +22,7 @@
       "safety": "acts",
       "cmd": "{python} {path}mcp/stop.py {args}",
       "timeout": 30,
-      "description": "Stop MCP daemon SERVER_NAME. SIGTERM, SIGKILL after 3s.",
+      "description": "Stop MCP daemon SERVER_NAME. SIGTERM, SIGKILL after 3s. `mcp_stop:--all` also reaches the same stop-everything code path as mcp_stop_all (#1315), but mcp_stop_all is the canonical spelling -- use that one directly rather than passing --all as a SERVER_NAME here.",
       "syntax": "mcp_stop:SERVER_NAME",
       "example": "mcp_stop:php-lsp"
     },
@@ -30,7 +30,7 @@
       "safety": "acts",
       "cmd": "{python} {path}mcp/stop.py --all",
       "timeout": 60,
-      "description": "Stop every supertool MCP daemon.",
+      "description": "Stop every supertool MCP daemon. Canonical op for this (#1315) -- mcp_stop:--all reaches the identical code path but is an undeclared alias, not a separate mode.",
       "syntax": "mcp_stop_all",
       "example": "mcp_stop_all"
     }
