@@ -75,8 +75,8 @@ def _calls_raw_which(tree: ast.AST) -> bool:
 
 
 def _bare_existence_check_without_dirname_guard(tree: ast.AST) -> bool:
-    """Does this file check `X.exists()`/`os.path.isfile(X)` alongside
-    `os.access(X, os.X_OK)` in the same boolean expression with no
+    """Does this file check `X.exists()`/`X.is_file()`/`os.path.isfile(X)`
+    alongside `os.access(X, os.X_OK)` in the same boolean expression with no
     `os.path.dirname(X)` guard anywhere in that same expression (#2602)?
 
     This is the second-disjunct shape #2575/#2579/#2581 never touched:
@@ -98,7 +98,7 @@ def _bare_existence_check_without_dirname_guard(tree: ast.AST) -> bool:
         for value in node.values:
             if not (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)):
                 continue
-            if value.func.attr in ("exists", "isfile"):
+            if value.func.attr in ("exists", "isfile", "is_file"):
                 has_existence = True
             if value.func.attr == "dirname":
                 has_dirname = True
@@ -197,6 +197,31 @@ def test_the_register_catches_a_bare_existence_gate_with_no_dirname_guard() -> N
     assert not _calls_raw_which(tree), (
         "this fixture must not also trip the OLD detector -- it is "
         "testing the NEW one in isolation"
+    )
+
+
+def test_the_is_file_spelling_is_also_caught() -> None:
+    """`pathlib.Path.is_file()` is a third spelling of the same existence
+    check `.exists()`/`os.path.isfile()` already cover -- auditor finding
+    on #2602's own review: the walker originally recognised only
+    `("exists", "isfile")` and a future adapter reintroducing the pattern
+    spelled `Path(X).is_file()` would have gone unseen.
+    """
+    vulnerable = (
+        "import os, pathlib, subprocess\n"
+        "from spawnable import argv0, spawnable\n"
+        "if not spawnable(TOOL) and not (\n"
+        "    pathlib.Path(TOOL).is_file() and os.access(TOOL, os.X_OK)\n"
+        "):\n"
+        "    absent()\n"
+        "cmd = [argv0(TOOL)]\n"
+        "subprocess.run(cmd)\n"
+    )
+    tree = ast.parse(vulnerable)
+    assert _uses_the_chokepoint_at_spawn_time(tree)
+    assert _bare_existence_check_without_dirname_guard(tree), (
+        "the walker still cannot see the .is_file() spelling of the same "
+        "bare existence check"
     )
 
 
