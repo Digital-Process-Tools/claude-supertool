@@ -41,8 +41,11 @@ def which_excluding_cwd(name: str) -> "str | None":
     docstring) and pinned equal to it, and to `_supertool.py`'s own copy, by
     `tests/test_bare_spawn_cwd_gate_2596.py`.
 
-    A `name` that already contains a directory component carries none of
-    this risk and is delegated to `shutil.which()` directly. Otherwise this
+    An **absolute** directory component carries none of this risk and is
+    delegated to `shutil.which()` directly. A **relative** one (`./bin`)
+    is still resolved against cwd -- deliberate and config-gated, not an
+    oversight; see `validators/common/spawnable.py::which_excluding_cwd`
+    (#2613). Otherwise this
     walks `PATH` itself in the same order `shutil.which()` would (PATHEXT
     included on Windows), except a PATH entry that IS the current directory
     is skipped rather than returned -- a genuine PATH entry still resolves;

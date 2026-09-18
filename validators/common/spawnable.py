@@ -58,9 +58,13 @@ def which_excluding_cwd(name: str) -> "str | None":
     its adapter subprocess with no `cwd=`, so that adapter inherits
     supertool's own cwd: the repository under inspection.
 
-    A `name` that already contains a directory component carries none of
-    this risk -- `shutil.which()`'s own dirname branch never touches PATH
-    or the current directory at all -- and is delegated to directly.
+    An **absolute** directory component carries none of this risk --
+    `shutil.which()`'s own dirname branch never touches PATH or the
+    current directory at all -- and is delegated to directly. A
+    **relative** one (`./bin`, `tools/x`) is still resolved against cwd;
+    that shape is deliberate and already config-gated (a validator's
+    `env` can set a binary to a relative path, per docs/validators.md),
+    not an oversight, and is left alone here (#2613).
 
     Otherwise this walks `PATH` itself, in the same order `shutil.which()`
     would search it past the curdir-insertion step (PATHEXT included on
