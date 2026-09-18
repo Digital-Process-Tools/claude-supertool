@@ -313,7 +313,12 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # `status` and `youtube_comment`'s is one colon-rejoined
         # `VIDEO|TEXT[|force]` blob the script splits itself, so both take
         # `{args}` for the same reason the three read ops above do.
-        assert len(rows) == 100, len(rows)
+        # 100 -> 101 in #1985: `oss-tick` is a new op in a new
+        # `presets/oss.json`, `cmd` taking `{args}` from the first line even
+        # though the op itself accepts none today -- same shape as
+        # `statusline`'s own #1850 entry above, which this comment already
+        # documents.
+        assert len(rows) == 101, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -345,7 +350,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # 73 -> 75 in #227's second slice: `youtube_auth` and
         # `youtube_comment` are `{args}` from the first line too (see the
         # population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (75, 21, 4), (
+        # 75 -> 76 in #1985: `oss-tick` is `{args}` from the first line too
+        # (see the population count's own comment above).
+        assert (len(multi), len(one), len(none)) == (76, 21, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a

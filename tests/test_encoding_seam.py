@@ -1044,9 +1044,16 @@ def test_the_glyph_scan_reports_what_it_cannot_verify() -> None:
     # preset's own choice rather than deviating from it, per this test's
     # own instruction that the pin is a decision for each entry point's
     # author, not one this test makes for all of them at once.
-    assert len(unpinned_with_computed) == 42, (
+    # 42 -> 43 (#1985): presets/oss/tick.py's main() prints a computed
+    # render(rows) the same way, and it is NOT an unpinned oversight -- it
+    # is guarded by its own try/except UnicodeEncodeError with an
+    # errors="replace" fallback rather than by this file's use_utf8_stdout()
+    # convention, a deliberate choice made and reviewed for that entry point
+    # specifically, which is exactly the decision this test's own docstring
+    # says belongs to each author rather than to a blanket pin here.
+    assert len(unpinned_with_computed) == 43, (
         f"{len(unpinned_with_computed)} unpinned entry points now have a "
-        "print() call whose argument is not a literal (was 42 when this was "
+        "print() call whose argument is not a literal (was 43 when this was "
         "written) -- update this count if the change is deliberate, or "
         "investigate why it moved if it is not:\n  " + "\n  ".join(names)
     )
