@@ -46,6 +46,12 @@ def test_the_footer_echo_carries_the_same_facts_as_the_header(
     f = _many(tmp_path, 500)
     out = supertool.dispatch(f"read:{f}:195:300")
     windows = [ln for ln in out.splitlines() if ln.startswith("window:")]
+    # A single-element list makes `windows[0] == windows[-1]` trivially true
+    # by comparing one line to itself -- this would pass on the unpatched
+    # code, which emits exactly one `window:` line (review finding, #1777).
+    assert len(windows) >= 2, (
+        "this assertion is meaningless without two lines to compare: "
+        + repr(out))
     assert windows[0] == windows[-1], (
         "the footer must say the same thing as the header, not a shortened "
         "or divergent restatement: " + repr(out))

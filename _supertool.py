@@ -6620,7 +6620,19 @@ def _case_insensitive_note(pattern: str, probe: Callable[[str], object]) -> str:
     inline `(?i)` re-run settles whether case is the reason, so a genuine
     absence gets no extra noise and there is no second search dialect to
     maintain -- Python's own `re` already understands the prefix.
+
+    Gated on the pattern actually holding a case-sensitive character before
+    the probe ever touches the filesystem (review finding, #1777): a pattern
+    with no letters at all -- a bare number, punctuation -- cannot be
+    case-ambiguous, and `_quote_pair_note`'s own zero-result probe is skipped
+    for the equivalent reason (no quote pair, no probe). Without this, every
+    genuinely-absent, letter-free pattern paid for a second full-corpus walk
+    the disclosure could never use -- the exact cost the comment above this
+    function's call sites already warns against paying twice (PR review,
+    #1435).
     """
+    if not any(c.isalpha() for c in pattern):
+        return ""
     try:
         matches = bool(probe("(?i)" + pattern))
     except (re.error, OSError, UnicodeError):
@@ -6630,10 +6642,16 @@ def _case_insensitive_note(pattern: str, probe: Callable[[str], object]) -> str:
         return ""
     if not matches:
         return ""
+    # Never suggest the quoted form: `_quote_pair_note`/`_unwrapped_pattern`
+    # (right above this function) exist because supertool's grep does NOT
+    # strip a quote pair -- a quoted pattern is searched literally, quotes
+    # and all. Wrapping the rerun in quotes here would send the caller
+    # straight into that other zero, undisclosed (review finding, #1777).
     return (f"(grep is case-sensitive; {pattern!r} DOES match here when "
             f"searched case-insensitively -- this zero may be about "
             f"capitalisation, not absence. Re-run as "
-            f"grep:'(?i){pattern}':PATH for a case-insensitive search.)"
+            f"grep:(?i){pattern}:PATH for a case-insensitive search -- no "
+            f"quotes around the pattern, which grep searches literally.)"
             + chr(10))
 
 
