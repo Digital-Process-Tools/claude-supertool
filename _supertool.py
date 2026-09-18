@@ -21589,7 +21589,16 @@ def op_ops_filter(pattern: str) -> str:
     is often the only place the words in "which op creates a file" actually
     appear, even though bare `ops` withholds it by default (#1774). A matched
     row is printed with its description regardless, since the match reason
-    would otherwise be invisible.
+    would otherwise be invisible. Case-sensitive, like every other pattern
+    slot in this file (`grep`, `around`, `between`, `read`'s own `grep=`) —
+    this is the one search among them and the one place a silent default
+    departure would be least visible.
+
+    Every dispatchable op is a candidate, not only the ones with a
+    `.supertool.json` entry: `op_ops()` discloses the undocumented set as a
+    footer line (#1124), and a search that skipped them would answer `0 of M`
+    for a real, callable op like `introduction` — the exact absence-as-answer
+    defect this op exists to remove, arrived at a different way.
 
     Reuses `_pattern_gate`, the one chokepoint every other pattern-taking op
     goes through (#2574 did the same for `between`'s start/end), so the BRE
@@ -21597,9 +21606,9 @@ def op_ops_filter(pattern: str) -> str:
     too. `check_saturation=False`: the saturation refusal exists because a
     pattern matching every line renders identically to an unfiltered read,
     which is exactly the defect this op avoids a different way — by always
-    stating `N of M`, so `87 of 87 ops matched` is still an honest answer
-    rather than a silent full listing (the same reasoning #2573 gave `op_vim`
-    for opting out of the same check).
+    stating `N of M ops matched`, so a pattern matching everything is still an
+    honest answer rather than a silent full listing (the same reasoning #2573
+    gave `op_vim` for opting out of the same check).
 
     Always states the count, including `0 of M` — the issue's own requirement
     — so an empty result can never be misread as a short roster.
@@ -21608,7 +21617,7 @@ def op_ops_filter(pattern: str) -> str:
     if refusal:
         return refusal
     try:
-        rx = re.compile(effective, re.IGNORECASE)
+        rx = re.compile(effective)
     except re.error as exc:
         return f"ERROR: invalid pattern `{pattern}`: {exc}\n"
 
@@ -21618,8 +21627,22 @@ def op_ops_filter(pattern: str) -> str:
     alias_defs = config.get("aliases", {})
 
     if not builtin_ops and not custom_ops and not alias_defs:
-        return (f"0 of 0 ops matched `{pattern}` — no descriptions "
-                f"configured in .supertool.json.\n")
+        # `op_ops()` hits this same empty-config state and falls back to
+        # every built-in name rather than claiming zero ops exist (#1318
+        # review) — a filter over nothing would otherwise say "0 of 0" while
+        # dozens of real, dispatchable ops sit unsearched one call away.
+        all_names = sorted(_valid_op_names())
+        names = [n for n in all_names if rx.search(n)]
+        lines = [f"## Ops matching `{pattern}`\n"]
+        if note:
+            lines.append(note)
+        lines.append(
+            f"{len(names)} of {len(all_names)} ops matched `{pattern}` "
+            f"(names only — no .supertool.json found here, so no syntax or "
+            f"description to search).\n")
+        if names:
+            lines.append("  " + ", ".join(names))
+        return "\n".join(lines) + "\n"
 
     marks = _roster_classes()
 
@@ -21644,6 +21667,13 @@ def op_ops_filter(pattern: str) -> str:
             continue
         entries.append((name, info.get("syntax", f"{name}:PATH"),
                         info.get("description", "")))
+
+    # Names the dispatcher accepts but no config section describes — the same
+    # set `op_ops()` names in its own footer (#1124) — with no syntax or
+    # description to offer, so the name is the only thing to search or show.
+    documented = {n for n, _, _ in entries}
+    for name in sorted(set(_valid_op_names()) - documented):
+        entries.append((name, name, ""))
 
     total = len(entries)
     matched = [(n, s, d) for n, s, d in entries
@@ -33521,7 +33551,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     # #1318 — the one filter, scoped to bare `ops` the same
                     # way roster/session/full are: `ops-compact:grep=X` still
                     # falls to the refusal below, naming this token.
-                    grep_pattern = ops_arg[len("grep="):]
+                    #
+                    # NOT ops_arg[len("grep="):] -- ops_arg is parts[1], one
+                    # `_split_arg` token, and a pattern containing ':' (the
+                    # exact shape a search for `read:PATH`-style syntax is)
+                    # would be silently cut at the first one with no error
+                    # (#1318 review). arg is the raw, unsplit dispatch string,
+                    # so partitioning it once on the literal 'grep=' recovers
+                    # every colon the caller typed.
+                    grep_pattern = arg.partition("grep=")[2]
                     if not grep_pattern:
                         body = ("ERROR: `ops:grep=` needs a pattern after "
                                 "`grep=` — `ops:grep=PATTERN`.\n")
