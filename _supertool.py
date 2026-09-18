@@ -325,6 +325,11 @@ MAX_BATCH_OPS = 1000
 MAX_READ_BYTES = 20000  # ~20KB cap — prevents Claude Code "Output too large"
 MAX_AUTOREAD_LINES = 60  # glob:/grep: auto-read line cap (#362) — a file under the
 # byte cap but with many lines still overshoots context; skip auto-read above this.
+FOOTER_ECHO_MIN_LINES = 60  # read:'s OFFSET/LIMIT window note is echoed at the foot
+# only above this many printed lines (#1777) — the same "a screen's worth of content"
+# figure as MAX_AUTOREAD_LINES above, reused rather than duplicated with a different
+# number. Below it, the established "one disclosure, above the body" contract from
+# #1489/#382 stays exactly as those tests pin it (48 printed lines in both).
 MAX_AROUND_BYTES = 16000  # per-op cap for around:/grep_around: context windows (#241)
 MAX_GREP_LINE_CHARS = 500  # per-line cap on grep output (#363) — one 25KB single-line
 # PHPDoc/@extends annotation used to eat a screenful for a single hit.
@@ -5793,7 +5798,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # of content. Construction order is not render order, and a correction
         # the caller reads *after* paying for the wrong window is not a
         # disclosure (#945).
-        out.insert(1, _read_window_note(
+        window_note = _read_window_note(
             path, limit if not lift_line_cap else max(0, line_count - offset),
             offset, line_count, printed,
             last_scanned=last_scanned, capped=cap_cut, cap_reached=capped,
@@ -5802,7 +5807,24 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             limit_defaulted=limit_defaulted,
             range_form=range_form,
             skipped_by=("the grep= filter" if filter_regex
-                        else "compact mode" if compact else "")))
+                        else "compact mode" if compact else ""))
+        out.insert(1, window_note)
+        # Repeated at the foot too, but only above FOOTER_ECHO_MIN_LINES
+        # printed lines (#1777): the header copy is what a caller reading
+        # top-down sees first, but a window long enough to fill the context
+        # (`read:PATH:195:300`, a 189-line window in the reported case)
+        # pushes it off-screen before the content it corrects is even
+        # reached. The foot is what a caller who jumps to the tail of a long
+        # read actually lands on, so the same correction has to be there too
+        # -- the identical string, not a shortened restatement, so the two
+        # copies cannot drift apart. Gated rather than unconditional: #1489
+        # and #382 already pin "one disclosure, above the body" for a window
+        # that fits on a screen (48 printed lines, neither test's window
+        # anywhere near this one's problem size), and an unconditional
+        # second copy broke that contract on CI for every offset>0 read,
+        # however small (review round found after this PR opened).
+        if printed > FOOTER_ECHO_MIN_LINES:
+            out.append(window_note)
     out.append("\n")
     return "".join(out)
 
@@ -6595,6 +6617,56 @@ def _quote_pair_note(pattern: str, probe: Callable[[str], object]) -> str:
     return _quoted_pattern_note(pattern, inner, matches)
 
 
+def _case_insensitive_note(pattern: str, probe: Callable[[str], object]) -> str:
+    """Explain a zero that case sensitivity alone may have produced (#1777).
+
+    grep is case-sensitive throughout supertool, and the instruction callers
+    are given says to confirm a write a second way. Grepping back a sentence
+    that IS on disk with different capitalisation returns `0 results` -- a
+    false negative on a successful write, produced by the exact step that
+    exists to catch a failed one. `0 results` is the one output where a
+    case-insensitivity hint is worth printing, because it is the only one
+    where the caller cannot tell a real absence from a spelling mismatch.
+
+    Probed rather than asserted, the same shape as `_quote_pair_note`: an
+    inline `(?i)` re-run settles whether case is the reason, so a genuine
+    absence gets no extra noise and there is no second search dialect to
+    maintain -- Python's own `re` already understands the prefix.
+
+    Gated on the pattern actually holding a case-sensitive character before
+    the probe ever touches the filesystem (review finding, #1777): a pattern
+    with no letters at all -- a bare number, punctuation -- cannot be
+    case-ambiguous, and `_quote_pair_note`'s own zero-result probe is skipped
+    for the equivalent reason (no quote pair, no probe). Without this, every
+    genuinely-absent, letter-free pattern paid for a second full-corpus walk
+    the disclosure could never use -- the exact cost the comment above this
+    function's call sites already warns against paying twice (PR review,
+    #1435).
+    """
+    if not any(c.isalpha() for c in pattern):
+        return ""
+    try:
+        matches = bool(probe("(?i)" + pattern))
+    except (re.error, OSError, UnicodeError):
+        # Same reasoning as `_quote_pair_note`: the probe touches the
+        # filesystem and the pattern is not guaranteed to compile with the
+        # prefix prepended, so those two are expected and print nothing.
+        return ""
+    if not matches:
+        return ""
+    # Never suggest the quoted form: `_quote_pair_note`/`_unwrapped_pattern`
+    # (right above this function) exist because supertool's grep does NOT
+    # strip a quote pair -- a quoted pattern is searched literally, quotes
+    # and all. Wrapping the rerun in quotes here would send the caller
+    # straight into that other zero, undisclosed (review finding, #1777).
+    return (f"(grep is case-sensitive; {pattern!r} DOES match here when "
+            f"searched case-insensitively -- this zero may be about "
+            f"capitalisation, not absence. Re-run as "
+            f"grep:(?i){pattern}:PATH for a case-insensitive search -- no "
+            f"quotes around the pattern, which grep searches literally.)"
+            + chr(10))
+
+
 # Patterns whose meaning differs between Python's `re` and POSIX ERE (#987).
 # The delegated path hands the pattern to the system grep, so anything matching
 # this never leaves the native walker:
@@ -7257,6 +7329,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             # full count of the corpus (PR review, #1435).
             out.append(_quote_pair_note(pattern, lambda inner: _grep_recursive(
                 inner, path, 1, excl, candidates=candidates)))
+            out.append(_case_insensitive_note(pattern, lambda p: _grep_recursive(
+                p, path, 1, excl, candidates=candidates)))
         # `PATH:N` is the shape every grep-like tool uses for PATH:LINE, so a
         # count of 30 read as "one match, at line 30" — the opposite of what
         # the op said, in the op you call *before* deciding whether to look
@@ -7291,6 +7365,9 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             out.append(_quote_pair_note(
                 pattern, lambda inner: _grep_recursive_context(
                     inner, path, 1, context, excl, candidates=candidates)))
+            out.append(_case_insensitive_note(
+                pattern, lambda p: _grep_recursive_context(
+                    p, path, 1, context, excl, candidates=candidates)))
         current_file: str = ""
         first_group = True
         cut: List[Tuple[str, int]] = []
@@ -7351,6 +7428,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append(_shim_facade_note(path))
         out.append(_quote_pair_note(pattern, lambda inner: _grep_recursive(
             inner, path, 1, excl, candidates=candidates)))
+        out.append(_case_insensitive_note(pattern, lambda p: _grep_recursive(
+            p, path, 1, excl, candidates=candidates)))
     current_file = ""
     cut: List[Tuple[str, int]] = []
     for fp, lineno, content in hits:
