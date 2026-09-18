@@ -1,4 +1,5 @@
 changelog.d/	changelog-d.md
+(^|/)CHANGELOG\.md$	changelog-tagged-correction.md
 docs/	docs-index.md
 .github/workflows/	github-workflows.md
 tests/_go_warmup_lock\.py	go-warmup-lock-hot-file.md
