@@ -1313,16 +1313,33 @@ def channel_disclosure() -> list[str]:
     silence used to mean exactly one thing (on) before the flip. Only a
     departure from that default gets a line: opted out (`NO_DESKTOP_ENV`)
     still reads OFF, explicitly, for the operator who set it on purpose;
-    opted in (`DESKTOP_ENV`) and not opted out reads ON, since that is now
-    the surprising state worth confirming landed. A line on every render
-    regardless of configuration was tried and reverted (#2560): it broke
-    every board/banner test asserting silence on a healthy default render,
-    trading a real but narrow ambiguity (silence meaning two different
-    things only in the disabled-vs-just-flipped-default window right after
-    #2544 shipped) for a banner nobody asked for on every single run
-    afterward. The socket and status-file transports are unaffected either
-    way and the ON/OFF-explicit lines say so, so a reader does not read
-    either as the fleet going dark.
+    opted in (`DESKTOP_ENV`) and not opted out reads either ON or a third
+    state (#2612), since opting in is now the surprising state worth
+    confirming landed. A line on every render regardless of configuration
+    was tried and reverted (#2560): it broke every board/banner test
+    asserting silence on a healthy default render, trading a real but
+    narrow ambiguity (silence meaning two different things only in the
+    disabled-vs-just-flipped-default window right after #2544 shipped) for
+    a banner nobody asked for on every single run afterward. The socket and
+    status-file transports are unaffected either way and every branch below
+    says so, so a reader does not read any of them as the fleet going dark.
+
+    **ON is not the whole of "opted in" (#2612).** `desktop_notify` itself
+    checks, in order: the platform is `darwin` at all, then that
+    `which_excluding_cwd("osascript")` resolves, before it will ever shell
+    out (transport.py, just above `channel_disclosure`) -- an operator can
+    set `DESKTOP_ENV` on a non-macOS host, or on a mac where `osascript` is
+    absent or excluded by the cwd guard, and get silence forever with
+    nothing here to explain why, which is this repo's own named defect
+    class (an absence the tool produced, read as an absence in the world)
+    landing in the very instrument meant to prevent it. So the opted-in
+    branch below mirrors both of `desktop_notify`'s own gates, in the same
+    order, rather than assuming resolution because the env var is set --
+    checking the probe alone and skipping the platform gate was tried first
+    and was itself the same defect from the other side: it told a non-mac
+    operator "osascript did not resolve" as though installing something
+    named that would fix it, when no non-mac equivalent exists and
+    `desktop_notify` returns before the probe is ever reached there.
     """
     lines = naming.disclosure_lines(RESOLVED, naming.declared_names())
     if desktop_notify_disabled():
@@ -1330,9 +1347,22 @@ def channel_disclosure() -> list[str]:
             f"desktop notifications are OFF ({NO_DESKTOP_ENV} is set) — the "
             f"socket and status-file transports are unaffected"]
     elif desktop_notify_enabled():
-        lines = lines + [
-            f"desktop notifications are ON ({DESKTOP_ENV} is set) — the "
-            f"socket and status-file transports are unaffected"]
+        if sys.platform != "darwin":
+            lines = lines + [
+                f"desktop notifications are opted in ({DESKTOP_ENV} is "
+                f"set) but this platform has no desktop notifier — no "
+                f"notification will fire; the socket and status-file "
+                f"transports are unaffected"]
+        elif which_excluding_cwd("osascript"):
+            lines = lines + [
+                f"desktop notifications are ON ({DESKTOP_ENV} is set) — the "
+                f"socket and status-file transports are unaffected"]
+        else:
+            lines = lines + [
+                f"desktop notifications are opted in ({DESKTOP_ENV} is set) "
+                f"but osascript did not resolve — no notification will "
+                f"fire; the socket and status-file transports are "
+                f"unaffected"]
     return lines
 
 

@@ -304,11 +304,60 @@ def test_channel_disclosure_says_nothing_extra_on_the_default(monkeypatch):
 
 
 def test_channel_disclosure_states_the_opted_in_state(monkeypatch):
+    """Opted in AND osascript resolves -- the will-fire state, not just the
+    env var being set (#2612): a disclosure keyed on the env var alone cannot
+    tell this apart from the unresolved case below. `sys.platform` is pinned
+    to darwin so this asserts the same thing on every CI leg -- unpinned,
+    this would silently fall into the non-darwin branch on the Linux/Windows
+    legs and never exercise the ON path there at all."""
     monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
     monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    monkeypatch.setattr(transport.sys, "platform", "darwin")
+    monkeypatch.setattr(transport, "which_excluding_cwd", lambda _n: "/usr/bin/osascript")
     blob = "\n".join(transport.channel_disclosure())
     assert transport.DESKTOP_ENV in blob, blob
     assert "ON" in blob, blob
+    assert "OFF" not in blob, blob
+
+
+def test_channel_disclosure_states_opted_in_but_osascript_unresolved(monkeypatch):
+    """#2612: opted in, on darwin, but `osascript` does not resolve must
+    read as a third state, not as ON -- `desktop_notify` itself no-ops
+    right after this same probe misses (transport.py:978-980), so an
+    operator told ON here gets silence forever with nothing in the receipt
+    to explain why. Pinned to darwin so this is specifically the
+    osascript-missing sub-state, distinct from the platform state below."""
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    monkeypatch.setattr(transport.sys, "platform", "darwin")
+    monkeypatch.setattr(transport, "which_excluding_cwd", lambda _n: None)
+    blob = "\n".join(transport.channel_disclosure())
+    assert transport.DESKTOP_ENV in blob, blob
+    assert "osascript" in blob.lower(), blob
+    assert "no notification will fire" in blob.lower(), blob
+    assert "notifications are ON" not in blob, blob
+    assert "OFF" not in blob, blob
+
+
+def test_channel_disclosure_states_opted_in_on_a_non_darwin_platform(monkeypatch):
+    """#2612 round 2 (reviewer finding): the first cut of this fix probed
+    `which_excluding_cwd("osascript")` without first checking the platform,
+    unlike `desktop_notify` itself -- so on Linux/Windows, where `osascript`
+    essentially never resolves, it fell into the "osascript did not
+    resolve" wording, which is misleading there: no non-mac equivalent
+    exists, so nothing about osascript resolving would ever fix it. This
+    platform must not be told about osascript at all, and must not claim ON
+    -- `which_excluding_cwd` is stubbed to a truthy value specifically to
+    prove the platform check, not the probe, is what stops the ON claim."""
+    monkeypatch.delenv(transport.NO_DESKTOP_ENV, raising=False)
+    monkeypatch.setenv(transport.DESKTOP_ENV, "1")
+    monkeypatch.setattr(transport.sys, "platform", "linux")
+    monkeypatch.setattr(transport, "which_excluding_cwd", lambda _n: "/usr/bin/osascript")
+    blob = "\n".join(transport.channel_disclosure())
+    assert transport.DESKTOP_ENV in blob, blob
+    assert "no notification will fire" in blob.lower(), blob
+    assert "notifications are ON" not in blob, blob
+    assert "osascript" not in blob.lower(), blob
     assert "OFF" not in blob, blob
 
 
