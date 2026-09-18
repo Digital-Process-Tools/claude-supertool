@@ -2596,8 +2596,13 @@ def _has_rtk() -> str | None:
         if os.environ.get("SUPERTOOL_NO_RTK") == "1":
             _RTK_PATH = None
         else:
-            from shutil import which
-            _RTK_PATH = which("rtk")
+            # #2611: a raw which() searches the current directory ahead of
+            # every real PATH entry on Windows, so a repo-planted "rtk.exe"
+            # would be resolved -- and then spawned by _rtk_run() below,
+            # which passes no cwd= -- ahead of the real tool. Same class as
+            # #2596/#2575, closed the same way: this file's own
+            # _which_excluding_cwd() instead of a bare which().
+            _RTK_PATH = _which_excluding_cwd("rtk")
     return _RTK_PATH
 
 
@@ -8718,8 +8723,11 @@ def _has_ctags() -> str | None:
     global _CTAGS_PATH, _CTAGS_CHECKED
     if not _CTAGS_CHECKED:
         _CTAGS_CHECKED = True
-        from shutil import which
-        _CTAGS_PATH = which("ctags")
+        # #2611: same class as _has_rtk()'s own fix above -- a raw which()
+        # would resolve a repo-planted "ctags.exe" ahead of the real tool
+        # on Windows, and the result is spawned by the caller below with
+        # no cwd=.
+        _CTAGS_PATH = _which_excluding_cwd("ctags")
     return _CTAGS_PATH
 
 
@@ -19896,7 +19904,12 @@ def _doctor_symlink() -> Dict[str, Any]:
     than silently assumed innocent, because the other cause of the same
     symptom is a stale symlink target.
     """
-    which = shutil.which("supertool")
+    # #2611: the resolved path is spawned below (`[which, "version"]`, no
+    # cwd=) to compare its own reported version -- a raw shutil.which()
+    # would let a repo-planted "supertool.exe"/".bat"/".cmd" at cwd shadow
+    # the real tool on Windows, the same class fixed for _has_rtk()/
+    # _has_ctags() in this same change.
+    which = _which_excluding_cwd("supertool")
     result: Dict[str, Any] = {"which": which, "symlink_target": None,
                               "dangling": False}
     if which is None:

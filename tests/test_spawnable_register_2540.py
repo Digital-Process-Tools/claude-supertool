@@ -86,6 +86,18 @@ def _offenders(path: pathlib.Path) -> "list[str]":
 
 
 def test_no_adapter_spawns_a_name_it_only_proved_with_which() -> None:
+    """Scope note (#2606): `_offenders()` only flags a bare-spawned
+    literal when the SAME file also separately calls `shutil.which()` on
+    that exact literal -- the `which()`-then-spawn-the-name-anyway
+    mismatch #2540 itself measured. A file that bare-spawns a literal it
+    never looks up at all (no `which()` call for it anywhere -- the
+    #2605 phpstan.py shape) is a DIFFERENT, unconditional class this
+    register was never built to see: it passes here silently, and is
+    caught instead by `tests/test_bare_argv0_construction_2605.py`, which
+    inspects argv construction directly rather than requiring a `which()`
+    call to intersect against. A green result here is "no adapter both
+    proves a name via which() and then spawns that same name anyway" --
+    not "no adapter spawns an unresolved bare literal"."""
     offenders = []
     for path in _adapter_sources():
         offenders.extend(_offenders(path))

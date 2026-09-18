@@ -24,11 +24,29 @@ Three things this file checks:
 2. That all three copies agree, across a small matrix of PATH shapes, so a
    spelling drift between them goes red here rather than silently reopening
    the class in whichever copy drifted.
-3. A static register, in the same spirit as `test_gate_matches_spawn_2579.py`,
-   that the six #2596 call sites no longer call `shutil.which()` bare for the
-   tool names named in the issue -- with a positive control proving the
-   walker can actually see the defect, so a green register is not a register
-   that matches nothing.
+3. A register, in the same spirit as `test_gate_matches_spawn_2579.py`, that
+   NO file under `presets/`, `hooks/`, `notifiers/`, or `_supertool.py` calls
+   `shutil.which()`/`which()` bare with a literal tool name any more -- with
+   a positive control proving the walker can actually see the defect, so a
+   green register is not a register that matches nothing.
+
+   This used to be a hand-listed dict of exactly six files and ten tool
+   names (`SITES`), which meant a seventh site -- `hooks/guard-selftest.py`
+   (`shutil.which("bash")`, tracked separately as #2610), which sits in
+   `hooks/`, a directory none of this repo's three spawn registers ever
+   walked -- was structurally invisible to it (#2611). Walking the actual
+   directories instead of naming files by hand found three more real,
+   previously invisible instances in the same sweep, all in `_supertool.py`:
+   `_has_rtk()` and `_has_ctags()` each cached a raw `which()` result and
+   spawned it, and `_doctor_symlink()` did the same to compare its own
+   reported version -- the exact #2596/#2575 shape, fixed here the same
+   way `_which_excluding_cwd()` already exists in this same file to fix
+   it. (An earlier draft of this fix excused `_doctor_symlink()`'s
+   instance with a `DIAGNOSTIC_ONLY` exclusion and the claim it "never
+   executes" the resolved path -- wrong, per self-review: `[which,
+   "version"]` is spawned two lines later. Fixed rather than excused, and
+   the exclusion mechanism removed along with it.) ALLOWLIST below is for
+   the one remaining, separately-tracked instance only.
 """
 from __future__ import annotations
 
@@ -146,16 +164,41 @@ def test_the_three_duplicated_copies_agree(tmp_path, monkeypatch) -> None:
 # 3) Static register over the six #2596 call sites
 # ---------------------------------------------------------------------------
 
-#: (file, tool names that must never be gated by a bare `shutil.which()` call
-#: in this file any more).
-SITES = {
-    ROOT / "_supertool.py": {"php", "xmllint"},
-    ROOT / "presets" / "git" / "_git_common.py": {"glab", "gh"},
-    ROOT / "presets" / "git" / "conflicts.py": {"glab", "gh"},
-    ROOT / "presets" / "_git_run.py": {"lsof"},
-    ROOT / "presets" / "git" / "worktrees.py": {"lsof"},
-    ROOT / "presets" / "watch" / "transport.py": {"osascript", "ps"},
+#: The directories #2579/#2540/#2605's own registers already cover
+#: (`validators/`, `formatters/`) are deliberately NOT walked again here --
+#: this register exists for everywhere ELSE a bare cwd-searching which()
+#: can hide (#2611).
+WALK_DIRS = ("presets", "hooks", "notifiers")
+
+#: `presets/_spawnable.py` is this directory's own duplicated copy of the
+#: chokepoint algorithm (see module docstring) -- implementation, not an
+#: instance of the defect it implements the fix for.
+CHOKEPOINT_FILES = {"_spawnable.py"}
+
+#: `_supertool.py` sits at the repo root, outside every WALK_DIRS entry,
+#: but is one of #2596's own six original call sites and cannot be reached
+#: by any `rglob` rooted at WALK_DIRS -- named explicitly rather than
+#: silently dropped when the walk replaced the hand-listed SITES dict.
+EXTRA_FILES = ("_supertool.py",)
+
+#: Known, real, unfixed instances of this exact class, tracked separately
+#: rather than fixed in this change -- (relative path, tool name): reason.
+#: An allowlist entry here means "this is real and tracked elsewhere", not
+#: "this is a false positive" -- `hooks/guard-selftest.py`'s own
+#: `bash_candidates()` genuinely resolves "bash" via a raw `shutil.which()`
+#: and then spawns whatever it returns. Removing an entry is the signal
+#: one has actually been fixed.
+ALLOWLIST = {
+    ("hooks/guard-selftest.py", "bash"): "#2610",
 }
+
+def _walked_sources() -> "list[pathlib.Path]":
+    out = []
+    for d in WALK_DIRS:
+        out.extend(sorted((ROOT / d).rglob("*.py")))
+    out = [p for p in out if p.name not in CHOKEPOINT_FILES]
+    out.extend(ROOT / f for f in EXTRA_FILES)
+    return out
 
 
 def _bare_which_calls(tree: ast.AST) -> set:
@@ -177,15 +220,26 @@ def _bare_which_calls(tree: ast.AST) -> set:
     return names
 
 
-@pytest.mark.parametrize("path,tools", list(SITES.items()),
-                         ids=[p.relative_to(ROOT).as_posix() for p in SITES])
-def test_no_named_tool_is_still_gated_by_a_bare_which_call(path, tools) -> None:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    offenders = _bare_which_calls(tree) & tools
+def _offenders() -> "list[str]":
+    hits = []
+    for path in _walked_sources():
+        rel = path.relative_to(ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for name in sorted(_bare_which_calls(tree)):
+            if (rel, name) in ALLOWLIST:
+                continue
+            hits.append(f"{rel}: {name!r}")
+    return hits
+
+
+def test_no_bare_which_call_survives_outside_the_adapter_dirs() -> None:
+    offenders = _offenders()
     assert not offenders, (
-        f"{path.relative_to(ROOT).as_posix()} still gates {offenders} with a "
-        "bare shutil.which()/which() call rather than the cwd-excluding "
-        "chokepoint (#2596)"
+        "these files call shutil.which()/which() bare for a literal tool "
+        "name, rather than the cwd-excluding chokepoint (#2596/#2611) -- "
+        "either fix the site or, if it is a real, already-tracked instance "
+        "out of scope for this change, add it to ALLOWLIST with the issue "
+        "number:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -202,13 +256,36 @@ def test_the_walker_can_actually_see_the_defect() -> None:
     assert _bare_which_calls(tree) == {"lsof"}, "the bare-which walker is blind"
 
 
-def test_the_register_covers_every_named_site_and_tool() -> None:
-    """A register naming zero files, or a file naming zero tools, is green
-    and means nothing."""
-    assert len(SITES) == 6, SITES
-    assert sum(len(v) for v in SITES.values()) == 10, SITES
-    for path in SITES:
-        assert path.is_file(), f"{path} does not exist -- the register is stale"
+def test_the_allowlisted_instance_is_still_real() -> None:
+    """The one remaining allowlist entry must still name a genuine, unfixed
+    instance -- an allowlist that outlives the bug it excuses is the same
+    silent absence this register exists to prevent (same convention as
+    `tests/test_bare_argv0_construction_2605.py`)."""
+    for rel, name in sorted(ALLOWLIST):
+        path = ROOT / rel
+        assert path.is_file(), f"{rel} no longer exists -- drop it from ALLOWLIST"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        assert name in _bare_which_calls(tree), (
+            f"{rel} is allowlisted as a known unfixed bare which({name!r}) "
+            "call, but the register no longer finds one -- it has "
+            "apparently been fixed; remove it from ALLOWLIST"
+        )
+
+
+def test_the_register_covers_a_population_it_can_name() -> None:
+    """A register over zero files is green and means nothing (same
+    convention as #2579's/#2540's/#2605's own registers)."""
+    sources = _walked_sources()
+    assert len(sources) >= 100, (
+        f"only {len(sources)} sources found under {WALK_DIRS} plus "
+        f"{EXTRA_FILES} -- the walk root is wrong, and an empty walk reads "
+        "exactly like a clean one"
+    )
+    assert any(_bare_which_calls(ast.parse(p.read_text(encoding="utf-8")))
+               for p in sources), (
+        "no file calls shutil.which()/which() at all, so this register is "
+        "asserting nothing about anything"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

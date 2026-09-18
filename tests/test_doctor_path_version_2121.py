@@ -34,7 +34,7 @@ def test_launcher_at_current_version_gets_no_stale_note(monkeypatch, tmp_path) -
     no NOTE about a possible stale build.
     """
     fake_which = str(tmp_path / "supertool")
-    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", lambda name: fake_which)
     monkeypatch.setattr(supertool.os.path, "islink", lambda p: False)
 
     def _fake_run(cmd, **kwargs):
@@ -59,11 +59,23 @@ def test_genuinely_stale_path_entry_still_warns_with_its_version(monkeypatch, tm
     this one.
     """
     fake_which = str(tmp_path / "supertool")
-    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", lambda name: fake_which)
     monkeypatch.setattr(supertool.os.path, "islink", lambda p: False)
 
     def _fake_run(cmd, **kwargs):
-        return _fake_version_proc("supertool 0.1.0\n")
+        # #2611 self-review, second round: an unconditional fake here
+        # cannot tell whether `which` reached subprocess.run() from the
+        # monkeypatched _which_excluding_cwd() or from an un-reverted raw
+        # shutil.which() call -- both would produce the identical
+        # observable result. Checking cmd[0] (same shape as
+        # test_launcher_at_current_version_gets_no_stale_note above) is
+        # what actually pins the fix: op_doctor("") below also shells out
+        # for unrelated diagnostics, so this must not assert on every
+        # call, only answer the ones for OUR fake_which distinctly from
+        # everything else.
+        if cmd[0] == fake_which:
+            return _fake_version_proc("supertool 0.1.0\n")
+        return _fake_version_proc("", returncode=1)
     monkeypatch.setattr(supertool.subprocess, "run", _fake_run)
 
     sym = supertool._doctor_symlink()
@@ -83,16 +95,30 @@ def test_path_entry_that_cannot_be_run_is_reported_as_unknown(monkeypatch, tmp_p
     would false-alarm a healthy one).
     """
     fake_which = str(tmp_path / "supertool")
-    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", lambda name: fake_which)
     monkeypatch.setattr(supertool.os.path, "islink", lambda p: False)
 
+    spawned: list = []
+
     def _boom(cmd, **kwargs):
+        spawned.append(cmd)
         raise OSError("no such file")
     monkeypatch.setattr(supertool.subprocess, "run", _boom)
 
     sym = supertool._doctor_symlink()
     assert sym["path_resolves_to_running_module"] is False
     assert sym.get("path_version_state") == "unknown"
+    # #2611 self-review, second round: an unconditional fake here cannot
+    # tell whether `which` reached subprocess.run() from the
+    # monkeypatched _which_excluding_cwd() or from an un-reverted raw
+    # shutil.which() call -- both raise identically. Recording the actual
+    # calls (same shape test_a_dangling_symlink_does_not_claim_version_was_run
+    # below already uses) and checking fake_which was among them is what
+    # actually pins the fix.
+    assert [c for c in spawned if c and c[0] == fake_which], (
+        f"_doctor_symlink() never spawned the monkeypatched _which_excluding_cwd() "
+        f"result -- recorded calls: {spawned}"
+    )
 
     out = supertool.op_doctor("")
     assert "could not tell" in out.lower() or "unknown" in out.lower()
@@ -107,7 +133,7 @@ def test_a_dangling_symlink_does_not_claim_version_was_run(
     diagnosis -- hedging under it says less than the line it follows.
     """
     fake_which = str(tmp_path / "supertool")
-    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool, "_which_excluding_cwd", lambda name: fake_which)
     monkeypatch.setattr(supertool.os.path, "islink", lambda p: p == fake_which)
     monkeypatch.setattr(supertool.os, "readlink",
                         lambda p: str(tmp_path / "gone" / "_supertool.py"))
