@@ -5793,7 +5793,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # of content. Construction order is not render order, and a correction
         # the caller reads *after* paying for the wrong window is not a
         # disclosure (#945).
-        out.insert(1, _read_window_note(
+        window_note = _read_window_note(
             path, limit if not lift_line_cap else max(0, line_count - offset),
             offset, line_count, printed,
             last_scanned=last_scanned, capped=cap_cut, cap_reached=capped,
@@ -5802,7 +5802,17 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             limit_defaulted=limit_defaulted,
             range_form=range_form,
             skipped_by=("the grep= filter" if filter_regex
-                        else "compact mode" if compact else "")))
+                        else "compact mode" if compact else ""))
+        out.insert(1, window_note)
+        # Repeated at the foot, not only the head (#1777): the header copy is
+        # what a caller reading top-down sees first, but a window long enough
+        # to fill the context (`read:PATH:195:300`, a 189-line window in the
+        # reported case) pushes it off-screen before the content it corrects
+        # is even reached. The foot is what a caller who jumps to the tail of
+        # a long read actually lands on, so the same correction has to be
+        # there too — the identical string, not a shortened restatement, so
+        # the two copies cannot drift apart.
+        out.append(window_note)
     out.append("\n")
     return "".join(out)
 
@@ -6595,6 +6605,38 @@ def _quote_pair_note(pattern: str, probe: Callable[[str], object]) -> str:
     return _quoted_pattern_note(pattern, inner, matches)
 
 
+def _case_insensitive_note(pattern: str, probe: Callable[[str], object]) -> str:
+    """Explain a zero that case sensitivity alone may have produced (#1777).
+
+    grep is case-sensitive throughout supertool, and the instruction callers
+    are given says to confirm a write a second way. Grepping back a sentence
+    that IS on disk with different capitalisation returns `0 results` -- a
+    false negative on a successful write, produced by the exact step that
+    exists to catch a failed one. `0 results` is the one output where a
+    case-insensitivity hint is worth printing, because it is the only one
+    where the caller cannot tell a real absence from a spelling mismatch.
+
+    Probed rather than asserted, the same shape as `_quote_pair_note`: an
+    inline `(?i)` re-run settles whether case is the reason, so a genuine
+    absence gets no extra noise and there is no second search dialect to
+    maintain -- Python's own `re` already understands the prefix.
+    """
+    try:
+        matches = bool(probe("(?i)" + pattern))
+    except (re.error, OSError, UnicodeError):
+        # Same reasoning as `_quote_pair_note`: the probe touches the
+        # filesystem and the pattern is not guaranteed to compile with the
+        # prefix prepended, so those two are expected and print nothing.
+        return ""
+    if not matches:
+        return ""
+    return (f"(grep is case-sensitive; {pattern!r} DOES match here when "
+            f"searched case-insensitively -- this zero may be about "
+            f"capitalisation, not absence. Re-run as "
+            f"grep:'(?i){pattern}':PATH for a case-insensitive search.)"
+            + chr(10))
+
+
 # Patterns whose meaning differs between Python's `re` and POSIX ERE (#987).
 # The delegated path hands the pattern to the system grep, so anything matching
 # this never leaves the native walker:
@@ -7257,6 +7299,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             # full count of the corpus (PR review, #1435).
             out.append(_quote_pair_note(pattern, lambda inner: _grep_recursive(
                 inner, path, 1, excl, candidates=candidates)))
+            out.append(_case_insensitive_note(pattern, lambda p: _grep_recursive(
+                p, path, 1, excl, candidates=candidates)))
         # `PATH:N` is the shape every grep-like tool uses for PATH:LINE, so a
         # count of 30 read as "one match, at line 30" — the opposite of what
         # the op said, in the op you call *before* deciding whether to look
@@ -7291,6 +7335,9 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             out.append(_quote_pair_note(
                 pattern, lambda inner: _grep_recursive_context(
                     inner, path, 1, context, excl, candidates=candidates)))
+            out.append(_case_insensitive_note(
+                pattern, lambda p: _grep_recursive_context(
+                    p, path, 1, context, excl, candidates=candidates)))
         current_file: str = ""
         first_group = True
         cut: List[Tuple[str, int]] = []
@@ -7351,6 +7398,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append(_shim_facade_note(path))
         out.append(_quote_pair_note(pattern, lambda inner: _grep_recursive(
             inner, path, 1, excl, candidates=candidates)))
+        out.append(_case_insensitive_note(pattern, lambda p: _grep_recursive(
+            p, path, 1, excl, candidates=candidates)))
     current_file = ""
     cut: List[Tuple[str, int]] = []
     for fp, lineno, content in hits:
