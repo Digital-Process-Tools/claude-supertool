@@ -91,6 +91,15 @@ def test_unknown_filter_errors(monkeypatch, capsys) -> None:
     assert "'bogus'" in out
 
 
+def test_unknown_filter_names_full_as_valid_token(monkeypatch, capsys) -> None:
+    """`full` is a working _FILTERS member (#1315), so the refusal that lists
+    the valid tokens must name it too, not just describe omission."""
+    _patch(monkeypatch, _jobs("success"), ["pipeline.py", "1", "bogus"])
+    assert pipe.main() == 1
+    out = capsys.readouterr().out
+    assert "'full'" in out
+
+
 # ---------------------------------------------------------------------------
 # full mode — bulk collapse
 # ---------------------------------------------------------------------------
@@ -122,6 +131,18 @@ def test_full_lists_failed_detail(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "## Failed jobs (1)" in out
     assert "job #1001" in out
+
+
+def test_full_explicit_token_matches_omission(monkeypatch, capsys) -> None:
+    """`gl-pipeline:ID:full` is accepted, not merely the default via omission
+    (#1315) -- the explicit spelling must render the identical board."""
+    payload = _jobs("success", "manual", "manual", "created", "skipped")
+    _patch(monkeypatch, payload, ["pipeline.py", "42", "full"])
+    assert pipe.main() == 0
+    out = capsys.readouterr().out
+    assert "job_0_success" in out
+    assert "job_1_manual" not in out
+    assert "+2 manual" in out
 
 
 # ---------------------------------------------------------------------------

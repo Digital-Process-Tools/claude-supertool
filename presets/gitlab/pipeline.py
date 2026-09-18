@@ -7,6 +7,8 @@ Two filter modes cover the only questions you actually ask mid-pipeline:
 
     gl-pipeline:ID          full board — manual/created/skipped bulk collapsed
                             to a one-line count
+    gl-pipeline:ID:full     the same full board, spelled explicitly (#1315) —
+                            `full` is accepted, not merely the default
     gl-pipeline:ID:active   only running/pending jobs — "what's still going"
     gl-pipeline:ID:failed   only failed jobs + their job IDs/URLs — "what broke"
 """
@@ -128,7 +130,7 @@ def main() -> int:
     pipeline_id = sys.argv[1]
     mode = sys.argv[2].lower() if len(sys.argv) > 2 and sys.argv[2] else "full"
     if mode not in _FILTERS:
-        print(f"ERROR: unknown filter {mode!r} — use 'active', 'failed', or omit for the full board")
+        print(f"ERROR: unknown filter {mode!r} — use 'full', 'active', 'failed', or omit for the full board")
         return 1
 
     # glab ci view doesn't support --output json directly for pipelines,
