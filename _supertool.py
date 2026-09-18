@@ -29575,9 +29575,24 @@ _TOML_LITERAL_OPENER = re.compile(r"=[ \t]*'''")
 # the same line -- so the garbage that early close actually produces often
 # lands on a LATER line, past the closer entirely (#2545). The same-line
 # check above never sees it.
+#
+# A HEURISTIC, not a parser (review finding, #2545): dotted keys
+# (`a.b = 1`) are real, legal TOML, so the bare-key alternative repeats
+# itself once per `.`-separated segment -- without that, a genuine dotted
+# key right after a correctly-closed, unrelated `'''` block failed this
+# match and got blamed for a parse error that was actually somewhere else
+# entirely (a false positive, worse than the silence this function exists
+# to replace, because it speaks with a specific line/column about the wrong
+# block). What this still cannot do, by construction, is tell prose that
+# merely LOOKS like a key/value pair or a table header from a real one --
+# `timeout = 30` or `[not a real table] more words` as more prose reads as
+# a legitimate next statement either way, and the early close stays
+# unflagged. That is a known, accepted gap in a best-effort hint attached
+# to an error that is raised regardless of whether this hint fires.
+_TOML_KEY_SEGMENT = r"(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')"
 _TOML_NEXT_STATEMENT = re.compile(
     r"\[\[?[^\n]*\]\]?"
-    r"|(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')[ \t]*="
+    r"|" + _TOML_KEY_SEGMENT + r"(?:\." + _TOML_KEY_SEGMENT + r")*[ \t]*="
 )
 
 

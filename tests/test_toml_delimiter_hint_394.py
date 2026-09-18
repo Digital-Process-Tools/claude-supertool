@@ -111,3 +111,20 @@ def test_hint_stays_silent_past_an_unrelated_clean_block() -> None:
     assert supertool._toml_delimiter_hint(
         "old = '''\nhello\n'''\n# a comment\nnew = \"x\"\n"
     ) == ""
+
+
+def test_hint_stays_silent_past_a_dotted_key() -> None:
+    """Self-review finding on #2545: dotted keys (`a.b = 1`) are legal TOML,
+    so a real one right after a correctly-closed, unrelated ''' block must
+    not get blamed for a parse error that lives elsewhere -- the first draft
+    of the #2545 fix flagged this as a false positive, speaking with a
+    specific (wrong) line/column about a block that never broke.
+    """
+    raw = (
+        "old = '''\n"
+        "hello\n"
+        "'''\n"
+        "new.text = 'x'\n"
+        "bad line no equals here\n"
+    )
+    assert supertool._toml_delimiter_hint(raw) == ""
