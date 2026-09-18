@@ -249,8 +249,19 @@ class TestTokenFileMode:
             return real_mkstemp(*args, **kwargs)
 
         monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
-        with pytest.raises(SystemExit):
-            _publish_safety.check_token_file_mode(tok)
+        # Ask (and cache) the enforcement verdict for THIS directory first,
+        # so the assertion below is gated on what this filesystem actually
+        # does rather than assuming enforcement -- Windows does not (see
+        # `test_a_loose_mode_is_a_warning_where_the_bits_are_not_enforced`
+        # and this module's own docstring), and an ungated `SystemExit`
+        # assertion here would be exactly the kind of platform-vacuous test
+        # this file's class docstring already warns about (#227).
+        enforced = _publish_safety._mode_bits_are_enforced(str(cred_dir))
+        if enforced:
+            with pytest.raises(SystemExit):
+                _publish_safety.check_token_file_mode(tok)
+        else:
+            _publish_safety.check_token_file_mode(tok)  # must NOT raise
         assert seen_dirs and seen_dirs[0] == str(cred_dir), (
             f"probe was created in {seen_dirs!r}, not the credential's own "
             f"directory {cred_dir} -- the filesystem judged is not the one "
@@ -268,16 +279,9 @@ class TestTokenFileMode:
         _publish_safety._mode_bits_are_enforced.cache_clear()
         missing_dir_tok = tmp_path / "does-not-exist" / "tok"
 
-        seen_dirs = []
-        real_mkstemp = tempfile.mkstemp
-
-        def spy_mkstemp(*args, **kwargs):
-            seen_dirs.append(kwargs.get("dir"))
-            return real_mkstemp(*args, **kwargs)
-
-        monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
         # The file itself doesn't need to exist for the probe-dir choice to
-        # be made -- exercise the helper directly.
+        # be made, and `_probe_dir_for` never touches `tempfile.mkstemp`
+        # itself -- exercise the helper directly, with no mock needed.
         chosen = _publish_safety._probe_dir_for(missing_dir_tok)
         assert chosen != str(missing_dir_tok.parent)
         err = capsys.readouterr().err
