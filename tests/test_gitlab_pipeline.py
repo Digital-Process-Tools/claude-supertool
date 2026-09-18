@@ -100,6 +100,18 @@ def test_unknown_filter_names_full_as_valid_token(monkeypatch, capsys) -> None:
     assert "'full'" in out
 
 
+def test_unknown_filter_names_every_filter_member(monkeypatch, capsys) -> None:
+    """The refusal text is only as good as its coverage of _FILTERS itself --
+    a future member added there and never added to this f-string would be the
+    exact drift #1315 was filed over. Assert every current member by name
+    rather than just 'full', so the next one added has a failing test too."""
+    _patch(monkeypatch, _jobs("success"), ["pipeline.py", "1", "bogus"])
+    assert pipe.main() == 1
+    out = capsys.readouterr().out
+    for token in pipe._FILTERS:
+        assert f"'{token}'" in out, f"refusal text never names {token!r}"
+
+
 # ---------------------------------------------------------------------------
 # full mode — bulk collapse
 # ---------------------------------------------------------------------------
