@@ -111,3 +111,24 @@ already-declined observation is not re-logged forever (`skills/manager/phases/fi
   ("escaped the same way MISMATCH does" slightly overstates `safe_short`'s own share of the
   work); caller-visible behaviour is correct either way, no single best rewrite, not worth a
   rule.
+
+Curate pass over `trap.d/`, 2026-09-18.
+
+- **1595.edit-at-dash-no-match-visually-present** -- root cause undetermined at the time (a
+  literal-backslash interaction or a whitespace difference `read`'s rendering does not
+  distinguish, the fragment's own text is unsure which); with no root cause there is no
+  actionable "before you touch X" rule, same reasoning as 2434 above.
+- **2607.raw-write-guards-blocked-correctly** -- the fragment's own text says it: "not a
+  defect -- the guards did their job," logged only as a data point on how often the raw-write
+  reflex fires despite the existing guard. No action needed unless it recurs at a rate the
+  guard's own prose isn't landing; nothing here for a rule to say that the guard doesn't
+  already say.
+- **2607.read-start-end-vs-offset-limit-ambiguity** -- `read:PATH:1:90` parsed as
+  OFFSET:LIMIT, not the START:END the caller meant; recurred for two independent callers in
+  one session. Already documented in the op's own signature (`read:PATH[:OFFSET:LIMIT|:
+  START-END|:full]`, `.supertool.json`'s `read` entry) and the op self-corrects on the next
+  call via its own returned hint -- cost one round-trip, not a wrong answer. The fragment's
+  own text says any further fix is a design question for the op itself (a warning on a
+  large second argument, or a more prominent description), not a jit-context rule; no
+  path/tool/vocabulary trigger here would fire only on this mistake without firing on every
+  ordinary `read` call.
