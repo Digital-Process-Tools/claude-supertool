@@ -98,7 +98,7 @@ One call answers branch, ahead/behind, recent history and every dirty path — w
 | `edit` / `replace` / `replace_lines` / `paste` / `append` / `vim` / `batch` | Mutating ops, each validated and rolled back on a syntax failure |
 | `validate` / `format` / `validate_staged` / `format_staged` | Run the registered validators/formatters for a path, standalone or on the staged diff — three-state (`ok` / finding / `skipped`), and a mutating op rolls back on a validator failure. [Details](docs/validators.md), [docs/formatters.md](docs/formatters.md) |
 | `cwd` / `repo` | Set the directory a call resolves against, or name the repo it is *about* |
-| `ops` / `ops:roster` / `help:OP` / `registry` / `guard` / `doctor` / `init` / `gc` | Discover, inspect and maintain the tool itself |
+| `ops` / `ops:roster` / `ops:grep=PATTERN` / `help:OP` / `registry` / `guard` / `doctor` / `init` / `gc` | Discover, inspect and maintain the tool itself |
 | `workspace` / `resolve` / `diag` / `hover` / `rename` | LSP-backed ops via the warm MCP daemon. [Details](docs/presets/lsp.md), [docs/mcp-integration.md](docs/mcp-integration.md) |
 | `git-status` | Branch, ahead/behind, dirty files, open PR/MR, suggested next step |
 | `git-worktrees` | Occupancy, tracker and merge state for every worktree, none of it guessed |
