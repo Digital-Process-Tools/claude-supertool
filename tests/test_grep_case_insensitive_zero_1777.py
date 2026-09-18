@@ -115,3 +115,25 @@ def test_a_letter_free_pattern_gets_no_probe_at_all(tree: Path) -> None:
     out = supertool.dispatch("grep:12345:c.txt:5")
     assert "0 results" in out, repr(out)
     assert MARKER not in out, repr(out)
+
+
+def test_a_letter_free_pattern_never_calls_the_probe(
+        tree: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The note-text absence above cannot tell "the probe ran and (?i) made
+    no difference on a digit-only pattern" from "the probe never ran" --
+    `(?i)` is a no-op on text with no letters either way, so a reverted
+    guard would still pass that assertion (second-pass review finding,
+    #1777). Count calls to the underlying walk instead."""
+    calls = []
+    real = supertool._grep_recursive
+
+    def spy(*args, **kwargs):
+        calls.append(args[:1])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(supertool, "_grep_recursive", spy)
+    supertool.dispatch("grep:12345:c.txt:5")
+    assert len(calls) == 1, (
+        "a letter-free pattern must reach _grep_recursive exactly once -- "
+        "the main zero-result scan -- and never a second time for the "
+        "case-insensitive probe: " + repr(calls))
