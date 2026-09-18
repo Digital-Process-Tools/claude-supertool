@@ -41,13 +41,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
-
-#: A directory name that will not exist on a real filesystem, used to build
-#: a spawn target guaranteed to fail with `FileNotFoundError` -- never
-#: `NotADirectoryError`, `PermissionError` or another `OSError` sibling --
-#: on either platform (#2578). See `_refuse_spawn` below.
-_REFUSED_DIR = "supertool-2578-refused-cwd-only-match"
+import uuid
 
 
 def which_excluding_cwd(name: str) -> "str | None":
@@ -206,8 +200,23 @@ def _refuse_spawn(name: str) -> str:
     `FileNotFoundError` -- not `NotADirectoryError` or another `OSError`
     sibling -- so every caller's existing `except FileNotFoundError` arm
     still catches it.
+
+    The directory component must be unpredictable, not merely absent at
+    the moment this function is written. A first version of this function
+    used a fixed name under `tempfile.gettempdir()` -- the shared, often
+    world-writable temp directory every user and every invocation on a
+    host has in common. That is pre-plantable: an attacker who once places
+    a file at that fixed path creates a standing backdoor for every future
+    cwd-only-match refusal on the whole host, for every repo and every
+    tool name, which is a WORSE primitive than the bare-name fallback this
+    function replaces (caught in review before merge, #2578). A fresh
+    `uuid4` per call, rooted at the filesystem root rather than a
+    conventionally-writable temp directory, cannot be pre-planted: nothing
+    names it before this call generates it, and it is never created on
+    disk, so it stays absent by construction rather than by the caller's
+    luck.
     """
-    return os.path.join(tempfile.gettempdir(), _REFUSED_DIR, name)
+    return os.path.join(os.sep, "supertool-2578-refused-" + uuid.uuid4().hex, name)
 
 
 def argv0(name: str) -> str:

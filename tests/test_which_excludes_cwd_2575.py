@@ -39,7 +39,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent
                        / "validators" / "common"))
 from bin_resolve import _is_executable, _spawnable  # noqa: E402
 from spawnable import argv0, spawnable, which_excluding_cwd  # noqa: E402
-import tempfile as _tempfile  # noqa: E402
 
 # A name ending in a PATHEXT extension, not a bare name (#2577 review of
 # #2575's own tests). CPython's shutil.which() on Windows does NOT try the
@@ -159,8 +158,13 @@ def test_argv0_refuses_a_cwd_only_match_rather_than_the_bare_name(
         "a refused result must carry a directory component -- a bare name "
         "is exactly what a Windows CreateProcess search resolves via cwd"
     )
-    tempdir_norm = os.path.normpath(_tempfile.gettempdir())
-    assert os.path.commonpath([resolved, tempdir_norm]) == tempdir_norm
+    assert resolved.endswith(TOOL), (
+        "the tool name is expected at the end of the refused path"
+    )
+    assert not os.path.exists(resolved), (
+        "a refused result must not point at anything real -- if it did, "
+        "subprocess would run it instead of failing"
+    )
 
 
 def test_bin_resolve_is_executable_rejects_a_cwd_only_match(

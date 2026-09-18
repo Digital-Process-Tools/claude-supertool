@@ -72,3 +72,25 @@ def test_a_real_path_entry_still_resolves_first(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(elsewhere)
     monkeypatch.setenv("PATH", str(real_dir))
     assert selftest.bash_candidates({})[0] == str(real)
+
+
+def test_the_report_says_when_the_cwd_guard_is_unavailable(monkeypatch) -> None:
+    """#2578 review: a silent fallback to raw `shutil.which()` in a file
+    whose entire premise is 'do not let a security gate fail quietly'
+    would be exactly the defect this diagnostic exists to surface, one
+    layer down in its own resolution logic. Pin that the report states
+    the degraded state rather than saying nothing about it.
+    """
+    monkeypatch.setattr(selftest, "_CWD_GUARD_AVAILABLE", False)
+    root = str(_ROOT)
+    lines, _code = selftest.report(root, environ={
+        "SUPERTOOL_SELFTEST_BASH_CANDIDATES": ""})
+    joined = os.linesep.join(lines)
+    assert "cwd guard" in joined and "NOT available" in joined, joined
+
+
+def test_the_report_says_the_cwd_guard_is_available_by_default() -> None:
+    """The positive control for the line above."""
+    lines, _code = selftest.report(str(_ROOT))
+    joined = os.linesep.join(lines)
+    assert "cwd guard" in joined and "available" in joined, joined
