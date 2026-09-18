@@ -38,7 +38,7 @@ import shlex
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from spawnable import which_excluding_cwd  # noqa: E402
+from spawnable import _cwd_only_match, _refuse_spawn, which_excluding_cwd  # noqa: E402
 
 
 def _is_executable(path: str) -> bool:
@@ -81,16 +81,29 @@ def _spawnable(name: str) -> str:
 
     Routed through `which_excluding_cwd` rather than `shutil.which`
     directly, so a bare NAME that only resolves via the current directory --
-    the repository under inspection -- falls through to the bare-name
-    return above instead of being spawned (#2575). The `os.path.isfile`
-    fast path just below is gated on `name` containing a directory
-    component for the same reason: an unqualified BARE name checked with
-    `os.path.isfile()` resolves relative to the current directory too, no
-    `which()` call required.
+    the repository under inspection -- never comes back resolved (#2575).
+    The `os.path.isfile` fast path just below is gated on `name` containing
+    a directory component for the same reason: an unqualified BARE name
+    checked with `os.path.isfile()` resolves relative to the current
+    directory too, no `which()` call required.
+
+    When resolution misses specifically because a cwd-only match was
+    refused, the bare name is not returned either: on Windows,
+    `CreateProcess` performs its own PATH+cwd search and would resolve the
+    same match through `subprocess` directly, reintroducing #2575 through
+    the OS's own search (#2578). `spawnable.py`'s `_refuse_spawn` is
+    returned instead -- a path guaranteed to fail with `FileNotFoundError`.
+    A genuine absence -- no match anywhere at all, not even cwd -- still
+    returns the bare name unchanged, exactly as before.
     """
     if os.path.dirname(name) and os.path.isfile(name) and os.access(name, os.X_OK):
         return name
-    return which_excluding_cwd(name) or name
+    resolved = which_excluding_cwd(name)
+    if resolved is not None:
+        return resolved
+    if _cwd_only_match(name):
+        return _refuse_spawn(name)
+    return name
 
 
 def resolve_bin_cmd(raw: str, default: str) -> list[str]:

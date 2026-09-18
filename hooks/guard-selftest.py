@@ -59,6 +59,25 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "validators", "common"))
+try:
+    from spawnable import which_excluding_cwd  # noqa: E402
+    _CWD_GUARD_AVAILABLE = True
+except ImportError:
+    # Degrade to the pre-#2610 behaviour rather than crash a diagnostic that
+    # exists to run on hosts with the least tooling: `validators/common/` is
+    # shipped alongside `hooks/` in every normal install, but a partial or
+    # unusual layout should not turn a self-test into a traceback.
+    #
+    # This must never be SILENT (#2578 review): a file whose entire reason
+    # for existing is "do not let a security gate fail quietly" cannot let
+    # its own resolver degrade without saying so. `report()` prints
+    # `_CWD_GUARD_AVAILABLE` on every run, not only when it is False, so the
+    # honest state is visible whichever branch ran.
+    which_excluding_cwd = shutil.which
+    _CWD_GUARD_AVAILABLE = False
+
 #: One string a candidate has to print exactly. Same shape as the interpreter
 #: ladder's probe and for the same reason: exiting 0 is a property of every
 #: binary on the box.
@@ -73,13 +92,23 @@ _BACKSLASH = chr(92)
 
 
 def bash_candidates(environ=None):
-    """Where a bash that runs scripts might be, most likely first."""
+    """Where a bash that runs scripts might be, most likely first.
+
+    The first entry is resolved through `which_excluding_cwd()`, not raw
+    `shutil.which()` (#2610): on Windows, `shutil.which()` inserts the
+    current directory ahead of every real `PATH` entry, so a repo-planted
+    `bash.exe`/`bash.cmd` at cwd root would be resolved here. Because this
+    script's whole premise is diagnosing a host with no real bash, a planted
+    file may be the ONLY candidate that resolves, rather than merely
+    shadowing a real one -- and `first_bash_that_runs_a_script` below spawns
+    each candidate directly, with no further gate of its own.
+    """
     environ = os.environ if environ is None else environ
     override = environ.get(_CANDIDATES_ENV)
     if override is not None:
         return [part for part in override.split(os.pathsep) if part]
     git_bin = "C:" + _BACKSLASH + "Program Files" + _BACKSLASH + "Git"
-    return [shutil.which("bash"),
+    return [which_excluding_cwd("bash"),
             git_bin + _BACKSLASH + "bin" + _BACKSLASH + "bash.exe",
             git_bin + _BACKSLASH + "usr" + _BACKSLASH + "bin"
             + _BACKSLASH + "bash.exe",
@@ -195,6 +224,14 @@ def report(root, environ=None):
     wrapper = os.path.join(root, "hooks", "pre-bash-guard.sh")
     lines = ["supertool raw-command guard, self-check",
              "  plugin root : " + root]
+    if _CWD_GUARD_AVAILABLE:
+        lines.append("  cwd guard   : available - bash resolution excludes "
+                     "a cwd-only match (#2610)")
+    else:
+        lines.append("  cwd guard   : NOT available - validators/common/"
+                     "spawnable.py could not be imported, so bash "
+                     "resolution fell back to raw shutil.which(), which "
+                     "does not exclude a cwd-only match (#2610)")
     lines.extend(rule_inventory(root, environ))
 
     command, why = a_command_the_registry_replaces(root)

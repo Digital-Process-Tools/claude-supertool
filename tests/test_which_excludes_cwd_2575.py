@@ -143,12 +143,28 @@ def test_spawnable_rejects_a_cwd_only_match(tmp_path, monkeypatch) -> None:
     assert spawnable(TOOL) is None
 
 
-def test_argv0_falls_back_to_the_bare_name_on_a_cwd_only_match(
+def test_argv0_refuses_a_cwd_only_match_rather_than_the_bare_name(
         tmp_path, monkeypatch) -> None:
+    """#2578: the bare name is no longer returned here. On Windows,
+    `CreateProcess` would perform the exact cwd search this module refuses,
+    reintroducing #2575 through the OS's own resolution of the bare name.
+    """
     _shim(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(tmp_path))
-    assert argv0(TOOL) == TOOL
+    resolved = argv0(TOOL)
+    assert resolved != TOOL
+    assert os.path.dirname(resolved), (
+        "a refused result must carry a directory component -- a bare name "
+        "is exactly what a Windows CreateProcess search resolves via cwd"
+    )
+    assert resolved.endswith(TOOL), (
+        "the tool name is expected at the end of the refused path"
+    )
+    assert not os.path.exists(resolved), (
+        "a refused result must not point at anything real -- if it did, "
+        "subprocess would run it instead of failing"
+    )
 
 
 def test_bin_resolve_is_executable_rejects_a_cwd_only_match(
@@ -159,12 +175,15 @@ def test_bin_resolve_is_executable_rejects_a_cwd_only_match(
     assert _is_executable(TOOL) is False
 
 
-def test_bin_resolve_spawnable_falls_back_to_the_bare_name(
+def test_bin_resolve_spawnable_refuses_a_cwd_only_match(
         tmp_path, monkeypatch) -> None:
+    """#2578: same shift as `argv0` above, applied to the second chokepoint."""
     _shim(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(tmp_path))
-    assert _spawnable(TOOL) == TOOL
+    resolved = _spawnable(TOOL)
+    assert resolved != TOOL
+    assert os.path.dirname(resolved)
 
 
 def test_an_explicit_path_is_never_routed_through_the_guard(
