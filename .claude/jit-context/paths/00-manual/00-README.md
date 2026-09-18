@@ -103,3 +103,11 @@ already-declined observation is not re-logged forever (`skills/manager/phases/fi
   in kind to a pre-existing silent failure, explicitly ranked non-urgent by its own fragment.
 - **691.a-refusal-that-prints-its-own-bypasses** — a self-declared design decision, already
   recorded in the #691 changelog entry, not a fresh finding needing a rule.
+- **227.oauth-error-body-unescaped-in-receipt** and **227.oauth-loopback-port-race-raw-traceback**
+  -- both already fixed in `f632a37d` (#2584): `comment.py:140` now `repr(safe_short(str(e),
+  300))`, and `_oauth.py`'s `HTTPServer` bind is now wrapped in `except OSError`. Verified
+  directly against the current file, not just the commit message.
+- **227.comment-overstates-safe-short-vs-repr** -- a one-line inline-comment wording nit
+  ("escaped the same way MISMATCH does" slightly overstates `safe_short`'s own share of the
+  work); caller-visible behaviour is correct either way, no single best rewrite, not worth a
+  rule.

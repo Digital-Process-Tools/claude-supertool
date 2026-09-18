@@ -93,3 +93,6 @@ Fires on any mutating op under `changelog.d/` and republishes the assembler's ow
 
 `verbose` = uncapped errors + source context + raw stdout/stderr. Colon-in-filename → use
 `validate:@payload.toml` or `validate:@-` (fields: `path`|`paths`, `tools`, `verbose`).
+
+Three `bin_resolve`/`spawnable` findings (#2578, #2540) live in `validators-spawnable.md` --
+budget (#1433), same `match:`, own slot.

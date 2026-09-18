@@ -9,9 +9,12 @@ presets/git/	presets-git.md
 presets/github/	presets-github.md
 presets/gitlab/	presets-gitlab.md
 presets/.*\.json	presets-json-description-length.md
+presets/_publish_safety.py	presets-publish-safety.md
 presets/watch/	presets-watch.md
+presets/youtube/	presets-youtube.md
 /scratchpad/	scratchpad-collisions.md
 tests/	tests-suite.md
+validators/	validators-spawnable.md
 validators/	validators.md
 .claude-plugin/|pyproject.toml	version-sites.md
 \.claude/jit-context/vocabulary/	vocabulary-index.md
