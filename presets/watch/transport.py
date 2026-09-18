@@ -1325,15 +1325,21 @@ def channel_disclosure() -> list[str]:
     says so, so a reader does not read any of them as the fleet going dark.
 
     **ON is not the whole of "opted in" (#2612).** `desktop_notify` itself
-    requires `which_excluding_cwd("osascript")` to resolve before it will
-    ever shell out (transport.py, just above `channel_disclosure`) -- an
-    operator can set `DESKTOP_ENV` on a machine where `osascript` is absent,
-    or excluded by the cwd guard, and get silence forever with nothing here
-    to explain why, which is this repo's own named defect class (an absence
-    the tool produced, read as an absence in the world) landing in the very
-    instrument meant to prevent it. So the opted-in branch re-runs the same
-    probe `desktop_notify` uses and reports which of the two outcomes it
-    got, rather than assuming resolution because the env var is set.
+    checks, in order: the platform is `darwin` at all, then that
+    `which_excluding_cwd("osascript")` resolves, before it will ever shell
+    out (transport.py, just above `channel_disclosure`) -- an operator can
+    set `DESKTOP_ENV` on a non-macOS host, or on a mac where `osascript` is
+    absent or excluded by the cwd guard, and get silence forever with
+    nothing here to explain why, which is this repo's own named defect
+    class (an absence the tool produced, read as an absence in the world)
+    landing in the very instrument meant to prevent it. So the opted-in
+    branch below mirrors both of `desktop_notify`'s own gates, in the same
+    order, rather than assuming resolution because the env var is set --
+    checking the probe alone and skipping the platform gate was tried first
+    and was itself the same defect from the other side: it told a non-mac
+    operator "osascript did not resolve" as though installing something
+    named that would fix it, when no non-mac equivalent exists and
+    `desktop_notify` returns before the probe is ever reached there.
     """
     lines = naming.disclosure_lines(RESOLVED, naming.declared_names())
     if desktop_notify_disabled():
@@ -1341,7 +1347,13 @@ def channel_disclosure() -> list[str]:
             f"desktop notifications are OFF ({NO_DESKTOP_ENV} is set) — the "
             f"socket and status-file transports are unaffected"]
     elif desktop_notify_enabled():
-        if which_excluding_cwd("osascript"):
+        if sys.platform != "darwin":
+            lines = lines + [
+                f"desktop notifications are opted in ({DESKTOP_ENV} is "
+                f"set) but this platform has no desktop notifier — no "
+                f"notification will fire; the socket and status-file "
+                f"transports are unaffected"]
+        elif which_excluding_cwd("osascript"):
             lines = lines + [
                 f"desktop notifications are ON ({DESKTOP_ENV} is set) — the "
                 f"socket and status-file transports are unaffected"]
