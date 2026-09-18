@@ -119,13 +119,20 @@ def test_ops_grep_pattern_with_colon_is_not_truncated(monkeypatch) -> None:
     assert f"1 of {_expected_total()}" in out
 
 
-def test_ops_grep_triple_colon_form_also_preserves_colons(monkeypatch) -> None:
-    """The `:::`-opener dispatch path takes a different tokenizer branch —
-    the same colon-preserving fix must hold there too."""
+def test_ops_grep_triple_colon_form_also_matches_the_single_colon_form(monkeypatch) -> None:
+    """`ops:::grep=PATTERN` takes `_dispatch_impl`'s OTHER tokenizer branch
+    (`arg.split(":::")`, not `_split_arg`) — it never hit the truncation bug
+    the sibling test above pins, since that branch's `parts[1]` already held
+    the whole colon-bearing remainder before this fix existed. Kept as a
+    same-answer regression check between the two invocation forms, not as a
+    second instance of the truncation fix (self-review round 2 caught the
+    original docstring overclaiming that)."""
     monkeypatch.setattr(supertool, "_CONFIG", _fake_config())
-    out = supertool.dispatch("ops:::grep=PATH:CONTENT")
-    assert "paste:PATH:CONTENT" in out
-    assert "read:PATH" not in out
+    single = supertool.dispatch("ops:grep=PATH:CONTENT")
+    triple = supertool.dispatch("ops:::grep=PATH:CONTENT")
+    assert single == triple
+    assert "paste:PATH:CONTENT" in triple
+    assert "read:PATH" not in triple
 
 
 def test_ops_grep_finds_a_dispatchable_op_with_no_config_entry(monkeypatch) -> None:
