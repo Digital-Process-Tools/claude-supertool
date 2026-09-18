@@ -29570,16 +29570,59 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
 _TOML_LITERAL_OPENER = re.compile(r"=[ \t]*'''")
 
 
+# A prose sentence naturally ends a line WITH the delimiter it is describing
+# ("...as documented here: '''") rather than following it with more text on
+# the same line -- so the garbage that early close actually produces often
+# lands on a LATER line, past the closer entirely (#2545). The same-line
+# check above never sees it.
+_TOML_NEXT_STATEMENT = re.compile(
+    r"\[\[?[^\n]*\]\]?"
+    r"|(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')[ \t]*="
+)
+
+
+def _toml_skip_blank_and_comments(raw: str, i: int) -> int:
+    """Advance *i* past whitespace and `#` comment lines, mirroring the main
+    parser's own skip (#2545). Used only to look PAST a candidate early close
+    for the real next statement -- never to decide whether the overall parse
+    is valid.
+    """
+    n = len(raw)
+    while i < n:
+        j = i
+        while j < n and raw[j] in " \t\r\n":
+            j += 1
+        if j < n and raw[j] == "#":
+            nl = raw.find(chr(10), j)
+            j = n if nl < 0 else nl
+            i = j
+            continue
+        return j
+    return n
+
+
 def _toml_delimiter_early_close(raw: str) -> int:
-    """Offset of the ''' run that closed a value early, or -1 (#1830).
+    """Offset of the ''' run that closed a value early, or -1 (#1830, #2545).
 
     Checkable without a successful parse, which is the whole requirement: this
     runs *because* the parse failed. Walk every `= '''` opener, find the run
-    that closes it, and look at what is left on that line. TOML allows only
-    whitespace or a `#` comment after a value, so any other text means the run
-    that closed the block was carried by the content and the remainder is being
-    read as syntax — which is the reported error, `Expected newline or end of
-    document after a statement`, pointing at a column nowhere near the cause.
+    that closes it, and look at what is left. TOML allows only whitespace or a
+    `#` comment after a value, so any other text means the run that closed the
+    block was carried by the content and the remainder is being read as syntax
+    — which is the reported error, `Expected newline or end of document after a
+    statement`, pointing at a column nowhere near the cause.
+
+    The trailing garbage is checked on the closer's own line FIRST (#1830),
+    then -- if that line was clean -- past any blank/comment lines that follow
+    (#2545): a `'''` embedded in prose commonly sits at the END of a line
+    ("...closes like this: '''"), pushing everything it truncated onto the
+    NEXT line, where the original check never looked, and #2545 was filed on
+    exactly that shape reaching the generic near-miss diagnostic silently
+    instead of this hint. What follows is flagged only when it does NOT look
+    like the start of a real statement (a bare/quoted key `=`, or a `[table]`
+    header) -- a legitimate, unrelated `'''` block followed by real content
+    is left alone, so the scan keeps walking to the next opener instead of
+    misattributing a failure that lives elsewhere in the payload.
 
     Returns the offset of the closing run rather than a bool so the message can
     name the payload line, the one coordinate the author can act on without
@@ -29601,6 +29644,9 @@ def _toml_delimiter_early_close(raw: str) -> int:
         stop = raw.find(chr(10), nxt)
         rest = (raw[nxt:] if stop < 0 else raw[nxt:stop]).strip()
         if rest and not rest.startswith("#"):
+            return run
+        beyond = _toml_skip_blank_and_comments(raw, nxt)
+        if beyond < len(raw) and not _TOML_NEXT_STATEMENT.match(raw, beyond):
             return run
         at = nxt
 

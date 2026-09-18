@@ -67,3 +67,47 @@ def test_mini_parser_agrees_with_tomllib_on_the_escape_hatch() -> None:
     on exactly the platforms that most need it."""
     raw = 'path = "x.py"\nnew = """' + PY_CONTENT + '"""\n'
     assert supertool._mini_toml_loads(raw)["new"] == PY_CONTENT
+
+
+def test_hint_fires_when_the_closer_ends_its_own_line(tmp_path) -> None:
+    """#2545: prose commonly ends a sentence WITH the delimiter it names
+    ("...closes like this: '''"), rather than following it with garbage on
+    the same line. That pushed the trailing content onto the NEXT line, past
+    where the #1830 same-line check ever looked, so the payload raised a bare
+    TOML parse error with no delimiter hint at all -- reported as reaching the
+    generic "old string not found" near-miss diagnostic silently instead.
+    """
+    raw = (
+        "old = '''\n"
+        "line one\n"
+        "line two ends with a run '''\n"
+        "literal_more_text\n"
+        "new = '''\n"
+        "replacement\n"
+        "'''\n"
+    )
+    hint = supertool._toml_delimiter_hint(raw)
+    assert "closed the block early" in hint
+    assert "payload line 3" in hint
+
+    payload = tmp_path / "p.toml"
+    payload.write_text(raw)
+    with pytest.raises(ValueError) as excinfo:
+        supertool._load_at_file("@" + str(payload))
+    message = str(excinfo.value)
+    assert "TOML parse error" in message
+    assert "closed the block early" in message
+
+
+def test_hint_stays_silent_past_an_unrelated_clean_block() -> None:
+    """A legitimate, correctly-closed literal block followed by real content
+    (or by a comment line, or by nothing at all) must not be misattributed as
+    the early close -- the scan has to keep walking to find the real cause.
+    """
+    assert supertool._toml_delimiter_hint(
+        "old = '''\nhello\n'''\nnew = \"x\"\n"
+    ) == ""
+    assert supertool._toml_delimiter_hint("old = '''\nhello\n'''") == ""
+    assert supertool._toml_delimiter_hint(
+        "old = '''\nhello\n'''\n# a comment\nnew = \"x\"\n"
+    ) == ""
