@@ -30980,9 +30980,35 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
     # TOML-parsed, so a quoting collision with source code in the content
     # cannot happen (#1868). `toml_source` is the header only; `raw` keeps
     # the whole original text for the caller that wants provenance (#1032).
+    #
+    # Residual, named rather than hidden (self-review): the marker regex has
+    # no TOML string/table context, so a line that only LOOKS like a marker
+    # -- a `foo = @rest` line sitting inside an already-open multi-line
+    # string value earlier in the header, documenting this very feature
+    # being the likely way one arrives -- is still matched and still ends
+    # the header there. The bar this is held to is that the failure stays
+    # LOUD: the truncated header then fails to parse (an unterminated
+    # string), which is exactly what happens, never a silent misparse. A
+    # `[[table]]` array before the marker (a batch payload's [[ops]]) is
+    # refused explicitly, below, rather than relying on that same
+    # loud-failure argument, because the top level of a batch payload IS
+    # still a dict and the injection would otherwise land silently on the
+    # wrong table.
     rest_field = None
     toml_source = raw
     rest_marker = _AT_FILE_REST_MARKER_RE.search(raw)
+    if rest_marker and re.search(
+            r"^[ \t]*\[\[", raw[:rest_marker.start()], re.MULTILINE):
+        # A `[[table]]` array header appears before the marker -- most likely
+        # a `batch:@-` payload's `[[ops]]` entries, where the marker line
+        # belongs to a NESTED table rather than the top-level dict this
+        # pre-split assumes. Treating it as the header-ending marker would
+        # truncate every later `[[ops]]` entry and misattribute the tail to
+        # the wrong table, silently (self-review, #1868). Declining the
+        # split keeps the failure loud instead: the literal `@rest` token
+        # then reaches the TOML parser as an ordinary invalid value and
+        # errors the same way it always did before this feature existed.
+        rest_marker = None
     if rest_marker:
         rest_field = rest_marker.group(1)
         toml_source = raw[:rest_marker.start()]
@@ -31010,11 +31036,19 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
         existing = {str(k).lower(): k for k in parsed}
         if rest_field.lower() in existing:
             orig_key = existing[rest_field.lower()]
-            field_m = re.search(
+            # LAST match, not first: a decoy line that merely looks like
+            # "key =" inside an earlier string value in the header would
+            # otherwise be reported as the conflicting field instead of the
+            # real assignment closer to the marker (self-review, #1868).
+            # Still context-blind -- a decoy AFTER the real assignment can
+            # still mislead -- the same accepted limitation this file
+            # already documents for provenance lookup (_payload_field_provenance:
+            # "good enough for a single-op payload, where each key appears once").
+            field_ms = list(re.finditer(
                 r"^[ \t]*" + re.escape(orig_key) + r"[ \t]*=",
-                toml_source, re.MULTILINE)
-            field_line = (toml_source.count(chr(10), 0, field_m.start()) + 1
-                          if field_m else "?")
+                toml_source, re.MULTILINE))
+            field_line = (toml_source.count(chr(10), 0, field_ms[-1].start()) + 1
+                          if field_ms else "?")
             raise ValueError(
                 f"@file payload refused ({source}): `{rest_field}` is given "
                 f"twice -- as a header field (payload line {field_line}) and "

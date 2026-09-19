@@ -80,3 +80,42 @@ def test_provenance_names_the_rest_tail() -> None:
     raw = 'path = "x.py"\ncontent = @rest\nbody\n'
     prov = supertool._payload_field_provenance(raw, "content")
     assert "@rest" in prov
+
+
+def test_marker_inside_a_batch_table_array_is_refused_loudly(tmp_path: Path) -> None:
+    # A `[[ops]]` table array before the marker means the marker line
+    # belongs to a NESTED table, not the top-level dict this pre-split
+    # assumes -- treating it as the header-ending marker would truncate
+    # every later [[ops]] entry and misattribute the tail to the wrong
+    # table, silently. The split must decline and let the literal `@rest`
+    # token reach the TOML parser as an ordinary invalid value instead
+    # (#1868 self-review).
+    raw = (
+        '[[ops]]\nop = "paste"\npath = "a.py"\ncontent = @rest\n'
+        'def a(): pass\n\n[[ops]]\nop = "paste"\npath = "b.py"\n'
+        'content = "whatever"\n'
+    )
+    ref = _write(tmp_path, raw)
+    with pytest.raises(ValueError) as excinfo:
+        supertool._load_at_file(ref)
+    message = str(excinfo.value)
+    assert "TOML parse error" in message
+
+
+def test_duplicate_field_line_number_prefers_the_occurrence_nearest_the_marker(
+        tmp_path: Path) -> None:
+    # A decoy line that merely LOOKS like a `content =` assignment, sitting
+    # inside an earlier string value, must not be reported as the
+    # conflicting field ahead of the real header assignment closer to the
+    # marker (#1868 self-review).
+    raw = (
+        'path = "x.py"\n'
+        'note = """\ncontent = "decoy inside a string, not real"\nmore\n"""\n'
+        'content = "already here"\ncontent = @rest\ntail\n'
+    )
+    ref = _write(tmp_path, raw)
+    with pytest.raises(ValueError) as excinfo:
+        supertool._load_at_file(ref)
+    message = str(excinfo.value)
+    assert "line 6" in message
+    assert "line 3" not in message
