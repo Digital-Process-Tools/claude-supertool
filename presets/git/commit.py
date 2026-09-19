@@ -147,6 +147,61 @@ _TRIPLE = "'" * 3
 _NO_VERIFY_TOKEN = "--no-verify"
 
 
+# #2592 -- the only C0/C1 bytes an ordinary commit message legitimately
+# carries. Anything else is never something a caller means to commit: on
+# lane fix/2573, a real ESC (0x1B) landed inside a multi-paragraph MESSAGE
+# and a PATH named right after it vanished before this script's own argv
+# ever formed -- reported as `no PATHS were given` even though a PATH was
+# given inline. Fed straight through this parser (no shell in the way), the
+# same message-plus-path combination commits cleanly, so the byte is not
+# lost here -- the leading theory is a shell quoting form ($'...') turning
+# escape TEXT (\x1b) into this real byte, and an interactive pty's own
+# readline then reading it as a control sequence and dropping the rest of
+# the line before python ever sees it. That loss happens upstream of this
+# script's own argv and cannot be recovered here; what this check catches
+# is the same hazardous byte arriving intact -- so a caller who still has
+# one in hand is stopped before a second trip through a shell.
+_MESSAGE_WHITESPACE_OK = "\n\t\r"
+
+
+def _control_byte_hazard(msg: str):
+    """(index, char) of the first hazardous control byte in *msg*, or None.
+
+    `_untrusted._is_control` is this repo's own predicate for "a stream
+    consumer treats this specially" (#886, #896) -- reused here rather than
+    duplicated so the two stay in agreement about what counts.
+    """
+    for i, ch in enumerate(msg):
+        if ch not in _MESSAGE_WHITESPACE_OK and _untrusted._is_control(ch):
+            return i, ch
+    return None
+
+
+def _control_byte_refusal(msg: str, index: int, ch: str):
+    """MESSAGE holds a byte no caller means to commit (#2592).
+
+    `%r` on `msg`, never the raw string: `repr()` escapes the very byte this
+    refusal is about into safe text, so printing the parsed message back
+    cannot repeat the hazard on whatever terminal reads this refusal.
+    """
+    glyph = _untrusted.visible(ch)
+    return [
+        "ERROR: MESSAGE holds a raw control byte (%s at character %d) -- "
+        "refused before anything was staged, nothing committed (#2592)."
+        % (glyph, index),
+        "  This is never something a caller means to commit. A shell "
+        "quoting form like $'...' turns escape TEXT (\\x1b) into a real "
+        "byte like this one, and some invocation paths (an interactive "
+        "pty) then read it as a control sequence and silently drop part "
+        "of the line -- which is how a PATH named right after it can "
+        "vanish before this parser ever runs.",
+        "  Parsed as: message=%r (intact -- this call reached commit.py "
+        "whole)" % (msg,),
+        "  Remove the stray byte and retype the message; a raw control "
+        "byte belongs in no commit message, on either route.",
+    ]
+
+
 def _no_verify_ambiguous_refusal():
     """git knows a path literally called `--no-verify`, so the token means
     two things (#2276).
@@ -1102,6 +1157,15 @@ def main() -> int:
         print("ERROR: commit message is empty.")
         return 1
 
+    # #2592 -- before anything else touches `msg`, including the repo probe
+    # below: a hazardous byte is a fact about the argument, not about this
+    # repository, so it needs no git call to report.
+    if not no_edit:
+        hazard = _control_byte_hazard(msg)
+        if hazard is not None:
+            for line in _control_byte_refusal(msg, hazard[0], hazard[1]):
+                print(line)
+            return 1
 
     # One `rev-parse --git-dir`, not two (#1126). The repository check below and
     # the MERGE_HEAD probe further down were asking git the identical question
