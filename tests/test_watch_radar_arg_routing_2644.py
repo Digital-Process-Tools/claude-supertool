@@ -8,14 +8,17 @@ every other tier's own `_arg`, which either ignored it or misread it, and
 nothing in the output said which.
 
 This suite is the fanout's own routing: a two-tier registration where the
-argument names one of them (positive: only that tier is called with it, and
-the other is never even resolved -- the same "never resolved" assertion
-`test_watch_radar_tiers_2446.py` uses for `tiers=`), a two-tier registration
-where the argument names neither (negative: a WARNING line, and *neither*
-tier receives the raw argument), and the single-tier case (positive control
-for backward compatibility: a bare argument with no tier-name prefix still
-reaches the one tier registered, unchanged from before this routing
-existed).
+argument names one of them (positive: only that tier gets it), a two-tier
+registration where the argument does not name any registered tier by prefix
+(the argument was never a tier selector at all -- an ordinary filter string
+for a population tier's own vocabulary, e.g. `author=@me,milestne=x` --
+so it must reach every tier unchanged, the pre-existing fanout, not be
+zeroed out as an error: CI caught this the first version of this function
+got backwards, breaking the pinned `#961` typo-detection contract in
+`tests/test_radar_gl_mrs_unknown_token_961.py`), and the single-tier case
+(positive control for backward compatibility: a bare argument with no
+tier-name prefix still reaches the one tier registered, unchanged from
+before this routing existed).
 """
 from __future__ import annotations
 
@@ -110,13 +113,19 @@ def test_unfiltered_arg_still_reaches_every_tier(env) -> None:
     assert failures == []
 
 
-def test_arg_matching_no_registered_tier_reaches_neither_and_is_reported(env) -> None:
+def test_arg_that_names_no_registered_tier_fans_out_unchanged(env) -> None:
+    """An argument that is not a prefix of any registered tier's name was
+    never a tier selector to begin with -- it is an ordinary filter string
+    in a population tier's own vocabulary (`author=@me,milestne=x`), and
+    every registered tier must still see it whole so it can judge it
+    itself. The first version of this routing zeroed it out instead and
+    broke the pinned `#961` typo-detection contract
+    (`tests/test_radar_gl_mrs_unknown_token_961.py`) on real CI."""
     a, b = _register_two(env)
-    lines, ok, failures = radar.tier_reports("gl-mrs:9")
-    assert a.seen_options is not None and a.seen_options["_arg"] == ""
-    assert b.seen_options is not None and b.seen_options["_arg"] == ""
-    assert any("matched no registered tier" in line for line in lines)
-    assert any("gl-mrs:9" in line for line in lines)
+    lines, ok, failures = radar.tier_reports("author=@me,milestne=x")
+    assert a.seen_options is not None and a.seen_options["_arg"] == "author=@me,milestne=x"
+    assert b.seen_options is not None and b.seen_options["_arg"] == "author=@me,milestne=x"
+    assert not any("matched no registered tier" in line for line in lines)
 
 
 def test_single_registered_tier_gets_a_bare_arg_unchanged(env) -> None:
