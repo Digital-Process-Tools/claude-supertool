@@ -38,12 +38,16 @@ PLUGIN_NAME = "oss"
 
 def _load_record(record=None):
     """`(doc, reason)`. `doc` is `{}` on failure; `reason` is `None` on
-    success, else a string naming what actually went wrong reading or
-    parsing the file -- an unreadable record must not render like one that
-    is simply absent (#2638)."""
+    success or when the record is simply absent -- a missing install
+    record is the ordinary state for a plugin that was never installed,
+    never a read failure. `reason` is a string only when the record
+    exists but could not be read or parsed, so that case does not render
+    like a plugin that is simply absent either (#2638)."""
     path = Path(os.path.expanduser(record or INSTALL_RECORD))
     try:
         text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, None
     except OSError as exc:
         return {}, str(exc.strerror or exc.__class__.__name__)
     try:

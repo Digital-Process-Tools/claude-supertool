@@ -41,8 +41,17 @@ def test_resolve_could_not_resolve_when_not_in_record(tmp_path):
 
 
 def test_resolve_could_not_resolve_when_record_unreadable(tmp_path):
+    """A missing record is the ordinary "never installed" state, not a
+    read failure -- distinct from the genuinely-unreadable case covered by
+    test_resolve_carries_read_failure_reason_distinct_from_absent below
+    (#2638 self-review: a first draft caught FileNotFoundError under the
+    same `except OSError` as a real read failure, which made this exact
+    case -- a fresh install with no record file yet -- wrongly report
+    "could not be read")."""
     state, detail = shim.resolve(record=tmp_path / "missing.json")
     assert state == "could-not-resolve"
+    assert "not in the install record" in detail
+    assert "could not be read" not in detail
 
 
 def test_resolve_carries_read_failure_reason_distinct_from_absent(tmp_path):
