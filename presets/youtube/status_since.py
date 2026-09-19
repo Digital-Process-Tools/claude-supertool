@@ -109,8 +109,15 @@ def render(video_title: str, video_id: str, matching: list[dict], truncated: boo
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
+        # `detect()` returns the matched substring itself, not a canned
+        # pattern name -- one of its own patterns matches across an embedded
+        # newline (a bare "system:" line), so an un-flattened hit can put
+        # attacker-chosen text at column 0 of this receipt, indistinguishable
+        # from a line this tool wrote. Flattened the same way every other
+        # untrusted field in this render already is.
+        flat_hits = [h.replace("\n", " ") for h in inj_hits[:3]]
         warning = (f"  ⚠ POSSIBLE INJECTION in this video's new comments -- "
-                   f"{', '.join(inj_hits[:3])}\n")
+                   f"{', '.join(flat_hits)}\n")
     lines = [f"{warning}({len(matching)} new comment(s)) {video_title} [{url}]"]
     for thread in matching:
         top = (((thread.get("snippet") or {}).get("topLevelComment") or {})
