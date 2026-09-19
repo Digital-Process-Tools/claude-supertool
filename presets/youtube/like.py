@@ -103,14 +103,17 @@ def main(arg: str) -> None:
     try:
         token = get_access_token()
     except OAuthError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        # Escaped the same way this op's own verify() escapes an HTTP error
+        # body (trap.d/227.oauth-error-body-unescaped-in-receipt.md): it is
+        # Google's, and can carry a newline.
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(2)
 
     try:
         authorized("videos/rate", token, {"id": video_id, "rating": "like"},
                   method="POST")
     except YouTubeAPIError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(1)
 
     check_verdict, detail = verify(video_id, token)

@@ -63,8 +63,19 @@ def _resolve_body(arg: str) -> str:
 
 
 def parse_args(arg: str) -> tuple[str, str, bool, bool]:
-    """(parent_comment_id, body, force, force_dup). Mirrors `comment.parse_args`."""
-    parts = arg.split("|")
+    """(parent_comment_id, body, force, force_dup). Mirrors `comment.parse_args`:
+    a reply body whose own trailing field happens to spell "force"/"force-dup"
+    is the same ambiguity #2600 found in `comment.py` -- there is no way to
+    tell "the operator's last field is body text" from "the operator meant
+    the flag" once both spell the same word under plain "|" splitting. ":::"
+    is not a character an operator would type into ordinary prose, so it is
+    offered as an explicit field separator the same way `comment.parse_args`
+    does, chosen by whichever delimiter occurs FIRST in `arg`.
+    """
+    pipe_at = arg.find("|")
+    triple_at = arg.find(":::")
+    sep = ":::" if triple_at != -1 and (pipe_at == -1 or triple_at < pipe_at) else "|"
+    parts = arg.split(sep)
     if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
         sys.stderr.write(f"ERROR: usage {USAGE}\n")
         sys.exit(2)
@@ -79,7 +90,10 @@ def parse_args(arg: str) -> tuple[str, str, bool, bool]:
             break
         parts.pop()
     text_fields = parts[1:]
-    body = _resolve_body("|".join(text_fields)).strip()
+    # Rejoin on the same separator that was used to split, so a body
+    # containing that character survives, which a plain `split(sep, 2)`
+    # would silently truncate at the second one.
+    body = _resolve_body(sep.join(text_fields)).strip()
     if not body:
         sys.stderr.write("ERROR: reply body is empty\n")
         sys.exit(2)
@@ -143,7 +157,10 @@ def main(arg: str) -> None:
     try:
         token = get_access_token()
     except OAuthError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        # Escaped the same way comment.py escapes this
+        # (trap.d/227.oauth-error-body-unescaped-in-receipt.md): the OAuth
+        # error body is Google's and can carry a newline.
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(2)
 
     try:
@@ -152,7 +169,9 @@ def main(arg: str) -> None:
             body={"snippet": {"parentId": parent_id, "textOriginal": body}},
         )
     except YouTubeAPIError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        # Same escaping as the OAuthError arm above: _yt._format_oauth_http_error's
+        # raw body[:300], Google's bytes, not a stranger's.
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(1)
 
     comment_id = data.get("id") or "?"

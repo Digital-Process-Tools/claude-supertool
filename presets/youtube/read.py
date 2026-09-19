@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key  # noqa: E402
-from _sanitize import detect, wrap as wrap_untrusted  # noqa: E402
+from _sanitize import detect, safe_short, wrap as wrap_untrusted  # noqa: E402
 from _yt import YouTubeAPIError, get  # noqa: E402
 
 
@@ -103,7 +103,10 @@ def main(arg: str) -> None:
             "id": video_id,
         })
     except YouTubeAPIError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        # Escaped the same way comment.py escapes an HTTP error body
+        # (trap.d/227.oauth-error-body-unescaped-in-receipt.md): it is
+        # Google's, and can carry a newline or a known injection pattern.
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(1)
     items = data.get("items") or []
     if not items:
@@ -122,7 +125,8 @@ def main(arg: str) -> None:
             })
             comments = cdata.get("items") or []
         except YouTubeAPIError as e:
-            comments_note = f"--- comments unavailable: {e.message} ---"
+            comments_note = (
+                f"--- comments unavailable: {repr(safe_short(e.message, 300))} ---")
     print(render(items[0], comments, comments_note, inline_n))
 
 
