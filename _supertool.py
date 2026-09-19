@@ -29570,16 +29570,74 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
 _TOML_LITERAL_OPENER = re.compile(r"=[ \t]*'''")
 
 
+# A prose sentence naturally ends a line WITH the delimiter it is describing
+# ("...as documented here: '''") rather than following it with more text on
+# the same line -- so the garbage that early close actually produces often
+# lands on a LATER line, past the closer entirely (#2545). The same-line
+# check above never sees it.
+#
+# A HEURISTIC, not a parser (review finding, #2545): dotted keys
+# (`a.b = 1`) are real, legal TOML, so the bare-key alternative repeats
+# itself once per `.`-separated segment -- without that, a genuine dotted
+# key right after a correctly-closed, unrelated `'''` block failed this
+# match and got blamed for a parse error that was actually somewhere else
+# entirely (a false positive, worse than the silence this function exists
+# to replace, because it speaks with a specific line/column about the wrong
+# block). What this still cannot do, by construction, is tell prose that
+# merely LOOKS like a key/value pair or a table header from a real one --
+# `timeout = 30` or `[not a real table] more words` as more prose reads as
+# a legitimate next statement either way, and the early close stays
+# unflagged. That is a known, accepted gap in a best-effort hint attached
+# to an error that is raised regardless of whether this hint fires.
+_TOML_KEY_SEGMENT = r"(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')"
+_TOML_NEXT_STATEMENT = re.compile(
+    r"\[\[?[^\n]*\]\]?"
+    r"|" + _TOML_KEY_SEGMENT + r"(?:\." + _TOML_KEY_SEGMENT + r")*[ \t]*="
+)
+
+
+def _toml_skip_blank_and_comments(raw: str, i: int) -> int:
+    """Advance *i* past whitespace and `#` comment lines, mirroring the main
+    parser's own skip (#2545). Used only to look PAST a candidate early close
+    for the real next statement -- never to decide whether the overall parse
+    is valid.
+    """
+    n = len(raw)
+    while i < n:
+        j = i
+        while j < n and raw[j] in " \t\r\n":
+            j += 1
+        if j < n and raw[j] == "#":
+            nl = raw.find(chr(10), j)
+            j = n if nl < 0 else nl
+            i = j
+            continue
+        return j
+    return n
+
+
 def _toml_delimiter_early_close(raw: str) -> int:
-    """Offset of the ''' run that closed a value early, or -1 (#1830).
+    """Offset of the ''' run that closed a value early, or -1 (#1830, #2545).
 
     Checkable without a successful parse, which is the whole requirement: this
     runs *because* the parse failed. Walk every `= '''` opener, find the run
-    that closes it, and look at what is left on that line. TOML allows only
-    whitespace or a `#` comment after a value, so any other text means the run
-    that closed the block was carried by the content and the remainder is being
-    read as syntax — which is the reported error, `Expected newline or end of
-    document after a statement`, pointing at a column nowhere near the cause.
+    that closes it, and look at what is left. TOML allows only whitespace or a
+    `#` comment after a value, so any other text means the run that closed the
+    block was carried by the content and the remainder is being read as syntax
+    — which is the reported error, `Expected newline or end of document after a
+    statement`, pointing at a column nowhere near the cause.
+
+    The trailing garbage is checked on the closer's own line FIRST (#1830),
+    then -- if that line was clean -- past any blank/comment lines that follow
+    (#2545): a `'''` embedded in prose commonly sits at the END of a line
+    ("...closes like this: '''"), pushing everything it truncated onto the
+    NEXT line, where the original check never looked, and #2545 was filed on
+    exactly that shape reaching the generic near-miss diagnostic silently
+    instead of this hint. What follows is flagged only when it does NOT look
+    like the start of a real statement (a bare/quoted key `=`, or a `[table]`
+    header) -- a legitimate, unrelated `'''` block followed by real content
+    is left alone, so the scan keeps walking to the next opener instead of
+    misattributing a failure that lives elsewhere in the payload.
 
     Returns the offset of the closing run rather than a bool so the message can
     name the payload line, the one coordinate the author can act on without
@@ -29602,6 +29660,28 @@ def _toml_delimiter_early_close(raw: str) -> int:
         rest = (raw[nxt:] if stop < 0 else raw[nxt:stop]).strip()
         if rest and not rest.startswith("#"):
             return run
+        # Self-review (CI) finding, #2545: the cross-line walk below must NOT
+        # fire when the closing run sits ALONE on its own line -- that is the
+        # idiomatic way to end a legitimate multi-line block, and firing there
+        # means "some later, unrelated content in the payload does not parse"
+        # gets blamed on THIS closer with a specific (wrong) line/column.
+        # Reproduced against a payload with two entirely well-formed blocks
+        # followed by one unrelated bad line: both closers sit alone on their
+        # own line, and the real cause is neither of them.
+        #
+        # A closing run with real content BEFORE it on the same line (prose
+        # ending a sentence with the delimiter, `line two ends with a run '''`)
+        # has no such legitimate reading -- a literal block's closer is never
+        # idiomatically preceded by prose on its own line, so this is the
+        # signal that distinguishes "the run embedded in prose closed this
+        # block early" from "this block closed exactly where intended, and
+        # the payload breaks somewhere else entirely".
+        line_start = raw.rfind(chr(10), 0, run) + 1
+        before = raw[line_start:run]
+        if before.strip():
+            beyond = _toml_skip_blank_and_comments(raw, nxt)
+            if beyond < len(raw) and not _TOML_NEXT_STATEMENT.match(raw, beyond):
+                return run
         at = nxt
 
 

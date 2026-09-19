@@ -67,3 +67,89 @@ def test_mini_parser_agrees_with_tomllib_on_the_escape_hatch() -> None:
     on exactly the platforms that most need it."""
     raw = 'path = "x.py"\nnew = """' + PY_CONTENT + '"""\n'
     assert supertool._mini_toml_loads(raw)["new"] == PY_CONTENT
+
+
+def test_hint_fires_when_the_closer_ends_its_own_line(tmp_path) -> None:
+    """#2545: prose commonly ends a sentence WITH the delimiter it names
+    ("...closes like this: '''"), rather than following it with garbage on
+    the same line. That pushed the trailing content onto the NEXT line, past
+    where the #1830 same-line check ever looked, so the payload raised a bare
+    TOML parse error with no delimiter hint at all -- reported as reaching the
+    generic "old string not found" near-miss diagnostic silently instead.
+    """
+    raw = (
+        "old = '''\n"
+        "line one\n"
+        "line two ends with a run '''\n"
+        "literal_more_text\n"
+        "new = '''\n"
+        "replacement\n"
+        "'''\n"
+    )
+    hint = supertool._toml_delimiter_hint(raw)
+    assert "closed the block early" in hint
+    assert "payload line 3" in hint
+
+    payload = tmp_path / "p.toml"
+    payload.write_text(raw)
+    with pytest.raises(ValueError) as excinfo:
+        supertool._load_at_file("@" + str(payload))
+    message = str(excinfo.value)
+    assert "TOML parse error" in message
+    assert "closed the block early" in message
+
+
+def test_hint_stays_silent_past_an_unrelated_clean_block() -> None:
+    """A legitimate, correctly-closed literal block followed by real content
+    (or by a comment line, or by nothing at all) must not be misattributed as
+    the early close -- the scan has to keep walking to find the real cause.
+    """
+    assert supertool._toml_delimiter_hint(
+        "old = '''\nhello\n'''\nnew = \"x\"\n"
+    ) == ""
+    assert supertool._toml_delimiter_hint("old = '''\nhello\n'''") == ""
+    assert supertool._toml_delimiter_hint(
+        "old = '''\nhello\n'''\n# a comment\nnew = \"x\"\n"
+    ) == ""
+
+
+def test_hint_stays_silent_past_a_dotted_key() -> None:
+    """Self-review finding on #2545: dotted keys (`a.b = 1`) are legal TOML,
+    so a real one right after a correctly-closed, unrelated ''' block must
+    not get blamed for a parse error that lives elsewhere -- the first draft
+    of the #2545 fix flagged this as a false positive, speaking with a
+    specific (wrong) line/column about a block that never broke.
+    """
+    raw = (
+        "old = '''\n"
+        "hello\n"
+        "'''\n"
+        "new.text = 'x'\n"
+        "bad line no equals here\n"
+    )
+    assert supertool._toml_delimiter_hint(raw) == ""
+
+
+def test_hint_stays_silent_when_neither_closer_is_the_cause() -> None:
+    """CI finding on #2545 (second regression, caught after the dotted-key
+    fix landed): two entirely well-formed ''' blocks, EACH with its closer
+    alone on its own line -- the idiomatic way to end one -- followed by
+    one unrelated line that is simply bad TOML on its own. Neither closer
+    caused the failure, so neither may be named. The cross-line lookahead
+    must only fire when the closer has real content BEFORE it on its own
+    line (prose ending mid-sentence); a closer sitting alone on its line
+    is never the cause, however odd what follows looks.
+    """
+    raw = (
+        'path = "x.py"\n'
+        "old = '''\n"
+        "def f():\n"
+        "    return 1\n"
+        "'''\n"
+        "new = '''\n"
+        "def f():\n"
+        "    return 2\n"
+        "'''\n"
+        "this line is the unrelated syntax error\n"
+    )
+    assert supertool._toml_delimiter_hint(raw) == ""
