@@ -32,6 +32,7 @@ from _authorization import (  # noqa: E402
     _load_raw,
 )
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #415/#1388)
+import _untrusted  # noqa: E402  (channel_id is a key from an out-of-repo config file -- #2430)
 
 
 def _list_all() -> int:
@@ -53,7 +54,8 @@ def _list_all() -> int:
     for channel_id in channel_ids:
         d = resolve_channel(channel_id, project_config=project_result.data,
                             project_config_error=project_result.error)
-        print(f"{channel_id}: {d.level} (heard={d.heard}, "
+        flat_id = _untrusted.flat(channel_id, disclose_newline=True)
+        print(f"{flat_id}: {d.level} (heard={d.heard}, "
               f"may_instruct={d.may_instruct}) — {d.detail}")
     return 0
 
@@ -63,7 +65,8 @@ def _one(channel_id: str, user_id: str | None) -> int:
     d = resolve_channel(channel_id, user_id=user_id,
                         project_config=project_result.data,
                         project_config_error=project_result.error)
-    print(f"# Slack channel authorization — {channel_id}")
+    print(f"# Slack channel authorization — "
+          f"{_untrusted.flat(channel_id, disclose_newline=True)}")
     print(f"level: {d.level}")
     print(f"heard: {d.heard}")
     print(f"may_instruct: {d.may_instruct}"
