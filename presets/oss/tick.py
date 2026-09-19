@@ -31,7 +31,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import shim  # noqa: E402
+import _untrusted  # noqa: E402  (a wait's dispatch/observable/why and a
+                    # plugin identity's current/prior all come from state-file
+                    # entries a lane or a maintainer typed, some of it a
+                    # copy-pasted PR title -- flattened before it reaches a
+                    # one-line render, same convention as every other preset
+                    # (found by review, #2639's self-review round))
 
 #: This preset's own `supertool.py`, three directories up from
 #: `presets/oss/tick.py` -- the same core the call reached this op through,
@@ -107,6 +114,58 @@ def _oss_state(scripts_dir, state_path, args, run=None):
     )
 
 
+def _parse_pending_wait(out):
+    """`oss_state.py --pending-wait`'s real stdout, not the prose the shim used
+    to assume (#2639): a bare `holds`/`cleared` never leaves that script. It
+    prints the literal string ``no pending wait`` for both "nothing was ever
+    recorded" and "the most recent wait was cleared" -- those two collapse to
+    the same bytes at the source, so this shim cannot and does not try to tell
+    them apart -- or a JSON object (``json.dumps(record, indent=2)``) whose
+    own ``state`` key is ``holds`` or ``could-not-evaluate`` for anything still
+    outstanding.
+
+    Returns ``(state, record)`` where ``state`` is ``"cleared"``, ``"holds"``,
+    ``"could-not-evaluate"`` or ``"unrecognised"`` (a shape neither of the two
+    known ones -- the script's own output changed under this shim, or the
+    process printed something else entirely) with ``record`` set to the raw
+    text/value in that last case, never a crash.
+    """
+    text = (out or "").strip()
+    if not text or text == "no pending wait":
+        return "cleared", None
+    try:
+        record = json.loads(text)
+    except ValueError:
+        return "unrecognised", text
+    if not isinstance(record, dict) or record.get("state") not in (
+        "holds", "could-not-evaluate",
+    ):
+        return "unrecognised", record
+    return record["state"], record
+
+
+def _parse_plugin_identity_check(out):
+    """`oss_state.py --check-plugin-identity`'s real stdout (#2639's sibling,
+    same root cause): `_run` merges stderr into stdout, and the script writes
+    its one-line receipt to stderr *before* the JSON record on stdout -- so the
+    combined text is that receipt line, then the JSON. This finds the JSON by
+    its first `{` rather than assuming the output is bare JSON with nothing
+    ahead of it.
+
+    Returns the parsed record dict, or ``None`` when no valid JSON object
+    could be found in the output at all.
+    """
+    text = (out or "").strip()
+    brace = text.find("{")
+    if brace == -1:
+        return None
+    try:
+        record = json.loads(text[brace:])
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
 def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
     """Every row, always attempted, never silently skipped. Returns a dict."""
     cwd = cwd or os.getcwd()
@@ -148,7 +207,33 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
             else "exit {}: {}".format(code, out.strip())
         )
     else:
-        rows["pending_wait"] = out.strip() or "could-not-evaluate"
+        wait_state, wait_record = _parse_pending_wait(out)
+        if wait_state == "cleared":
+            rows["pending_wait"] = "cleared"
+        elif wait_state == "holds":
+            detail = (
+                wait_record.get("dispatch") or wait_record.get("observable")
+                or "no detail given"
+            )
+            rows["pending_wait"] = "holds -- {}".format(_untrusted.flat(str(detail)))
+        elif wait_state == "could-not-evaluate":
+            why = wait_record.get("why") or "no reason recorded"
+            rows["pending_wait"] = "could-not-evaluate -- {}".format(
+                _untrusted.flat(str(why))
+            )
+        else:
+            # A shape neither `_parse_pending_wait` nor this shim recognises --
+            # never rendered as a plain "could-not-evaluate", which `_next_step`
+            # treats as non-blocking (found by review, #2639's own self-review
+            # round): that would let dispatch proceed on the exact kind of
+            # ambiguous answer #2639 was filed over, one level down from the
+            # bug this diff fixes. "unresolved" is its own word so `_next_step`
+            # can gate on it distinctly from a script-confirmed could-not-
+            # evaluate measurement, which this shim still treats as advisory.
+            rows["pending_wait"] = (
+                "unresolved -- unrecognised --pending-wait output: "
+                "{!r}".format(wait_record)
+            )
 
     if scripts_dir is not None:
         identity = "oss {}".format(version)
@@ -162,7 +247,32 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
             out if code is None else "exit {}: {}".format(code, out.strip())
         )
     else:
-        rows["plugin_identity_check"] = out.strip() or "could-not-tell"
+        identity_record = _parse_plugin_identity_check(out)
+        identity_state = identity_record.get("state") if identity_record else None
+        if identity_state == "unchanged":
+            rows["plugin_identity_check"] = "unchanged ({})".format(
+                _untrusted.flat(str(identity_record.get("current")))
+            )
+        elif identity_state == "changed":
+            rows["plugin_identity_check"] = "changed -- was {}, now {}".format(
+                _untrusted.flat(str(identity_record.get("prior"))),
+                _untrusted.flat(str(identity_record.get("current"))),
+            )
+        elif identity_state == "could-not-tell":
+            why = identity_record.get("why") or "no reason recorded"
+            rows["plugin_identity_check"] = "could-not-tell -- {}".format(
+                _untrusted.flat(str(why))
+            )
+        elif identity_state == "route-mismatch":
+            why = identity_record.get("why") or "no reason recorded"
+            rows["plugin_identity_check"] = "route-mismatch -- {}".format(
+                _untrusted.flat(str(why))
+            )
+        else:
+            rows["plugin_identity_check"] = (
+                "could-not-tell -- unrecognised --check-plugin-identity "
+                "output: {!r}".format(out.strip())
+            )
 
     code, out = _run(["git", "fetch"], run=run, cwd=cwd)
     if code != 0:
@@ -230,6 +340,13 @@ def _next_step(rows):
         )
     if rows["pending_wait"].startswith("holds"):
         return "pending wait holds -- do not dispatch yet"
+    if rows["pending_wait"].startswith("unresolved"):
+        # An unrecognised --pending-wait shape (#2639's own self-review round)
+        # must not fail open the way a plain "could-not-evaluate" measurement
+        # does -- a parse failure carries no information about whether a real
+        # hold is sitting behind it, so it is refused the same as a hold
+        # rather than treated as advisory.
+        return "pending wait could not be parsed -- do not dispatch yet"
     if rows["git_sync"].startswith("could-not-run"):
         return "resolve the git sync failure before proceeding -- {}".format(
             rows["git_sync"]

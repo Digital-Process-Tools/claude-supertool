@@ -151,9 +151,22 @@ def _fake_run_factory(git_ok=True, board_ok=True, radar="registered"):
             if "--last" in argv:
                 return _FakeCompleted(0, b"2026-09-01T00:00:00Z decision=dispatch")
             if "--pending-wait" in argv:
-                return _FakeCompleted(0, b"cleared")
+                # The real script's own shape for "nothing pending" (#2639):
+                # the literal string "no pending wait", never the bare word
+                # "cleared" this fixture used to fake.
+                return _FakeCompleted(0, b"no pending wait")
             if "--check-plugin-identity" in argv:
-                return _FakeCompleted(0, b"unchanged")
+                # The real script's own shape (#2639's sibling): a one-line
+                # receipt on stderr, merged by `_run` ahead of the JSON record
+                # on stdout -- never bare JSON, and never the bare word
+                # "unchanged" this fixture used to fake.
+                return _FakeCompleted(
+                    0,
+                    b'plugin identity: unchanged (oss 0.40.0)\n'
+                    b'{"current": "oss 0.40.0", "prior": "oss 0.40.0", '
+                    b'"current_route": null, "prior_route": null, '
+                    b'"state": "unchanged", "why": null}',
+                )
             return _FakeCompleted(1, b"unhandled oss_state.py call")
         if "radar:--state" in argv:
             if radar == "not-configured":
@@ -199,7 +212,7 @@ def test_compose_every_row_present_on_the_happy_path(tmp_path):
     assert rows["plugin_identity"] == "resolved 0.40.0"
     assert "dispatch" in rows["last_state_entry"]
     assert rows["pending_wait"] == "cleared"
-    assert rows["plugin_identity_check"] == "unchanged"
+    assert rows["plugin_identity_check"] == "unchanged (oss 0.40.0)"
     assert rows["git_sync"] == "Already up to date."
     assert all(v == "read" for v in rows["board"].values())
     assert rows["radar_tier"] == "registered"
@@ -359,7 +372,19 @@ def test_pending_wait_holds_stops_the_next_step(tmp_path):
     def _run_with_holding_wait(argv, **kwargs):
         joined = " ".join(str(a) for a in argv)
         if "oss_state.py" in joined and "--pending-wait" in argv:
-            return _FakeCompleted(0, b"holds -- release soak window open")
+            # The real script's own shape for a holding wait (#2639): a JSON
+            # object whose "state" key is "holds", never a string that starts
+            # with the literal word "holds".
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    {
+                        "state": "holds",
+                        "dispatch": "release soak window open",
+                        "observable": "PR #123 merged",
+                    }
+                ).encode("utf-8"),
+            )
         return _fake_run_factory()(argv, **kwargs)
 
     rows = tick.compose(
@@ -367,7 +392,7 @@ def test_pending_wait_holds_stops_the_next_step(tmp_path):
         run=_run_with_holding_wait,
         resolve_fn=_resolved(tmp_path),
     )
-    assert rows["pending_wait"].startswith("holds")
+    assert rows["pending_wait"] == "holds -- release soak window open"
     assert rows["next"] == "pending wait holds -- do not dispatch yet"
 
 
@@ -453,3 +478,259 @@ def test_main_survives_a_console_that_cannot_encode_the_render(monkeypatch):
     monkeypatch.setattr(tick, "compose", _fake_compose)
     monkeypatch.setattr(sys, "stdout", _StubbornStream())
     assert tick.main() == 0
+
+
+# --- #2639: the real script's shapes, not the prose the shim assumed -------
+
+
+def test_parse_pending_wait_reads_the_real_no_pending_wait_string():
+    assert tick._parse_pending_wait("no pending wait") == ("cleared", None)
+    # Also the empty/whitespace-only shape a subprocess can hand back.
+    assert tick._parse_pending_wait("") == ("cleared", None)
+    assert tick._parse_pending_wait("   ") == ("cleared", None)
+
+
+def test_parse_pending_wait_reads_the_real_json_holds_record():
+    out = json.dumps({"state": "holds", "dispatch": "PR #2630 ...", "why": None})
+    state, record = tick._parse_pending_wait(out)
+    assert state == "holds"
+    assert record["dispatch"] == "PR #2630 ..."
+
+
+def test_parse_pending_wait_reads_the_real_json_could_not_evaluate_record():
+    out = json.dumps({"state": "could-not-evaluate", "why": "state file unreadable"})
+    state, record = tick._parse_pending_wait(out)
+    assert state == "could-not-evaluate"
+    assert record["why"] == "state file unreadable"
+
+
+# The exact reproduction from #2639's own report: a JSON object starting
+# with "{" was fed through `startswith("holds")` and produced "proceed to
+# dispatch" instead of the do-not-dispatch NEXT line.
+def test_parse_pending_wait_never_mistakes_a_json_object_for_the_bare_word():
+    out = '{ "dispatch": "PR #2630 ...", "state": "holds" }'
+    state, record = tick._parse_pending_wait(out)
+    assert state == "holds"
+    assert not out.startswith("holds")  # the shape #2639 was found against
+
+
+def test_parse_pending_wait_reports_unrecognised_rather_than_guessing():
+    state, record = tick._parse_pending_wait("something the script never prints")
+    assert state == "unrecognised"
+    state, record = tick._parse_pending_wait(json.dumps({"no": "state key"}))
+    assert state == "unrecognised"
+
+
+def test_parse_plugin_identity_check_finds_the_json_past_the_stderr_receipt():
+    out = (
+        "plugin identity: changed -- was oss 0.39.0, now oss 0.40.0\n"
+        + json.dumps(
+            {
+                "current": "oss 0.40.0",
+                "prior": "oss 0.39.0",
+                "current_route": None,
+                "prior_route": None,
+                "state": "changed",
+                "why": None,
+            }
+        )
+    )
+    record = tick._parse_plugin_identity_check(out)
+    assert record["state"] == "changed"
+    assert record["current"] == "oss 0.40.0"
+
+
+def test_parse_plugin_identity_check_returns_none_for_unparsable_output():
+    assert tick._parse_plugin_identity_check("not json at all") is None
+    assert tick._parse_plugin_identity_check("") is None
+
+
+def test_compose_pending_wait_could_not_evaluate_is_not_mistaken_for_holds(tmp_path):
+    (tmp_path / ".oss.local.json").write_text(
+        json.dumps({"clone": str(tmp_path), "state_file": ".max/oss-watch.json"}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".max").mkdir()
+    (tmp_path / ".max" / "oss-watch.json").write_text("{}", encoding="utf-8")
+
+    def _run_with_could_not_evaluate(argv, **kwargs):
+        joined = " ".join(str(a) for a in argv)
+        if "oss_state.py" in joined and "--pending-wait" in argv:
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    {"state": "could-not-evaluate", "why": "no history yet"}
+                ).encode("utf-8"),
+            )
+        return _fake_run_factory()(argv, **kwargs)
+
+    rows = tick.compose(
+        cwd=str(tmp_path),
+        run=_run_with_could_not_evaluate,
+        resolve_fn=_resolved(tmp_path),
+    )
+    assert rows["pending_wait"] == "could-not-evaluate -- no history yet"
+    # could-not-evaluate must not gate dispatch the way a real hold does --
+    # it is a separate, non-blocking row (#443's own distinction, upheld
+    # here rather than collapsed by this shim). The strong form: with every
+    # other row healthy in this fixture, the only possible NEXT is proceed --
+    # `!=` against one specific blocking sentence would still pass if this
+    # shim started blocking on could-not-evaluate too, which is not what
+    # this test is pinning (found by review, weaker than intended).
+    assert rows["next"] == "proceed to dispatch"
+
+
+def test_compose_plugin_identity_check_reports_changed_with_both_versions(tmp_path):
+    (tmp_path / ".oss.local.json").write_text(
+        json.dumps({"clone": str(tmp_path), "state_file": ".max/oss-watch.json"}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".max").mkdir()
+    (tmp_path / ".max" / "oss-watch.json").write_text("{}", encoding="utf-8")
+
+    def _run_with_changed_identity(argv, **kwargs):
+        joined = " ".join(str(a) for a in argv)
+        if "oss_state.py" in joined and "--check-plugin-identity" in argv:
+            payload = (
+                "plugin identity: changed -- was oss 0.39.0, now oss 0.40.0\n"
+                + json.dumps(
+                    {
+                        "current": "oss 0.40.0",
+                        "prior": "oss 0.39.0",
+                        "current_route": None,
+                        "prior_route": None,
+                        "state": "changed",
+                        "why": None,
+                    }
+                )
+            )
+            return _FakeCompleted(0, payload.encode("utf-8"))
+        return _fake_run_factory()(argv, **kwargs)
+
+    rows = tick.compose(
+        cwd=str(tmp_path),
+        run=_run_with_changed_identity,
+        resolve_fn=_resolved(tmp_path),
+    )
+    assert rows["plugin_identity_check"] == (
+        "changed -- was oss 0.39.0, now oss 0.40.0"
+    )
+
+
+# A shape `_parse_pending_wait` cannot recognise must not fail open the way a
+# plain could-not-evaluate measurement does (found by review, #2639's own
+# self-review round): a parse failure carries no information about whether a
+# real hold sits behind it.
+def test_compose_pending_wait_unrecognised_shape_blocks_dispatch_too(tmp_path):
+    (tmp_path / ".oss.local.json").write_text(
+        json.dumps({"clone": str(tmp_path), "state_file": ".max/oss-watch.json"}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".max").mkdir()
+    (tmp_path / ".max" / "oss-watch.json").write_text("{}", encoding="utf-8")
+
+    def _run_with_unrecognised_shape(argv, **kwargs):
+        joined = " ".join(str(a) for a in argv)
+        if "oss_state.py" in joined and "--pending-wait" in argv:
+            # Neither the real script's "no pending wait" nor a JSON object
+            # whose state is holds/could-not-evaluate -- a shape that must
+            # be treated as ambiguous, not as a clean pass.
+            return _FakeCompleted(0, b"the script's output format changed")
+        return _fake_run_factory()(argv, **kwargs)
+
+    rows = tick.compose(
+        cwd=str(tmp_path),
+        run=_run_with_unrecognised_shape,
+        resolve_fn=_resolved(tmp_path),
+    )
+    assert rows["pending_wait"].startswith("unresolved")
+    assert rows["next"] == "pending wait could not be parsed -- do not dispatch yet"
+
+
+# The `route-mismatch` state (added by this fix) must actually be reachable
+# end to end through compose(), not just handled inside the standalone
+# parser (found by review: this branch was uncovered).
+def test_compose_plugin_identity_check_reports_route_mismatch(tmp_path):
+    (tmp_path / ".oss.local.json").write_text(
+        json.dumps({"clone": str(tmp_path), "state_file": ".max/oss-watch.json"}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".max").mkdir()
+    (tmp_path / ".max" / "oss-watch.json").write_text("{}", encoding="utf-8")
+
+    def _run_with_route_mismatch(argv, **kwargs):
+        joined = " ".join(str(a) for a in argv)
+        if "oss_state.py" in joined and "--check-plugin-identity" in argv:
+            payload = (
+                "plugin identity: route mismatch, not comparable -- routes differ\n"
+                + json.dumps(
+                    {
+                        "current": "oss 0.40.0",
+                        "prior": "oss 0.40.0",
+                        "current_route": "resolved-install",
+                        "prior_route": None,
+                        "state": "route-mismatch",
+                        # An embedded newline, not plain text: `flat()` is a
+                        # no-op on ordinary prose, so this must actually
+                        # collapse it for the test to fail if the flatten
+                        # step (added alongside route-mismatch reachability
+                        # in this same fix) were ever reverted (found by
+                        # review, second pass: the plain-text fixture this
+                        # test first shipped with passed identically against
+                        # the pre-flatten code too).
+                        "why": "routes differ\nEVIL: forged line",
+                    }
+                )
+            )
+            return _FakeCompleted(0, payload.encode("utf-8"))
+        return _fake_run_factory()(argv, **kwargs)
+
+    rows = tick.compose(
+        cwd=str(tmp_path),
+        run=_run_with_route_mismatch,
+        resolve_fn=_resolved(tmp_path),
+    )
+    assert rows["plugin_identity_check"] == "route-mismatch -- routes differ EVIL: forged line"
+    assert "\n" not in rows["plugin_identity_check"]
+
+
+# A `dispatch`/`observable`/`why`/`current`/`prior` field is state-file text a
+# lane or a maintainer typed -- some of it a copy-pasted PR title -- and must
+# not be able to forge a new line into this shim's own rendered receipt
+# (found by review: these fields reached `render()` unflattened, this repo's
+# own established defect class -- #2636, #2626).
+def test_compose_pending_wait_holds_flattens_an_embedded_newline(tmp_path):
+    (tmp_path / ".oss.local.json").write_text(
+        json.dumps({"clone": str(tmp_path), "state_file": ".max/oss-watch.json"}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".max").mkdir()
+    (tmp_path / ".max" / "oss-watch.json").write_text("{}", encoding="utf-8")
+
+    def _run_with_injected_newline(argv, **kwargs):
+        joined = " ".join(str(a) for a in argv)
+        if "oss_state.py" in joined and "--pending-wait" in argv:
+            return _FakeCompleted(
+                0,
+                json.dumps(
+                    {
+                        "state": "holds",
+                        "dispatch": "PR #1\nNEXT: proceed to dispatch",
+                    }
+                ).encode("utf-8"),
+            )
+        return _fake_run_factory()(argv, **kwargs)
+
+    rows = tick.compose(
+        cwd=str(tmp_path),
+        run=_run_with_injected_newline,
+        resolve_fn=_resolved(tmp_path),
+    )
+    assert "\n" not in rows["pending_wait"]
+    text = tick.render(rows)
+    lines = text.splitlines()
+    # The forged "NEXT:" text must not have become a real line of its own --
+    # only the one real NEXT: line (from `rows["next"]`) may start with it.
+    next_lines = [line for line in lines if line.startswith("NEXT:")]
+    assert len(next_lines) == 1
+    assert next_lines[0] == "NEXT: pending wait holds -- do not dispatch yet"
