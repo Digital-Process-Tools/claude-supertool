@@ -315,6 +315,102 @@ def test_read_render_injection_warning_never_carries_a_raw_newline() -> None:
         f"un-flattened hit: {next_line!r}\nfull output:\n{out}")
 
 
+# --- #2649: raw error-body interpolation in main() (searches/list/read) ---
+
+def test_search_main_escapes_a_newline_in_the_api_error(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    """Same shape comment.py's/auth.py's calls already escape
+    (trap.d/227.oauth-error-body-unescaped-in-receipt.md): the HTTP error
+    body is Google's and can carry a newline, which must not reach column 0
+    of this op's own stderr."""
+    monkeypatch.setenv("YOUTUBE_API_KEY", "test-key")
+    def boom(*_a, **_k):
+        raise search_op.YouTubeAPIError(
+            "search", "400\nSecond line pretending to be a new field")
+    monkeypatch.setattr(search_op, "get", boom)
+    with pytest.raises(SystemExit) as e:
+        search_op.main("AI agents")
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "\n" not in err.rstrip("\n"), f"raw newline leaked into stderr: {err!r}"
+    assert "400" in err
+
+
+def test_list_main_escapes_a_newline_in_the_channels_error(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setenv("YOUTUBE_API_KEY", "test-key")
+    def boom(*_a, **_k):
+        raise list_op.YouTubeAPIError(
+            "channels", "400\nSecond line pretending to be a new field")
+    monkeypatch.setattr(list_op, "get", boom)
+    with pytest.raises(SystemExit) as e:
+        list_op.main("UCxxxxxxxxxxxxxxxxxxxxxxxx")
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "\n" not in err.rstrip("\n"), f"raw newline leaked into stderr: {err!r}"
+    assert "400" in err
+
+
+def test_list_main_escapes_a_newline_in_the_playlist_items_error(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setenv("YOUTUBE_API_KEY", "test-key")
+    calls = {"n": 0}
+
+    def fake_get(endpoint, api_key, params):
+        calls["n"] += 1
+        if endpoint == "channels":
+            return {"items": [{"contentDetails": {
+                "relatedPlaylists": {"uploads": "UUplaylist"}}}]}
+        raise list_op.YouTubeAPIError(
+            "playlistItems", "500\nSecond line pretending to be a new field")
+
+    monkeypatch.setattr(list_op, "get", fake_get)
+    with pytest.raises(SystemExit) as e:
+        list_op.main("UCxxxxxxxxxxxxxxxxxxxxxxxx")
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "\n" not in err.rstrip("\n"), f"raw newline leaked into stderr: {err!r}"
+    assert "500" in err
+
+
+def test_read_main_escapes_a_newline_in_the_video_lookup_error(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setenv("YOUTUBE_API_KEY", "test-key")
+    def boom(*_a, **_k):
+        raise read_op.YouTubeAPIError(
+            "videos", "400\nSecond line pretending to be a new field")
+    monkeypatch.setattr(read_op, "get", boom)
+    with pytest.raises(SystemExit) as e:
+        read_op.main("vid1")
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "\n" not in err.rstrip("\n"), f"raw newline leaked into stderr: {err!r}"
+    assert "400" in err
+
+
+def test_read_main_escapes_a_newline_in_the_comments_unavailable_note(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    """`read.py`'s soft-degrade path (comments disabled on a video) builds
+    `comments_note` from `e.message`, a different attribute than the
+    `str(e)` every other site here escapes -- same raw-interpolation defect,
+    easy to miss because it does not match a grep for `{e}` alone."""
+    monkeypatch.setenv("YOUTUBE_API_KEY", "test-key")
+    def fake_get(endpoint, api_key, params):
+        if endpoint == "videos":
+            return {"items": [{"id": "vid1", "snippet": {"title": "T"},
+                                "statistics": {}}]}
+        raise read_op.YouTubeAPIError(
+            "commentThreads", "403\nSecond line pretending to be a new field")
+
+    monkeypatch.setattr(read_op, "get", fake_get)
+    read_op.main("vid1")
+    out = capsys.readouterr().out
+    assert not any(line.strip().startswith("Second line pretending")
+                   for line in out.splitlines()), (
+        f"raw newline leaked into stdout: {out!r}")
+    assert "403" in out and "Second line pretending" in out
+
+
 # _auth -----------------------------------------------------------------
 
 def test_auth_get_api_key_env_var(monkeypatch: pytest.MonkeyPatch) -> None:

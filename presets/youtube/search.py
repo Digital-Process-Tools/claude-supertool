@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _env (#654)
 sys.path.insert(0, str(Path(__file__).parent))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key  # noqa: E402
+from _sanitize import safe_short  # noqa: E402
 from _yt import YouTubeAPIError, get  # noqa: E402
 
 
@@ -58,7 +59,10 @@ def main(arg: str) -> None:
             "maxResults": n,
         })
     except YouTubeAPIError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        # Escaped the same way comment.py escapes an HTTP error body
+        # (trap.d/227.oauth-error-body-unescaped-in-receipt.md): it is
+        # Google's, and can carry a newline or a known injection pattern.
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(1)
     print(render(query, data.get("items") or []))
 

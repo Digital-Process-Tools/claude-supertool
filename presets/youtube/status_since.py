@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _console import use_utf8_stdout  # noqa: E402
 from _env import env_int  # noqa: E402
 from _oauth import OAuthError, get_access_token  # noqa: E402
-from _sanitize import detect  # noqa: E402
+from _sanitize import detect, safe_short  # noqa: E402
 from _yt import YouTubeAPIError, authorized  # noqa: E402
 
 USAGE = "youtube_status_since[:ISO]"
@@ -111,11 +111,12 @@ def render(video_title: str, video_id: str, matching: list[dict], truncated: boo
     if inj_hits:
         # `detect()` returns the matched substring itself, not a canned
         # pattern name -- one of its own patterns matches across an embedded
-        # newline (a bare "system:" line), so an un-flattened hit can put
+        # newline (a bare "system:" line) and that pattern's "\s*" can also
+        # absorb a bare "\r" right after it, so an un-flattened hit can put
         # attacker-chosen text at column 0 of this receipt, indistinguishable
         # from a line this tool wrote. Flattened the same way every other
-        # untrusted field in this render already is.
-        flat_hits = [h.replace("\n", " ") for h in inj_hits[:3]]
+        # untrusted field in this render already is (_sanitize.wrap, read.py).
+        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
         warning = (f"  ⚠ POSSIBLE INJECTION in this video's new comments -- "
                    f"{', '.join(flat_hits)}\n")
     lines = [f"{warning}({len(matching)} new comment(s)) {video_title} [{url}]"]
@@ -140,14 +141,17 @@ def main(arg: str) -> None:
     try:
         token = get_access_token()
     except OAuthError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        # Escaped the same way comment.py/auth.py escape this: the OAuth
+        # error body is Google's and can carry a newline or a known
+        # injection pattern (trap.d/227.oauth-error-body-unescaped-in-receipt.md).
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(2)
 
     try:
         chan_data = authorized("channels", token,
                                {"part": "contentDetails", "mine": "true"})
     except YouTubeAPIError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(1)
     channels = chan_data.get("items") or []
     if not channels:
@@ -169,7 +173,7 @@ def main(arg: str) -> None:
             "maxResults": n,
         })
     except YouTubeAPIError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(1)
     videos = playlist_data.get("items") or []
 
@@ -189,7 +193,7 @@ def main(arg: str) -> None:
                 "maxResults": _THREADS_PER_VIDEO,
             })
         except YouTubeAPIError as e:
-            degraded.append(f"{title} [{vid}]: {e}")
+            degraded.append(f"{title} [{vid}]: {repr(safe_short(str(e), 300))}")
             continue
         matching, truncated = new_threads(thread_data.get("items") or [], cutoff)
         rendered = render(title, vid, matching, truncated)
