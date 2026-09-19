@@ -263,6 +263,52 @@ def test_an_unwritable_lock_dir_falls_back_fast_even_with_a_long_timeout(
         "is probed, not paced by the contention retry loop" % elapsed)
 
 
+def test_a_transient_probe_failure_is_retried_before_falling_back_open(
+        tmp_path: Path, monkeypatch) -> None:
+    """#2563: `_lock_dir_usable`'s own docstring names transient Windows AV
+    interference on its probe as a case it can hit, but the function had
+    only one failure path -- any `OSError` on the probe's `os.open()`
+    returned `False` immediately, treated by `serialize_once` exactly like
+    `lock_dir` being genuinely, permanently unusable. Because the probe
+    filename is unique per call (`uuid4`), a failure here can never be real
+    contention -- only a one-off environment hiccup or a genuinely broken
+    directory -- so a caller whose very next attempt would succeed must not
+    fall back to running `fn()` with no lock held just because the first
+    probe attempt hiccuped."""
+    real_open = lock_mod.os.open
+    attempts = []
+
+    def _flaky_open(path, *a, **kw):
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise OSError(5, "Input/output error")
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(lock_mod.os, "open", _flaky_open)
+
+    assert lock_mod._lock_dir_usable(tmp_path) is True, (
+        "a single transient probe failure was enough to report lock_dir "
+        "unusable, instead of retrying once as the docstring's own "
+        "transient-AV-interference case requires")
+    assert len(attempts) >= 2, (
+        "gave up after one probe attempt instead of retrying (attempts: %d)"
+        % len(attempts))
+
+
+def test_a_genuinely_unusable_lock_dir_is_still_reported_unusable_after_retry(
+        tmp_path: Path, monkeypatch) -> None:
+    """Positive control for the fix above: the retry buys tolerance for a
+    one-off hiccup, not infinite patience for a lock_dir that is genuinely,
+    permanently broken -- every attempt failing must still report
+    unusable."""
+    def _always_boom(*a, **kw):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(lock_mod.os, "open", _always_boom)
+
+    assert lock_mod._lock_dir_usable(tmp_path) is False
+
+
 def test_a_holder_near_its_own_timeout_budget_is_not_reclaimed_as_abandoned(
         tmp_path: Path, monkeypatch) -> None:
     """#2401: the staleness check age-compares an existing lock file's mtime
