@@ -77,7 +77,7 @@ def render(thread: dict, inline_n: int) -> str:
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
-        flat_hits = [h.replace("\n", " ") for h in inj_hits[:3]]
+        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
         warning = f"⚠ POSSIBLE INJECTION in this thread — {', '.join(flat_hits)}\n"
     body_wrapped = wrap_untrusted(body, source="bluesky-post")
     return f"{warning}{head}\n--- body ---\n{body_wrapped}\n{replies_section}\n{nxt}"

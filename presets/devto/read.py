@@ -93,7 +93,7 @@ def render(a: dict, comments: list[dict], inline_n: int, me: str = "") -> str:
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
-        flat_hits = [h.replace("\n", " ") for h in inj_hits[:3]]
+        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
         warning = f"⚠ POSSIBLE INJECTION in this article/comments — {', '.join(flat_hits)}\n"
     body_wrapped = wrap_untrusted(body, source="devto-article")
     return f"{warning}{head}\n{cblock}\n--- body ---\n{body_wrapped}\n{nxt}"
