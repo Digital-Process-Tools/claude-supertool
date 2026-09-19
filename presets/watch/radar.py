@@ -47,7 +47,12 @@ Radar injects two reserved keys into `options` before the call. Config cannot
 set them — `read_tiers` refuses any key starting with `_` — so a tier can trust
 them:
 
-    _arg    str, the raw invocation argument (`radar:author=@me` -> "author=@me")
+    _arg    str, the invocation argument, routed by tier name when two or
+            more tiers are registered (`route_tier_arg`, #2644):
+            `radar:gh-issue:2369` reaches only the tier named `gh-issue`,
+            every other tier's `_arg` is "". With one tier registered, or
+            no `_arg` at all, this is unchanged: the whole string
+            (`radar:author=@me` -> "author=@me") or "" for a bare `radar`.
     _watch  callable(source, scope, only=None) -> "alive"|"spawned"|"failed"|
             "capped". Radar's bounded spawner. Every slot a tier asks for is
             recorded, and radar itself emits the cap warning when one is
@@ -443,6 +448,10 @@ def route_tier_arg(arg: str, tier_names: list[str]) -> tuple[dict[str, str], lis
       and leaves every tier's `_arg` at `""` -- an unrouted argument is
       this third state, not a silent hand-off to a tier that will misread
       it (#2644's own worked example: `gh-`-prefixed reaching `gl-issue`).
+      Two registered names can themselves collide as prefixes of one
+      another (`"a"` and `"a:b"`, arg `"a:b"`); the longest match wins
+      rather than routing to both, which would be the exact fan-out this
+      function exists to remove.
     """
     if not arg:
         return {name: "" for name in tier_names}, []
@@ -451,6 +460,15 @@ def route_tier_arg(arg: str, tier_names: list[str]) -> tuple[dict[str, str], lis
     matched = [name for name in tier_names
                if arg == name or arg.startswith(name + ":")]
     if matched:
+        # Two registered names can themselves collide as prefixes of one
+        # another (`"a"` and `"a:b"`, arg `"a:b"`) -- both satisfy the test
+        # above, and routing to both would be the exact fan-out this
+        # function exists to remove. The longest match is the more
+        # specific one and wins; an exact-length tie (only possible for
+        # identical names, which `read_tiers` cannot register twice) is
+        # left to route to both rather than pick arbitrarily.
+        longest = max(len(name) for name in matched)
+        matched = [name for name in matched if len(name) == longest]
         return ({name: (arg if name in matched else "") for name in tier_names},
                 [])
     return ({name: "" for name in tier_names},

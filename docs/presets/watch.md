@@ -465,7 +465,7 @@ Radar injects two reserved keys into `options` before the call. Config cannot se
 
 | Key | Meaning |
 |---|---|
-| `_arg` | the raw invocation argument. `radar:author=@me` arrives as `"author=@me"`; a bare `radar` as `""` |
+| `_arg` | the invocation argument, routed by tier name when two or more tiers are registered ([#2644](https://github.com/Digital-Process-Tools/claude-supertool/issues/2644)): `radar:gh-issue:2369` reaches only the tier named `gh-issue` (its own name as a prefix, `"gh-issue:2369"`), every other registered tier's `_arg` is `""`. With one tier registered, or no `_arg` at all, this is unchanged: the whole string (`radar:author=@me` arrives as `"author=@me"`) or `""` for a bare `radar` |
 | `_watch` | `callable(source, scope, only=None) -> "alive" \| "spawned" \| "failed" \| "capped"`. Radar's bounded spawner: idempotent slot claim before the fork ([#476](https://github.com/Digital-Process-Tools/claude-supertool/issues/476)) and the [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) death cap. Every slot a tier asks for is recorded, and radar itself emits the cap warning when one is refused |
 
 **Why `_watch` is a callable and not a `radar_watchers()` list.** A declared slot has to be spawned *before* the report runs, and the MR tier must **not** spawn its discovery feed when live GitLab was unreachable — nothing should be spawned, pruned, healed or snapshotted on a population we could not read. Only the tier knows whether spawning is safe, and it needs the spawn result *inside* its own report, because the feed's status is a token in the board footer. Two mechanisms for one job is the drift this codebase keeps filing bugs about, so there is one: **radar owns the bound, the tier owns the timing.**
@@ -732,9 +732,9 @@ The issue that asked for `gl-issue` (#898) describes a larger vision this tier d
 - **no per-tier/per-source policy markdown** (`RADAR_POLICY`). The issue's own second comment asks that the registry-and-policy mechanism be shared with the separate `dashboard` op (#953) before either tier grows it, and building it here first would either duplicate that decision or pre-empt it.
 - **no per-category `history.md` ledger.** It needs the policy layer above it to mean anything — a ledger with nowhere to promote a recognised pattern to is just an unbounded log — so it waits on the same decision.
 
-### A caveat inherited from how `_arg` reaches every registered tier
+### `_arg` used to collide with a population tier's own filter, before [#2644](https://github.com/Digital-Process-Tools/claude-supertool/issues/2644)
 
-Radar passes the *same* `_arg` string to every tier configured in `ops.radar.radar_tiers`. Registering `gl-issue` alongside `gl-mrs` and invoking `radar:gl-issue:12657` therefore also hands `"gl-issue:12657"` to `gl-mrs`'s own filter parser, which does not recognise that shape and raises — reported as a failure for `gl-mrs` alone, never fatal to `gl-issue`. That is an existing property of the tier contract rather than something this tier introduces; a focused radar session is expected to register `gl-issue` on its own rather than beside a population tier that shares the argument slot.
+Radar used to pass the *same* `_arg` string to every tier configured in `ops.radar.radar_tiers`. Registering `gl-issue` alongside `gl-mrs` and invoking `radar:gl-issue:12657` therefore also handed `"gl-issue:12657"` to `gl-mrs`'s own filter parser, which does not recognise that shape and raised — reported as a failure for `gl-mrs` alone, never fatal to `gl-issue`, but a failure with no reason to exist. `route_tier_arg` now routes `_arg` only to the tier whose name it prefixes when two or more tiers are registered, so `gl-mrs` receives `""` in that scenario rather than a string it cannot parse. Registering `gl-issue` alongside a population tier is no longer something to avoid.
 
 ## The GitHub half of the same tier — `gh-issue` ([#2369](https://github.com/Digital-Process-Tools/claude-supertool/issues/2369))
 
@@ -772,15 +772,14 @@ The vocabulary these lines use — reopened, labeled, unlabeled — matches `sou
 
 ### Deliberately out of scope for this issue
 
-The same three `gl-issue` declines, inherited rather than re-litigated:
+The same two `gl-issue` declines, inherited rather than re-litigated (a third, the `_arg` collision with a population tier, no longer applies — see below):
 
-- **the `radar:gh-issue:N` arg-collision with `gh-prs`'s own filter parser** (see the caveat below) — pre-existing on `gl-issue`, and this tier inherits the same non-fix rather than solving it twice.
 - **no per-tier/per-source policy markdown** (`RADAR_POLICY`) — deferred to [#953](https://github.com/Digital-Process-Tools/claude-supertool/issues/953)/[#898](https://github.com/Digital-Process-Tools/claude-supertool/issues/898) alongside `gl-issue`'s own deferral.
 - **no per-category `history.md` ledger** — needs the policy layer above it to mean anything, so it waits on the same decision.
 
-### A caveat inherited from how `_arg` reaches every registered tier
+### `_arg` used to collide with a population tier's own filter, before [#2644](https://github.com/Digital-Process-Tools/claude-supertool/issues/2644)
 
-Radar passes the *same* `_arg` string to every tier configured in `ops.radar.radar_tiers`. Registering `gh-issue` alongside `gh-prs` and invoking `radar:gh-issue:2369` therefore also hands `"gh-issue:2369"` to `gh-prs`'s own `resolve_filter`, which does not recognise that shape and raises — reported as a failure for `gh-prs` alone, never fatal to `gh-issue`. A focused radar session is expected to register `gh-issue` on its own rather than beside a population tier that shares the argument slot.
+Radar used to pass the *same* `_arg` string to every tier configured in `ops.radar.radar_tiers`. Registering `gh-issue` alongside `gh-prs` and invoking `radar:gh-issue:2369` therefore also handed `"gh-issue:2369"` to `gh-prs`'s own `resolve_filter`, which does not recognise that shape and raised — reported as a failure for `gh-prs` alone, never fatal to `gh-issue`. `route_tier_arg` now routes `_arg` only to the tier whose name it prefixes when two or more tiers are registered, so `gh-prs` receives `""` in that scenario. Registering `gh-issue` alongside a population tier is no longer something to avoid.
 
 ## A source outside the plugin — `SUPERTOOL_WATCH_SOURCES_PATH` ([#2135](https://github.com/Digital-Process-Tools/claude-supertool/issues/2135))
 
@@ -1340,10 +1339,10 @@ Two changes bought event self-sufficiency, and they were priced together on purp
 |---|---|---|
 | every `gitlab-mr` poll | **0** | the snapshot ([#435](https://github.com/Digital-Process-Tools/claude-supertool/issues/435)) and `comment_added` ([#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519)) are both answered by the one `_fetch` the poller already makes |
 | transition **into** `pipeline_failed` | **1** | the failing-job lookup ([#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509)) |
-| a poll where `detailed_merge_status` is (or was last poll) `"not_approved"` | **1** | the approvals lookup for `approved` ([#2645](https://github.com/Digital-Process-Tools/claude-supertool/issues/2645)) |
-| every other transition — `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared`, `comment_added`, `retargeted` | **0** | |
+| the one poll that exits `detailed_merge_status == "not_approved"` | **1** | the approvals lookup confirming `approved` ([#2645](https://github.com/Digital-Process-Tools/claude-supertool/issues/2645)) |
+| every other transition — `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared`, `comment_added`, `retargeted`, and every poll of a standing `not_approved` streak | **0** | |
 
-**Nothing was added to the per-poll path by default.** That was the design constraint: a watcher fleet is one process per open MR polling every 30s forever, so a request added there is multiplied by every MR you have open, all day. A request added to a failure transition is paid once per pipeline going red. `approved` is the one event that can cost more than once — every poll while the base fetch's own `detailed_merge_status` says approvals are the check currently blocking the merge — because that field is the only free signal telling the poller when it is worth asking; see [below](#approved-and-retargeted-2645).
+**Nothing was added to the per-poll path.** That was the design constraint: a watcher fleet is one process per open MR polling every 30s forever, so a request added there is multiplied by every MR you have open, all day. A request added to a failure transition is paid once per pipeline going red, and `approved` is paid the same way — once per genuine transition, never for the length of the wait; see [below](#approved-and-retargeted-2645).
 
 `comment_added` was expected to cost the per-poll kind — [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) proposed a `/notes?system=false` call on every poll of every watched MR — and on inspection it needed no call at all. See below.
 
@@ -1521,9 +1520,9 @@ Before this, the source emitted pipeline and comment transitions but stayed sile
 
 **`approved` fires GitLab's own verdict, not a headcount.** `approved` is read off `GET /projects/:id/merge_requests/:iid/approvals`, which answers whether the approval rule is satisfied (`approvals_left <= 0`) — not "someone approved", the count `approved_by` alone would give. Rising edge only: a standing `true` is not news, becoming `true` is, and the first poll never fires it even when the MR is already approved — there is no earlier read to say this was the moment it happened.
 
-**The approvals lookup is a separate GitLab request, so it is not paid on every tick.** `detailed_merge_status` already rides the base MR fetch for free, and `"not_approved"` is GitLab's own name for "the approval rule is the check currently blocking this merge". The separate request is made only when that value is true this tick or was true last tick — the one extra poll needed to catch the transition out of it — the same "once per red streak, not once per tick" budget [#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509) already holds for the failing-job lookup. A tick where neither side was `not_approved` costs nothing, same as a healthy pipeline costs nothing today.
+**`detailed_merge_status == "not_approved"` is not a hint to call the separate endpoint — it already is the answer.** `_fetch_approvals`'s own `approved: false` and GitLab reporting `not_approved` in `detailed_merge_status` (which rides the base MR fetch for free) are the same fact stated on two endpoints, so the poller answers `False` straight from the free field and calls nothing. An earlier version of this gate called the separate endpoint on every tick for as long as `not_approved` held, which is the exact "once per tick" cost this design exists to avoid — caught in self-review against a fixture holding three consecutive polls at `not_approved` (`test_a_standing_not_approved_streak_costs_nothing_on_any_tick`).
 
-That gate has a known blind spot: `detailed_merge_status` reports only the first failing mergeability check in priority order (see the `[conflict]` vs `[empty]` reasoning above), so a push that clears approvals while a higher-priority check (draft, unresolved threads, CI) is also failing can move the field away from `"not_approved"` without the approvals lookup ever confirming it. Declined rather than guessed at: `approved` simply is not re-checked until `not_approved` is seen again, which trades a delayed `approved` event for never reporting a wrong one.
+**The separate request is paid on exactly one tick: the one that exits `not_approved`.** Exiting it does not by itself mean "approved" — `detailed_merge_status` reports only the first failing mergeability check in priority order (see the `[conflict]` vs `[empty]` reasoning above), so a push that clears approvals while a higher-priority check (draft, unresolved threads, CI) is also failing moves the field away from `"not_approved"` without approvals having actually been satisfied. That one tick is therefore genuinely ambiguous and the only one worth the request — the same "once per red streak, not once per tick" budget [#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509) already holds for the failing-job lookup. Declined rather than guessed at if that one confirming request fails: `approved` is not re-checked again until `not_approved` reappears, which trades a delayed `approved` event for never reporting a wrong one.
 
 **`retargeted` fires only against a genuinely known previous branch.** `target_branch` is carried in state and compared each poll; the first poll never fires it, because there is no earlier read to say what branch an MR used to target. `payload` carries `from_branch`/`to_branch` alongside the usual `observed_*` snapshot.
 

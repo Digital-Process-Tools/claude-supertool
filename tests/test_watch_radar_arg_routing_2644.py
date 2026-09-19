@@ -135,3 +135,16 @@ def test_tier_states_routes_the_same_way(env) -> None:
     lines, failures = radar.tier_states("gh-issue:2369")
     assert a.seen_options is not None and a.seen_options["_arg"] == "gh-issue:2369"
     assert b.seen_options is not None and b.seen_options["_arg"] == ""
+
+
+def test_a_registered_name_that_prefixes_another_registered_name_does_not_double_route(env) -> None:
+    """Two registered tier names can themselves collide as prefixes of one
+    another -- `"a"` and `"a:b"`, argument `"a:b"` -- and both would satisfy
+    the plain prefix test. The longest (more specific) match must win rather
+    than routing to both, which would be the exact fan-out #2644 removed."""
+    a, b = _register_two(env, name_a="a", name_b="a:b")
+    lines, ok, failures = radar.tier_reports("a:b")
+    assert b.seen_options is not None
+    assert b.seen_options["_arg"] == "a:b"
+    assert a.seen_options is not None
+    assert a.seen_options["_arg"] == ""

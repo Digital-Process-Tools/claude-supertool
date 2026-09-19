@@ -53,13 +53,16 @@ SETTLED_MERGE_STATUSES = {"can_be_merged", "cannot_be_merged"}
 NO_DIFF_DETAILED_STATUS = "commits_status"
 
 # GitLab's own name for "the approval rule is the check currently blocking
-# this merge" in `detailed_merge_status` -- reused as a free gate on the
-# separate, paid `_fetch_approvals` request (#2645). Unlike
-# `NO_DIFF_DETAILED_STATUS`, this is not read as the answer itself (the
-# priority-ordering caveat above applies here too: a different, higher-
-# priority check can supersede it in the field even while approvals remain
-# outstanding) -- only as when it is worth asking the approvals endpoint
-# directly for the ground truth.
+# this merge" in `detailed_merge_status`. Unlike `NO_DIFF_DETAILED_STATUS`,
+# this *is* read as the answer itself when it is reported: `not_approved`
+# and `_fetch_approvals`'s own `approved: false` are the same fact stated
+# on two endpoints, so seeing it here needs no separate request (#2645).
+# What it cannot do is confirm the positive: the field reports only the
+# first failing mergeability check in priority order, so a different,
+# higher-priority check (draft, unresolved threads, CI) can take over the
+# field the moment approvals stop being the blocker, without the approvals
+# rule having actually been satisfied. Exiting `not_approved` is therefore
+# the one moment genuinely worth the separate request.
 NOT_APPROVED_STATUS = "not_approved"
 
 # Import the existing _glab_api CLI wrapper from the gl-mr op so we share
@@ -477,16 +480,23 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
 
     # `approved` lives on a separate GitLab endpoint from the MR body, so
     # watching it naively would cost an extra request every tick this
-    # source runs (#2645) -- exactly the "once per red streak, not once
-    # per tick" budget #509 already pinned for the failing-job lookup
-    # below, broken the same way if paid unconditionally. `detailed_
-    # merge_status` reports it for free whenever it is the check currently
-    # blocking the merge (`NOT_APPROVED_STATUS`), so the extra request is
-    # paid only while that is true this tick or was true last tick -- the
-    # one extra poll needed to catch the transition out of it. A tick where
-    # neither side was `not_approved` costs nothing, same as a healthy
-    # pipeline costs nothing today.
-    if detailed_status == NOT_APPROVED_STATUS or prev_detailed_status == NOT_APPROVED_STATUS:
+    # source runs (#2645). `detailed_merge_status == "not_approved"` is
+    # not a hint that the separate endpoint is worth checking -- it *is*
+    # the same fact `_fetch_approvals` would return (GitLab reports
+    # `not_approved` precisely when the approval rule is unsatisfied), so
+    # answering `False` from it costs nothing and is not a guess. The
+    # separate request is paid only on the one tick that matters: the
+    # transition *out* of `not_approved`, where exiting it does not by
+    # itself mean "approved" (the priority-ordering caveat above) and is
+    # the only point genuinely worth confirming -- the same "once per red
+    # streak, not once per tick" budget #509 already pins for the
+    # failing-job lookup below. A poll where neither side was
+    # `not_approved` costs nothing, and neither does the entire length of
+    # a `not_approved` streak -- both were the actual regression an
+    # earlier version of this gate had (#2645 review).
+    if detailed_status == NOT_APPROVED_STATUS:
+        approved, _approved_error = False, ""
+    elif prev_detailed_status == NOT_APPROVED_STATUS:
         approved, _approved_error = _fetch_approvals(iid)
     else:
         approved, _approved_error = None, ""

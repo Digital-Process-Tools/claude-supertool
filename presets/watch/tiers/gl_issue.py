@@ -69,18 +69,19 @@ exactly the way `gl-mrs` names a departed MR — as a *moved* event, which is
 why they count against `healthy` below even though nothing here is asserting
 the world is broken.
 
-A caveat inherited from how `_arg` reaches every registered tier
-------------------------------------------------------------------
+`_arg` used to collide with a population tier's own filter, before #2644
+--------------------------------------------------------------------------
 
-Radar passes the *same* `_arg` string to every tier configured in
+Radar used to pass the *same* `_arg` string to every tier configured in
 `ops.radar.radar_tiers` (`tier_reports`, one loop, one `arg`). Registering
 `gl-issue` alongside `gl-mrs` and invoking `radar:gl-issue:12657` therefore
-also hands `"gl-issue:12657"` to `gl-mrs`'s own `resolve_filter`, which does
-not recognise that shape and raises — reported as a failure for that tier
-alone, never fatal to this one. That is an existing property of the tier
-contract, not something introduced here, and it is the reason a focused radar
-session is expected to register `gl-issue` on its own rather than beside a
-population tier that shares the argument slot.
+also handed `"gl-issue:12657"` to `gl-mrs`'s own `resolve_filter`, which does
+not recognise that shape and raised — reported as a failure for that tier
+alone, never fatal to this one, but a failure with no reason to exist.
+`radar.route_tier_arg` now routes `_arg` only to the tier whose name it
+prefixes when two or more tiers are registered, so `gl-mrs` receives `""` in
+that scenario rather than a string it cannot parse. Registering `gl-issue`
+alongside a population tier is no longer something to avoid.
 """
 from __future__ import annotations
 
