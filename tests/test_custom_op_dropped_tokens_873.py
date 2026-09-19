@@ -318,7 +318,14 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # though the op itself accepts none today -- same shape as
         # `statusline`'s own #1850 entry above, which this comment already
         # documents.
-        assert len(rows) == 101, len(rows)
+        # 101 -> 104 in #2593: `youtube_reply`, `youtube_like` and
+        # `youtube_status_since` are three new ops in the existing
+        # `presets/youtube.json`, each `cmd` taking `{args}` from the first
+        # line -- COMMENT_ID|TEXT_OR_file://PATH[|force][|force-dup],
+        # VIDEO_ID_OR_URL[|force][|force-dup] and `[ISO]` respectively, the
+        # same shape as `youtube_comment`'s own entry this file already
+        # counts.
+        assert len(rows) == 104, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -352,7 +359,10 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # population count's own comment above).
         # 75 -> 76 in #1985: `oss-tick` is `{args}` from the first line too
         # (see the population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (76, 21, 4), (
+        # 76 -> 79 in #2593: `youtube_reply`, `youtube_like` and
+        # `youtube_status_since` are all `{args}` from the first line too
+        # (see the population count's own comment above).
+        assert (len(multi), len(one), len(none)) == (79, 21, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a

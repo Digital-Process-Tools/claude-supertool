@@ -2,9 +2,12 @@
 
 Discovery and engagement ops for YouTube via the Data API v3 -- search for
 videos, read one's metadata plus its top comments, list a channel's uploads,
-and post one comment. The read ops use an API key; `youtube_comment` writes as
-the authorised user over OAuth2. `youtube_reply`, `youtube_like` and
-`youtube_status_since` are not implemented -- see "Scope" below.
+post a comment or a reply, like a video, and sweep one's own videos for new
+comments. The read ops (`youtube_search`/`youtube_read`/`youtube_list`) use an
+API key; `youtube_comment`/`youtube_reply`/`youtube_like` write as the
+authorised user over OAuth2, and `youtube_status_since` reads over the same
+OAuth2 grant because "own videos" is only answerable for the authorised
+account (#227, #2593).
 
 ## Requires
 
@@ -25,6 +28,9 @@ the authorised user over OAuth2. `youtube_reply`, `youtube_like` and
 | `youtube_list` | `youtube_list:CHANNEL[\|N]` | A channel's uploads: title, publish date, watch URL per video |
 | `youtube_auth` | `youtube_auth[:status]` | Runs the one-time OAuth2 consent flow, or reports what is cached |
 | `youtube_comment` | `youtube_comment:VIDEO_ID_OR_URL\|TEXT_OR_file://PATH[\|force][\|force-dup]` | Posts one top-level comment, then reads it back and reports whether it could confirm it |
+| `youtube_reply` | `youtube_reply:COMMENT_ID\|TEXT_OR_file://PATH[\|force][\|force-dup]` | Posts one reply to an existing comment, then reads it back the same way |
+| `youtube_like` | `youtube_like:VIDEO_ID_OR_URL[\|force][\|force-dup]` | Sets this account's rating on a video to "like", then reads the rating back |
+| `youtube_status_since` | `youtube_status_since[:ISO]` | New top-level comments on this account's own videos since ISO (default: 24 hours ago) |
 
 `N` defaults to `SUPERTOOL_DEFAULT_LIMIT` (10), same env knob as `bluesky_list`/`bluesky_search`. `youtube_read`'s inline comment count is `SUPERTOOL_INLINE_COMMENTS` (5), same knob `bluesky_read` uses for inline replies.
 
@@ -46,7 +52,7 @@ The YouTube Data API v3's default daily quota is 10,000 units. `youtube_search` 
 
 ## Authoring notes
 
-Preset JSON: `presets/youtube.json`. Helper scripts: `presets/youtube/` -- `search.py`, `read.py`, `list.py`, plus `_auth.py` (API key resolution), `_yt.py` (the shared GET helper) and `_sanitize.py` (untrusted-content wrapping). The `{path}` placeholder in `cmd` resolves to `presets/youtube/` at runtime.
+Preset JSON: `presets/youtube.json`. Helper scripts: `presets/youtube/` -- `search.py`, `read.py`, `list.py`, `comment.py`, `reply.py`, `like.py`, `status_since.py`, plus `_auth.py` (API key resolution), `_oauth.py` (the OAuth2 flow and token cache), `_sentinel.py` (the write log behind the duplicate/rate guards), `_yt.py` (the shared GET/authorised-call helper) and `_sanitize.py` (untrusted-content wrapping). The `{path}` placeholder in `cmd` resolves to `presets/youtube/` at runtime.
 
 Every call goes through `presets/youtube/_yt.py::get()`, which in turn goes through `presets/_http.py`'s shared opener -- so the API key travels only in the query string of a same-origin request and is redacted out of any error text before it reaches an exception message, and no bare `urllib.request.urlopen(` call site was introduced (`tests/test_security_redirect.py::test_no_bare_urlopen_call_sites_remain_under_presets` sweeps for exactly that). See [contributing.md](../contributing.md#http-requests-go-through-presets_httppy).
 
@@ -121,10 +127,62 @@ operator has to pass to publish at all.
 
 `youtube_comment` costs 50 quota units for the insert plus 1 for the read-back.
 
-## Scope: the other write ops
+## Replying to a comment
 
-[#227](https://github.com/Digital-Process-Tools/claude-supertool/issues/227), the issue this preset implements, proposed seven ops. Five exist: the three read ops, plus `youtube_auth` and `youtube_comment`. `youtube_reply` (`comments.insert`), `youtube_like` (`videos.rate`) and `youtube_status_since` are not written yet.
+`youtube_reply:COMMENT_ID|TEXT_OR_file://PATH[|force][|force-dup]` posts one
+reply via `comments.insert` (`parentId=COMMENT_ID`), then reads it back through
+`comments.list` -- the same three-verdict read-back `youtube_comment` uses
+(`verified`/`MISMATCH`/`could-not-verify`), for the same reason.
 
-They are held back on purpose rather than left half-done. The OAuth2 cache and the rate cap are where this preset is most likely to be wrong, and they are wrong in a way that is expensive to discover -- a shadow-banned account, or a token that silently stops refreshing an hour after a session ends. One write op proves both against the real API first. The three remaining ops are then argv and an endpoint each: they reuse `_oauth.get_access_token`, `_yt.authorized`, `_sentinel` and `_publish_safety` unchanged, and no new machinery is expected for them.
+It shares `youtube_comment`'s guardrails, with one deliberate difference: the
+duplicate guard is keyed on the **parent `COMMENT_ID`**, not the video. A
+reply is a write against one specific comment thread, and keying it on the
+video would refuse a second reply to a *different* comment on a video this
+account already replied on once, which is not the duplicate the guard exists
+to catch. The written `sent.jsonl` entry's `video_id` field holds the parent
+comment id for this op; `op="youtube_reply"` in the same entry is what tells
+the two apart when reading the log by hand.
 
-`youtube_status_since` is the odd one of the three -- it reads rather than writes, but over *own* videos, which needs the same OAuth2 grant. It is grouped here for the credential, not for the blast radius.
+`youtube_reply` costs 50 quota units for the insert plus 1 for the read-back,
+the same split `youtube_comment` costs.
+
+## Liking a video
+
+`youtube_like:VIDEO_ID_OR_URL[|force][|force-dup]` sets this account's rating
+on a video to "like" via `videos.rate`, then reads it back with
+`videos.getRating` and reports the same three verdicts. There is no
+authorship-disclosure marker here -- a like carries no text for
+`[AI-generated]` to be appended to -- but `|force` still confirms the action
+and `|force-dup` is still the separate token that overrides the duplicate
+guard, for the same reason `youtube_comment`'s two tokens are kept separate
+rather than folded into one.
+
+The duplicate guard here is keyed on the plain `VIDEO_ID`, the same key
+`youtube_comment` uses. A comment and a like on the same video therefore
+refuse each other without `|force-dup` -- a conservative default (one video,
+one footprint, until overridden), not a claim that liking and commenting are
+the same action.
+
+`youtube_like` costs 50 quota units for the rate call plus 1 for the
+read-back.
+
+## Sweeping for new comments on your own videos
+
+`youtube_status_since[:ISO]` lists new top-level comments on this account's
+own videos since `ISO` (default: 24 hours ago), across up to
+`SUPERTOOL_DEFAULT_LIMIT` recent uploads. It needs the same OAuth2 grant the
+write ops use -- "own videos" is only answerable for the authorised account,
+via `channels.list?mine=true` -- but it never writes, so it has no sentinel,
+no rate cap and no confirmation gate. A video with comments disabled degrades
+to a `--- comments unavailable: ... ---` note for that one video rather than
+failing the whole sweep, the same degrade `youtube_read` documents above.
+
+`youtube_status_since` costs 1 unit for `channels.list`, 1 for
+`playlistItems.list`, and 1 per video checked for `commentThreads.list` (up to
+`SUPERTOOL_DEFAULT_LIMIT` videos) -- so a default sweep costs at most
+`SUPERTOOL_DEFAULT_LIMIT + 2` units.
+
+All three reuse `_oauth.get_access_token`, `_yt.authorized`, `_sentinel` and
+`_publish_safety` unchanged -- #227's own note that these three ops are
+"argv and an endpoint each" against machinery `youtube_auth`/`youtube_comment`
+already proved out.

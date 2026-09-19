@@ -1,5 +1,5 @@
 {
-  "description": "YouTube discovery and engagement via the Data API v3 (search/read/list on an API key; youtube_comment writes as the authorised user over OAuth2 -- #227).",
+  "description": "YouTube discovery and engagement via the Data API v3 (search/read/list on an API key; youtube_comment/reply/like write as the authorised user over OAuth2, and youtube_status_since reads own videos over the same grant -- #227, #2593).",
   "requires": "python",
   "ops": {
     "youtube_search": {
@@ -44,6 +44,31 @@
       "syntax": "youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force][|force-dup]",
       "paths": { "args": [] },
       "example": "youtube_comment:dQw4w9WgXcQ|Good breakdown of the retry logic."
+    },
+    "youtube_reply": {
+      "safety": "acts",
+      "cmd": "{python} {path}youtube/reply.py {args}",
+      "timeout": 45,
+      "description": "Post ONE reply to an existing comment (comments.insert, 50 quota units), then read it back and report verified / MISMATCH / could-not-verify separately, the same read-back contract youtube_comment uses. Needs |force to publish at all. Separately refuses, overridable only with |force-dup, a second reply to the same COMMENT_ID already in ~/.config/youtube/sent.jsonl, more than 5 writes in an hour (shared with every other write op), or a sentinel log it cannot read. Appends the [AI-generated] marker unless no_publish_disclosure is set.",
+      "syntax": "youtube_reply:COMMENT_ID|TEXT_OR_file://PATH[|force][|force-dup]",
+      "paths": { "args": [] },
+      "example": "youtube_reply:UgxKq3ZeeR6BbXVv0pl4AaABAg|Agreed, that edge case is easy to miss."
+    },
+    "youtube_like": {
+      "safety": "acts",
+      "cmd": "{python} {path}youtube/like.py {args}",
+      "timeout": 45,
+      "description": "Set this account's rating on a video to 'like' (videos.rate, 50 quota units), then read it back with videos.getRating and report verified / MISMATCH / could-not-verify. Needs |force to act at all. Separately refuses, overridable only with |force-dup, a repeat like on a VIDEO_ID already in ~/.config/youtube/sent.jsonl (shared key with youtube_comment) or a rate cap already tripped by any write op.",
+      "syntax": "youtube_like:VIDEO_ID_OR_URL[|force][|force-dup]",
+      "example": "youtube_like:dQw4w9WgXcQ|force"
+    },
+    "youtube_status_since": {
+      "safety": "read-only",
+      "cmd": "{python} {path}youtube/status_since.py {args}",
+      "timeout": 30,
+      "description": "New top-level comments on this account's own videos since ISO (default: 24 hours ago), across up to SUPERTOOL_DEFAULT_LIMIT recent uploads. Needs the same OAuth2 grant as the write ops -- 'own videos' is only answerable for the authorised account -- but never writes, so it has no sentinel, no rate cap and no confirmation gate. A video with comments disabled degrades to a note rather than failing the whole sweep.",
+      "syntax": "youtube_status_since[:ISO]",
+      "example": "youtube_status_since:2026-09-01T00:00:00Z"
     }
   }
 }
