@@ -37,6 +37,13 @@ A message containing ':' must arrive via `git-commit:::MSG` or the @payload
 route: the single-colon CLI tokenizes on ':', so `git-commit:fix: thing`
 reaches this script as MSG='fix' plus a PATH of ' thing'. That shape is
 REFUSED here rather than re-parsed — see _spilled_message_paths (#751).
+
+A MESSAGE holding a raw control byte (ESC, another C0/DEL/C1 byte, or a
+Unicode line/paragraph separator) is REFUSED before anything is staged
+(#2592) — see _control_byte_hazard. Never something a caller means to
+commit; the leading cause on record is a shell quoting mistake ($'...')
+that can silently drop the rest of the line, including a PATH named right
+after it.
 """
 from __future__ import annotations
 
@@ -145,6 +152,126 @@ _TRIPLE = "'" * 3
 # use for this. Extracted from `paths` before anything downstream (spilled-
 # message detection, `--all` expansion, staging) ever sees it.
 _NO_VERIFY_TOKEN = "--no-verify"
+
+
+# #2592 -- whitespace an ordinary commit message legitimately carries.
+# Anything else this check reaches is never something a caller means to
+# commit: on lane fix/2573, a real ESC (0x1B) landed inside a multi-paragraph
+# MESSAGE and a PATH named right after it vanished before this script's own
+# argv ever formed -- reported as `no PATHS were given` even though a PATH
+# was given inline. Fed straight through this parser (no shell in the way),
+# the same message-plus-path combination commits cleanly, so the byte is not
+# lost here -- the leading theory is a shell quoting form ($'...') turning
+# escape TEXT (\x1b) into this real byte, and an interactive pty's own
+# readline then reading it as a control sequence and dropping the rest of
+# the line before python ever sees it. That loss happens upstream of this
+# script's own argv and cannot be recovered here; what this check catches
+# is the same hazardous byte arriving intact -- so a caller who still has
+# one in hand is stopped before a second trip through a shell.
+_MESSAGE_WHITESPACE_OK = "\n\t\r"
+
+
+def _surrogateescaped_c1_byte(ch: str):
+    """The original byte value if *ch* is a lone surrogate standing in for
+    a raw C1 control byte (0x80-0x9F), or None (self-review finding on
+    #2592).
+
+    A standalone C1 byte is not valid UTF-8 on its own, so CPython's own
+    argv decoding -- and the re-encode/decode round trip `subprocess.run`
+    does to hand a preset its own argv -- represents it as U+DC80-U+DC9F via
+    `surrogateescape`, never as `chr(0x80..0x9F)`. `_untrusted._is_control`'s
+    `0x80 <= ord(ch) <= 0x9F` range check can therefore never see a C1 byte
+    in the only form it actually arrives in through a real CLI call --
+    confirmed live: `os.fsdecode(bytes([0x85]))` is `'\\udc85'`, not
+    `chr(0x85)`. Scoped to exactly the C1 range's own surrogate window
+    (0xDC80-0xDC9F), not the wider 0xDC80-0xDCFF `surrogateescape` uses for
+    every byte it cannot decode, so an unrelated invalid-UTF-8 byte outside
+    C1 is not misreported as a control byte.
+    """
+    o = ord(ch)
+    if 0xDC80 <= o <= 0xDC9F:
+        return o - 0xDC00
+    return None
+
+
+def _control_byte_hazard(msg: str):
+    """(index, display, kind) of the first hazardous byte/character in
+    *msg*, or None (#2592).
+
+    `display` is computed here, terminal-safe already, rather than left for
+    the caller to render: one of the three `kind`s a lone surrogate
+    (`_surrogateescaped_c1_byte` above) is not a character `_untrusted.
+    visible()` recognises as control, so handed the raw surrogate it would
+    return it unchanged -- and encoding that to UTF-8 for `print()` raises
+    `UnicodeEncodeError`, the very console-codepage class this file is
+    already careful about elsewhere (`use_utf8_stdout()`), tripped this time
+    by the fix meant to close a review finding rather than avoid it.
+
+    `_untrusted._is_control` is this repo's own predicate for "a stream
+    consumer treats this specially" (#886, #896) -- reused here rather than
+    duplicated so the two stay in agreement about what counts, which is
+    wider than plain control bytes: it also matches U+2028/U+2029 (Unicode
+    LINE/PARAGRAPH SEPARATOR), ordinary 3-byte UTF-8 characters that are
+    still exactly the kind of invisible-line-break hazard this check exists
+    for. `kind` says which one was actually found rather than calling every
+    hit "a control byte" (self-review finding on #2592).
+    """
+    for i, ch in enumerate(msg):
+        if ch in _MESSAGE_WHITESPACE_OK:
+            continue
+        if _untrusted._is_control(ch):
+            kind = ("line separator" if ch == "\u2028" else
+                    "paragraph separator" if ch == "\u2029" else
+                    "control byte")
+            return i, _untrusted.visible(ch), kind
+        orig = _surrogateescaped_c1_byte(ch)
+        if orig is not None:
+            return i, "0x%02X (an invalid-UTF-8 byte)" % orig, "control byte"
+    return None
+
+
+def _control_byte_refusal(msg: str, index: int, display: str, kind: str):
+    """MESSAGE holds a byte/character no caller means to commit (#2592).
+
+    `%r` on `msg`, never the raw string: `repr()` escapes the very hazard
+    this refusal is about into safe text (a lone surrogate included --
+    `repr()` treats it as non-printable and escapes it the same way it does
+    an ESC), so printing the parsed message back cannot repeat the hazard
+    on whatever terminal reads this refusal.
+
+    The middle line and the closing sentence are `kind`-specific, not just
+    the opener -- a second-pass review of the fix that introduced `kind`
+    caught both still hardcoded to describe an ESC/shell-quoting mistake
+    even when `kind` is a line/paragraph separator, which arrives by a
+    completely different route (a paste, not a shell) and has nothing to
+    do with $'...' quoting.
+    """
+    if kind == "control byte":
+        cause = (
+            "  This is never something a caller means to commit. A shell "
+            "quoting form like $'...' turns escape TEXT (\\x1b) into a real "
+            "byte like this one, and some invocation paths (an interactive "
+            "pty) then read it as a control sequence and silently drop part "
+            "of the line -- which is how a PATH named right after it can "
+            "vanish before this parser ever runs."
+        )
+    else:
+        cause = (
+            "  This is never something a caller means to commit -- it is an "
+            "invisible line break, not the ordinary newline a message body "
+            "already uses, and usually arrives pasted from a web page or a "
+            "document editor without anyone seeing it land."
+        )
+    return [
+        "ERROR: MESSAGE holds a raw %s (%s at character %d) -- refused "
+        "before anything was staged, nothing committed (#2592)."
+        % (kind, display, index),
+        cause,
+        "  Parsed as: message=%r (intact -- this call reached commit.py "
+        "whole)" % (msg,),
+        "  Remove the stray %s and retype the message; it belongs in no "
+        "commit message, on either route." % (kind,),
+    ]
 
 
 def _no_verify_ambiguous_refusal():
@@ -1102,6 +1229,16 @@ def main() -> int:
         print("ERROR: commit message is empty.")
         return 1
 
+    # #2592 -- before anything else touches `msg`, including the repo probe
+    # below: a hazardous byte is a fact about the argument, not about this
+    # repository, so it needs no git call to report.
+    if not no_edit:
+        hazard = _control_byte_hazard(msg)
+        if hazard is not None:
+            for line in _control_byte_refusal(
+                    msg, hazard[0], hazard[1], hazard[2]):
+                print(line)
+            return 1
 
     # One `rev-parse --git-dir`, not two (#1126). The repository check below and
     # the MERGE_HEAD probe further down were asking git the identical question
