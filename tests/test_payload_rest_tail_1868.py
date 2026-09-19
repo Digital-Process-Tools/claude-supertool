@@ -119,3 +119,29 @@ def test_duplicate_field_line_number_prefers_the_occurrence_nearest_the_marker(
     message = str(excinfo.value)
     assert "line 6" in message
     assert "line 3" not in message
+
+
+def test_marker_inside_a_plain_table_section_is_refused_loudly(tmp_path: Path) -> None:
+    # A single-bracket [section] header before the marker means the marker
+    # belongs to that table, not the top level -- injecting the tail at the
+    # top level regardless would silently drop the rest of that table's own
+    # content and misplace the field (oss:auditor finding, #1868 self-review).
+    raw = (
+        'path = "x.py"\nold = "matches this in file"\n'
+        'content = "some fixed value"\n[extra]\nfoo = @rest\nbar = 1\n'
+    )
+    ref = _write(tmp_path, raw)
+    with pytest.raises(ValueError) as excinfo:
+        supertool._load_at_file(ref)
+    assert "TOML parse error" in str(excinfo.value)
+
+
+def test_rest_tail_marker_tolerates_a_crlf_line_ending() -> None:
+    # A marker line terminated \r\n (a CRLF-authored payload piped through
+    # stdin, which does not get universal-newline translation the way a
+    # plain `open()` read does) must still be recognised (oss:auditor
+    # finding, #1868 self-review).
+    raw = 'path = "x.py"\r\ncontent = @rest\r\ndef f():\r\n    return 1\r\n'
+    m = supertool._AT_FILE_REST_MARKER_RE.search(raw)
+    assert m is not None
+    assert m.group(1) == "content"

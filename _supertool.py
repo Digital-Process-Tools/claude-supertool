@@ -30903,7 +30903,7 @@ def _take_payload_warnings() -> str:
 
 
 _AT_FILE_REST_MARKER_RE = re.compile(
-    r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*@rest[ \t]*$", re.MULTILINE)
+    r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*@rest[ \t]*\r?$", re.MULTILINE)
 
 
 def _load_at_file(ref: str, note: bool = True) -> Any:
@@ -30998,16 +30998,19 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
     toml_source = raw
     rest_marker = _AT_FILE_REST_MARKER_RE.search(raw)
     if rest_marker and re.search(
-            r"^[ \t]*\[\[", raw[:rest_marker.start()], re.MULTILINE):
-        # A `[[table]]` array header appears before the marker -- most likely
-        # a `batch:@-` payload's `[[ops]]` entries, where the marker line
-        # belongs to a NESTED table rather than the top-level dict this
-        # pre-split assumes. Treating it as the header-ending marker would
-        # truncate every later `[[ops]]` entry and misattribute the tail to
-        # the wrong table, silently (self-review, #1868). Declining the
-        # split keeps the failure loud instead: the literal `@rest` token
-        # then reaches the TOML parser as an ordinary invalid value and
-        # errors the same way it always did before this feature existed.
+            r"^[ \t]*\[", raw[:rest_marker.start()], re.MULTILINE):
+        # A `[table]` or `[[table]]` header appears before the marker, so
+        # the marker line may belong to a NESTED table rather than the
+        # top-level dict this pre-split assumes -- a `batch:@-` payload's
+        # `[[ops]]` entries, or a plain `[section]`. Treating it as the
+        # header-ending marker would inject the tail at the WRONG level
+        # (top-level `parsed[rest_field]` rather than the open table) and,
+        # for a `[[table]]` array, truncate every later entry too -- both
+        # silently (self-review, #1868; the single-bracket case was found by
+        # the oss:auditor spawn during the same self-review round). Declining
+        # the split keeps the failure loud instead: the literal `@rest`
+        # token then reaches the TOML parser as an ordinary invalid value
+        # and errors the same way it always did before this feature existed.
         rest_marker = None
     if rest_marker:
         rest_field = rest_marker.group(1)
@@ -31103,7 +31106,7 @@ def _payload_field_provenance(raw: str, key: str) -> str:
     once.
     """
     rest_m = re.search(
-        r"^[ \t]*" + re.escape(key) + r"[ \t]*=[ \t]*@rest[ \t]*$",
+        r"^[ \t]*" + re.escape(key) + r"[ \t]*=[ \t]*@rest[ \t]*\r?$",
         raw, re.MULTILINE)
     if rest_m:
         return "@rest tail (unparsed, no escape processing)"
