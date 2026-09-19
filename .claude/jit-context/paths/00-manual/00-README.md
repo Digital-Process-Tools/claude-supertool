@@ -132,3 +132,13 @@ Curate pass over `trap.d/`, 2026-09-18.
   large second argument, or a more prominent description), not a jit-context rule; no
   path/tool/vocabulary trigger here would fire only on this mistake without firing on every
   ordinary `read` call.
+
+Curate pass over `trap.d/`, 2026-09-19.
+
+- **1985.oss-local-json-git-excluded-claim-is-per-checkout** -- `presets/oss/tick.py` and
+  `presets/oss.json` describe `.oss.local.json` as "git-excluded", which is only true of a
+  checkout that ran whatever writes this maintainer's own `.git/info/exclude` line (the tracked
+  `.gitignore` has no entry for it); a fresh checkout that never did so has no exclusion at all.
+  A specific, already-scoped wording fix to two comments, not a recurring agent-facing lesson --
+  no path/tool trigger here would change what an agent does differently next time, only what two
+  comments claim.
