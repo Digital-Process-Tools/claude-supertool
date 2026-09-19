@@ -236,16 +236,18 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
                 # way a single absent lock file is, and answering it costs
                 # nothing close to a full `deadline`: a probe create of a
                 # unique throwaway filename (`_lock_dir_usable`) can never
-                # collide with a real holder's lock file, so any `OSError`
-                # from it means the directory is unusable, full stop, with
-                # no race left to lose (#2556). Ask that first -- a caller
-                # whose `lock_dir` is genuinely broken then falls back to
-                # `fn()` immediately instead of waiting out the whole
-                # `timeout_s` real call sites pass as `GO_WARMUP_S`
-                # (minutes, scaled by `platform_factor()`). Only once the
-                # directory itself is confirmed usable does this retry the
-                # specific lock file out to `deadline`, which is the
-                # genuine "racing a holder" case #2553 fixed.
+                # collide with a real holder's lock file, so an `OSError`
+                # from it that survives one retry (a one-off hiccup gets a
+                # second, fresh-probe attempt first -- #2563) means the
+                # directory is unusable, with no race left to lose (#2556).
+                # Ask that first -- a caller whose `lock_dir` is genuinely
+                # broken then falls back to `fn()` in well under a second
+                # instead of waiting out the whole `timeout_s` real call
+                # sites pass as `GO_WARMUP_S` (minutes, scaled by
+                # `platform_factor()`). Only once the directory itself is
+                # confirmed usable does this retry the specific lock file
+                # out to `deadline`, which is the genuine "racing a holder"
+                # case #2553 fixed.
                 if not _lock_dir_usable(lock_dir):
                     return fn()
                 while fd is None and time.time() < deadline:
