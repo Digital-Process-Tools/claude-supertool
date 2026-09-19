@@ -193,6 +193,29 @@ def test_main_writes_and_confirms_an_exact_landing(monkeypatch, capsys, tmp_path
     assert "555" in out
 
 
+def test_main_create_path_posts_to_the_collection_endpoint_not_patch(
+        monkeypatch, capsys, tmp_path):
+    # Positive control for the create/POST branch, now that main() branches
+    # on edit_id between two transports (#2643) -- without this, a
+    # regression that made the create path also emit PATCH would pass every
+    # other test in this file, since none of them inspect the args _gh_json
+    # was actually called with.
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "scoping note"})
+    monkeypatch.setattr(sys, "argv", ["issue_comment.py", "2078", payload_file])
+
+    seen = {}
+
+    def fake_gh_json(args, stdin=None, timeout=30):
+        seen["args"] = args
+        return ({"id": 555, "body": "scoping note", "html_url": "https://x/555"}, "")
+    monkeypatch.setattr(m, "_gh_json", fake_gh_json)
+
+    assert m.main() == 0
+    assert "-X" in seen["args"] and seen["args"][seen["args"].index("-X") + 1] == "POST"
+    assert "repos/o/r/issues/2078/comments" in seen["args"]
+    assert "repos/o/r/issues/comments/" not in " ".join(seen["args"])
+
+
 def test_main_reports_mismatch_and_exits_nonzero(monkeypatch, capsys, tmp_path):
     payload_file = _payload(tmp_path, {"repo": "o/r", "body": "scoping note"})
     monkeypatch.setattr(sys, "argv", ["issue_comment.py", "2078", payload_file])

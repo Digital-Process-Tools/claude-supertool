@@ -38,8 +38,10 @@ call meant to publish. This carries the same three-part guarantee:
   response carried no body field at all. Only EXACT and NORMALISED exit 0.
 
 No closing-reference gate here -- a comment does not replace a published
-body, so there is nothing an update could drop. No title, no `unlink`: this
-op has one shape, publish a comment and confirm it landed.
+body, so there is nothing an update could drop. No title: `edit=COMMENT_ID`
+is the only mode token this op takes, and it switches the write between the
+two shapes above (publish a new comment, or correct one already posted) --
+it does not add a third one.
 """
 from __future__ import annotations
 
