@@ -47,7 +47,15 @@ Radar injects two reserved keys into `options` before the call. Config cannot
 set them — `read_tiers` refuses any key starting with `_` — so a tier can trust
 them:
 
-    _arg    str, the raw invocation argument (`radar:author=@me` -> "author=@me")
+    _arg    str, the invocation argument. With two or more tiers registered
+            and `_arg` a prefix match for one of their names
+            (`route_tier_arg`, #2644), it is routed only there:
+            `radar:gh-issue:2369` reaches only the tier named `gh-issue`,
+            every other tier's `_arg` is "". Everything else is unchanged
+            from before routing existed: a bare `radar` is ""; one tier
+            registered, or `_arg` matching no registered tier's name (an
+            ordinary filter string like `author=@me,milestone=x`, never a
+            tier selector at all), gets the whole string, every tier.
     _watch  callable(source, scope, only=None) -> "alive"|"spawned"|"failed"|
             "capped". Radar's bounded spawner. Every slot a tier asks for is
             recorded, and radar itself emits the cap warning when one is
@@ -417,6 +425,68 @@ def _spawner() -> tuple[Callable[..., str], dict[str, str], list[str]]:
     return watch, seen, reaped
 
 
+def route_tier_arg(arg: str, tier_names: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Route `arg` to the one tier whose name it is prefixed by, so a fleet
+    of tiers configured together do not all receive an argument meant for
+    only one of them (#2644).
+
+    Returns `({tier_name: arg_for_that_tier}, lines)`. Every name in
+    `tier_names` is a key in the returned dict, always -- a tier that was
+    not routed the argument still gets `""` rather than being left out of
+    the mapping, the same shape every tier's `_arg` already had before this
+    routing existed.
+
+    Not every `_arg` is a tier selector. `radar:gh-issue:2369` names a
+    *tier* (`gh-issue`'s own docstring shows the shape), but
+    `radar:author=@me,milestone=x` names *filters* in a population tier's
+    own vocabulary and was never meant to pick one tier out of several --
+    that shape predates tier-namespaced args entirely, and every
+    population tier (`gl-mrs`, `gh-prs`) still expects to see it whole, so
+    it can refuse an unknown token itself (#961's own pinned contract: a
+    typo like `milestne=x` must reach the tier and raise there, not be
+    silently zeroed out upstream of it).
+
+    Three states, not the two-way fanout this replaces:
+
+    - `arg` is empty: every tier gets `""` unchanged -- the fanout an
+      unfiltered invocation already relied on, untouched by this.
+    - Zero or one tier is registered: that tier (if any) gets the whole
+      `arg` unchanged, prefix or not -- `radar:gh-issue:2369` and a bare
+      `radar:2369` both worked before routing existed because there was
+      only ever one candidate, and a single-tier session must not regress.
+    - Two or more tiers: if `arg` is a prefix match for one or more
+      registered tier names (`name` itself, or `name + ":"`, the shape
+      every tier's own docstring shows: `"gh-issue:2369"` or
+      `"gl-issue:12657"`), it is routed only to the matching tier(s) --
+      this is #2644's actual fix, the case where a tier-namespaced id
+      collides with an unrelated tier's own vocabulary. Two registered
+      names can themselves collide as prefixes of one another (`"a"` and
+      `"a:b"`, arg `"a:b"`); the longest match wins rather than routing to
+      both, which would be the exact fan-out this function exists to
+      remove. If nothing matches, `arg` was never a tier selector in the
+      first place, so it is not an error: every tier gets the whole
+      string unchanged, the same fanout that existed before this routing
+      -- #961's typo-detection contract, and any population tier's own
+      filter vocabulary, depend on seeing it.
+    """
+    if not arg or len(tier_names) <= 1:
+        return {name: arg for name in tier_names}, []
+    matched = [name for name in tier_names
+               if arg == name or arg.startswith(name + ":")]
+    if not matched:
+        return {name: arg for name in tier_names}, []
+    # Two registered names can themselves collide as prefixes of one
+    # another (`"a"` and `"a:b"`, arg `"a:b"`) -- both satisfy the test
+    # above, and routing to both would be the exact fan-out this function
+    # exists to remove. The longest match is the more specific one and
+    # wins; an exact-length tie (only possible for identical names, which
+    # `read_tiers` cannot register twice) is left to route to both rather
+    # than pick arbitrarily.
+    longest = max(len(name) for name in matched)
+    matched = [name for name in matched if len(name) == longest]
+    return {name: (arg if name in matched else "") for name in tier_names}, []
+
+
 def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
     """(lines, all_healthy, failures) from every registered tier, in order.
 
@@ -444,6 +514,8 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
     failures: list[str] = []
 
     lines.extend(tier_shadow_lines(list(tiers)))
+    arg_by_tier, route_lines = route_tier_arg(arg, list(tiers))
+    lines.extend(route_lines)
 
     for name, opts in tiers.items():
         try:
@@ -477,7 +549,7 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
                          f"{sorted(unknown)}; ignored. Check for a typo.")
 
         try:
-            tier_lines, ok = report({**opts, "_arg": arg, "_watch": watch})
+            tier_lines, ok = report({**opts, "_arg": arg_by_tier[name], "_watch": watch})
         except Exception as exc:  # noqa: BLE001 — a broken tier must not take radar down
             failures.append(f"radar: WARNING — tier '{name}' failed: "
                             f"{exc.__class__.__name__}: {exc}")
@@ -513,6 +585,8 @@ def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
     lines = lines + sel_lines
     failures: list[str] = []
     lines.extend(tier_shadow_lines(list(tiers)))
+    arg_by_tier, route_lines = route_tier_arg(arg, list(tiers))
+    lines.extend(route_lines)
     for name, opts in tiers.items():
         try:
             module = _tier_module(name)
@@ -546,7 +620,7 @@ def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
                          "state can only be seen by running radar, which spawns")
             continue
         try:
-            lines.extend(state({**opts, "_arg": arg}))
+            lines.extend(state({**opts, "_arg": arg_by_tier[name]}))
         except Exception as exc:  # noqa: BLE001 — one broken tier is not the rest
             failures.append(f"radar: WARNING — tier '{name}' radar_state failed: "
                             f"{exc.__class__.__name__}: {exc}")

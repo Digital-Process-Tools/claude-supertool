@@ -59,12 +59,10 @@ report next runs, and asking `github-pr` to keep polling a merged PR would
 just accumulate a dead poller.
 
 **Deliberately out of scope for this issue**, named rather than silently
-dropped (the same three `gl-issue`'s own docstring declines, and #2369's own
-body repeats them for this half):
+dropped (the same two `gl-issue`'s own docstring declines, and #2369's own
+body repeats them for this half -- a third, the `_arg` collision with
+`gh-prs`'s own filter parser, no longer applies as of #2644, see below):
 
-  * the `radar:gh-issue:N` arg-collision with `gh-prs`'s own filter parser
-    (see "A caveat inherited..." below) -- pre-existing on `gl-issue`, and
-    this tier inherits the same non-fix rather than solving it twice.
   * no per-tier/per-source policy markdown (`RADAR_POLICY`) -- deferred to
     #953/#898 alongside `gl-issue`'s own deferral.
   * no per-category `history.md` ledger -- needs the policy layer above it to
@@ -86,19 +84,20 @@ spawning a feed poller that cannot be aimed at a single issue in the first
 place. `issues_unreachable` has no analogue here for the same reason -- there
 is no live feed poller whose reachability this tier could report.
 
-A caveat inherited from how `_arg` reaches every registered tier
-------------------------------------------------------------------
+`_arg` used to collide with a population tier's own filter, before #2644
+--------------------------------------------------------------------------
 
-Radar passes the *same* `_arg` string to every tier configured in
+Radar used to pass the *same* `_arg` string to every tier configured in
 `ops.radar.radar_tiers` (`tier_reports`, one loop, one `arg`). Registering
 `gh-issue` alongside `gh-prs` and invoking `radar:gh-issue:2369` therefore
-also hands `"gh-issue:2369"` to `gh-prs`'s own `resolve_filter`, which does
-not recognise that shape and raises -- reported as a failure for that tier
-alone, never fatal to this one. That is an existing property of the tier
-contract, not something introduced here (`gl-issue`'s own docstring names
-the identical collision against `gl-mrs`), and it is the reason a focused
-radar session is expected to register `gh-issue` on its own rather than
-beside a population tier that shares the argument slot.
+also handed `"gh-issue:2369"` to `gh-prs`'s own `resolve_filter`, which does
+not recognise that shape and raised -- reported as a failure for that tier
+alone, never fatal to this one, but a failure with no reason to exist
+(`gl-issue`'s own docstring named the identical collision against `gl-mrs`).
+`radar.route_tier_arg` now routes `_arg` only to the tier whose name it
+prefixes when two or more tiers are registered, so `gh-prs` receives `""` in
+that scenario rather than a string it cannot parse. Registering `gh-issue`
+alongside a population tier is no longer something to avoid.
 """
 from __future__ import annotations
 

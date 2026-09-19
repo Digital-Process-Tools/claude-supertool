@@ -52,6 +52,19 @@ SETTLED_MERGE_STATUSES = {"can_be_merged", "cannot_be_merged"}
 # for "source branch exists and contains commits", i.e. no diff.
 NO_DIFF_DETAILED_STATUS = "commits_status"
 
+# GitLab's own name for "the approval rule is the check currently blocking
+# this merge" in `detailed_merge_status`. Unlike `NO_DIFF_DETAILED_STATUS`,
+# this *is* read as the answer itself when it is reported: `not_approved`
+# and `_fetch_approvals`'s own `approved: false` are the same fact stated
+# on two endpoints, so seeing it here needs no separate request (#2645).
+# What it cannot do is confirm the positive: the field reports only the
+# first failing mergeability check in priority order, so a different,
+# higher-priority check (draft, unresolved threads, CI) can take over the
+# field the moment approvals stop being the blocker, without the approvals
+# rule having actually been satisfied. Exiting `not_approved` is therefore
+# the one moment genuinely worth the separate request.
+NOT_APPROVED_STATUS = "not_approved"
+
 # Import the existing _glab_api CLI wrapper from the gl-mr op so we share
 # one source of truth for glab invocation, error handling, and timeouts.
 _MR_MODULE_PATH = Path(__file__).parents[3] / "gitlab" / "mr.py"
@@ -104,6 +117,28 @@ def _fetch(iid: str) -> tuple[dict[str, Any] | None, str]:
     if not isinstance(data, dict):
         return None, f"ERROR: unexpected payload shape from glab for MR #{iid}"
     return data, ""
+
+
+def _fetch_approvals(iid: str) -> tuple[bool | None, str]:
+    """`(True/False, "")` when GitLab settled the approval rule, `(None, why)`
+    when we could not tell (#2645) -- declining rather than guessing, the
+    same three-state contract `_approvals_line` (`presets/gitlab/mr.py`)
+    already keeps for the read-only `gl-mr` op. `approved` is GitLab's own
+    verdict on whether the merge request's approval rule is satisfied
+    (`approvals_left <= 0`), not merely "at least one person approved" --
+    the field the issue itself asks for ("approvals reached the rule's
+    count").
+    """
+    approvals, error = _glab_api(
+        f"projects/:id/merge_requests/{iid}/approvals", "approvals", str(iid))
+    if error:
+        return None, error
+    if not isinstance(approvals, dict):
+        return None, (f"ERROR: approvals API returned a "
+                       f"{type(approvals).__name__}, expected an object")
+    if "approved" not in approvals:
+        return None, "ERROR: approvals payload carries no approved field"
+    return bool(approvals["approved"]), ""
 
 
 # The whole MR is already in memory every tick, and a consumer that has to call
@@ -424,6 +459,8 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # next poll as a baseline rather than locking the count at 0 forever.
     raw_notes = data.get("user_notes_count")
     notes_count = int(raw_notes) if isinstance(raw_notes, int) else None
+    target_branch = str(data.get("target_branch") or "")
+    detailed_status = str(data.get("detailed_merge_status") or "")
 
     events: list[dict] = []
     prev_pipeline = state.get("pipeline_status", "")
@@ -437,6 +474,32 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     prev_state = state.get("mr_state", "")
     prev_conflicts = bool(state.get("has_conflicts", False))
     prev_notes_count = state.get("notes_count")  # None on first poll
+    prev_target_branch = str(state.get("target_branch") or "")
+    prev_approved = state.get("approved")  # None on first poll, or unreadable
+    prev_detailed_status = str(state.get("detailed_status") or "")
+
+    # `approved` lives on a separate GitLab endpoint from the MR body, so
+    # watching it naively would cost an extra request every tick this
+    # source runs (#2645). `detailed_merge_status == "not_approved"` is
+    # not a hint that the separate endpoint is worth checking -- it *is*
+    # the same fact `_fetch_approvals` would return (GitLab reports
+    # `not_approved` precisely when the approval rule is unsatisfied), so
+    # answering `False` from it costs nothing and is not a guess. The
+    # separate request is paid only on the one tick that matters: the
+    # transition *out* of `not_approved`, where exiting it does not by
+    # itself mean "approved" (the priority-ordering caveat above) and is
+    # the only point genuinely worth confirming -- the same "once per red
+    # streak, not once per tick" budget #509 already pins for the
+    # failing-job lookup below. A poll where neither side was
+    # `not_approved` costs nothing, and neither does the entire length of
+    # a `not_approved` streak -- both were the actual regression an
+    # earlier version of this gate had (#2645 review).
+    if detailed_status == NOT_APPROVED_STATUS:
+        approved, _approved_error = False, ""
+    elif prev_detailed_status == NOT_APPROVED_STATUS:
+        approved, _approved_error = _fetch_approvals(iid)
+    else:
+        approved, _approved_error = None, ""
 
     # An unsettled check means "not computed yet", not "clean", so the last
     # known answer is carried forward and nothing is emitted. A response with
@@ -573,6 +636,38 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             "notify_message": title,
         })
 
+    # Approval rule satisfied -- rising edge only, the same reasoning
+    # `conflicts_appeared` uses: a standing "approved" is not news, becoming
+    # approved is. `approved is None` means this poll's approvals lookup
+    # could not settle (#2645) -- carried forward rather than read as "not
+    # approved", so an outage cannot manufacture a false rising edge on
+    # recovery, and `prev_approved is None` (first poll) never fires either:
+    # there is no earlier read to say this was the moment it became true.
+    new_approved = approved if approved is not None else prev_approved
+    if prev_approved is False and approved is True:
+        events.append({
+            "event": "approved",
+            "payload": {"url": web_url, "title": title, **snap},
+            "notify_title": f"!{iid} approved",
+            "notify_message": title,
+        })
+
+    # Target branch changed -- rising edge against a genuinely known
+    # previous branch, never on the first poll: nothing was read before
+    # this source started watching, so there is no earlier target to have
+    # changed away from (#2645).
+    if prev_target_branch and target_branch and target_branch != prev_target_branch:
+        events.append({
+            "event": "retargeted",
+            "payload": {
+                "url": web_url, "title": title,
+                "from_branch": prev_target_branch, "to_branch": target_branch,
+                **snap,
+            },
+            "notify_title": f"!{iid} retargeted",
+            "notify_message": f"{prev_target_branch} -> {target_branch}",
+        })
+
     new_state = {
         "mr_state": mr_state,
         "pipeline_status": pipeline_status,
@@ -584,6 +679,9 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         "title": title,
         "web_url": web_url,
         "lookup": LOOKUP_OK,
+        "target_branch": target_branch or prev_target_branch,
+        "approved": new_approved,
+        "detailed_status": detailed_status,
     }
     return events, new_state
 
