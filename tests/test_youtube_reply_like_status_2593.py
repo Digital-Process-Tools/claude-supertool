@@ -119,6 +119,15 @@ def test_reply_parse_args_pipe_mode_is_unchanged_by_the_triple_colon_addition() 
     assert force is True
 
 
+def test_reply_usage_string_mentions_the_triple_colon_separator() -> None:
+    """comment.py's USAGE was updated in #2642 to tell an operator ':::' is
+    available; reply.py's own parse_args now takes the identical separator
+    but its USAGE constant was left saying only '|' (self-review finding on
+    #2649) -- an operator who hits the usage error never learns the escape
+    hatch this fix just gave them exists."""
+    assert ":::" in reply_op.USAGE
+
+
 def test_reply_parse_args_reads_both_override_tokens() -> None:
     _, _, force, force_dup = reply_op.parse_args("c1|hi|force|force-dup")
     assert (force, force_dup) == (True, True)

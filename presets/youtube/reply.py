@@ -47,7 +47,8 @@ from _yt import YouTubeAPIError, authorized  # noqa: E402
 #: applies identically to a reply, which is also a comment resource.
 MAX_LEN = 10000
 _FILE_PREFIX = "file://"
-USAGE = "youtube_reply:COMMENT_ID|TEXT_OR_file://PATH[|force][|force-dup]"
+USAGE = ("youtube_reply:COMMENT_ID|TEXT_OR_file://PATH[|force][|force-dup]"
+         " (or ::: in place of | when the body might end in the word force/force-dup)")
 
 
 def _resolve_body(arg: str) -> str:
