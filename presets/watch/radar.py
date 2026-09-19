@@ -417,6 +417,48 @@ def _spawner() -> tuple[Callable[..., str], dict[str, str], list[str]]:
     return watch, seen, reaped
 
 
+def route_tier_arg(arg: str, tier_names: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Route `arg` to the one tier whose name it is prefixed by, so a fleet
+    of tiers configured together do not all receive an argument meant for
+    only one of them (#2644).
+
+    Returns `({tier_name: arg_for_that_tier}, lines)`. Every name in
+    `tier_names` is a key in the returned dict, always -- a tier that was
+    not routed the argument still gets `""` rather than being left out of
+    the mapping, the same shape every tier's `_arg` already had before this
+    routing existed.
+
+    Three states, not the two-way fanout this replaces:
+
+    - `arg` is empty: every tier gets `""` unchanged -- the fanout an
+      unfiltered invocation already relied on, untouched by this.
+    - Zero or one tier is registered: that tier (if any) gets the whole
+      `arg` unchanged, prefix or not -- `radar:gh-issue:2369` and a bare
+      `radar:2369` both worked before routing existed because there was
+      only ever one candidate, and a single-tier session must not regress.
+    - Two or more tiers: `arg` is routed only to the tier(s) whose name is
+      a prefix of it (`name` itself, or `name + ":"`, the shape every
+      tier's own docstring shows: `"gh-issue:2369"` or `"gl-issue:12657"`).
+      A match routes; a miss reports a line naming the unmatched argument
+      and leaves every tier's `_arg` at `""` -- an unrouted argument is
+      this third state, not a silent hand-off to a tier that will misread
+      it (#2644's own worked example: `gh-`-prefixed reaching `gl-issue`).
+    """
+    if not arg:
+        return {name: "" for name in tier_names}, []
+    if len(tier_names) <= 1:
+        return {name: arg for name in tier_names}, []
+    matched = [name for name in tier_names
+               if arg == name or arg.startswith(name + ":")]
+    if matched:
+        return ({name: (arg if name in matched else "") for name in tier_names},
+                [])
+    return ({name: "" for name in tier_names},
+            [f"radar: WARNING — argument {arg!r} matched no registered tier by "
+             f"name prefix (registered: {sorted(tier_names)}). Not routed to any "
+             f"tier — check for a typo, or register only the one tier you meant."])
+
+
 def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
     """(lines, all_healthy, failures) from every registered tier, in order.
 
@@ -444,6 +486,8 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
     failures: list[str] = []
 
     lines.extend(tier_shadow_lines(list(tiers)))
+    arg_by_tier, route_lines = route_tier_arg(arg, list(tiers))
+    lines.extend(route_lines)
 
     for name, opts in tiers.items():
         try:
@@ -477,7 +521,7 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
                          f"{sorted(unknown)}; ignored. Check for a typo.")
 
         try:
-            tier_lines, ok = report({**opts, "_arg": arg, "_watch": watch})
+            tier_lines, ok = report({**opts, "_arg": arg_by_tier[name], "_watch": watch})
         except Exception as exc:  # noqa: BLE001 — a broken tier must not take radar down
             failures.append(f"radar: WARNING — tier '{name}' failed: "
                             f"{exc.__class__.__name__}: {exc}")
@@ -513,6 +557,8 @@ def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
     lines = lines + sel_lines
     failures: list[str] = []
     lines.extend(tier_shadow_lines(list(tiers)))
+    arg_by_tier, route_lines = route_tier_arg(arg, list(tiers))
+    lines.extend(route_lines)
     for name, opts in tiers.items():
         try:
             module = _tier_module(name)
@@ -546,7 +592,7 @@ def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
                          "state can only be seen by running radar, which spawns")
             continue
         try:
-            lines.extend(state({**opts, "_arg": arg}))
+            lines.extend(state({**opts, "_arg": arg_by_tier[name]}))
         except Exception as exc:  # noqa: BLE001 — one broken tier is not the rest
             failures.append(f"radar: WARNING — tier '{name}' radar_state failed: "
                             f"{exc.__class__.__name__}: {exc}")

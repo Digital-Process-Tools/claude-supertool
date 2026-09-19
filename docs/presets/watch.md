@@ -831,7 +831,7 @@ With nothing configured the last line reads `SUPERTOOL_WATCH_SOURCES_PATH is not
 | Source | Polls | Events |
 |---|---|---|
 | `github-pr` | `gh pr view <N> --json state,mergeable,reviewDecision,statusCheckRollup,comments,...` | `checks_failed`, `checks_succeeded`, `checks_pending`, `review_approved`, `review_changes_requested`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `pr_unreachable` |
-| `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `mr_unreachable` |
+| `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `approved`, `retargeted`, `mr_unreachable` |
 | `gl-pipeline` | `glab api projects/:id/pipelines/<id>` | `pipeline_succeeded`, `pipeline_failed`, `pipeline_canceled`, `pipeline_running`, `pipeline_unreachable` |
 | `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed`, `mrs_unreachable` |
 | `github-pr-feed` | `gh pr list` for a whole filter ([#1780](https://github.com/Digital-Process-Tools/claude-supertool/issues/1780)) | `pr_opened`, `pr_merged`, `pr_closed`, `pr_left_feed`, `prs_unreachable` |
@@ -1340,9 +1340,10 @@ Two changes bought event self-sufficiency, and they were priced together on purp
 |---|---|---|
 | every `gitlab-mr` poll | **0** | the snapshot ([#435](https://github.com/Digital-Process-Tools/claude-supertool/issues/435)) and `comment_added` ([#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519)) are both answered by the one `_fetch` the poller already makes |
 | transition **into** `pipeline_failed` | **1** | the failing-job lookup ([#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509)) |
-| every other transition — `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared`, `comment_added` | **0** | |
+| a poll where `detailed_merge_status` is (or was last poll) `"not_approved"` | **1** | the approvals lookup for `approved` ([#2645](https://github.com/Digital-Process-Tools/claude-supertool/issues/2645)) |
+| every other transition — `pipeline_succeeded`, `pipeline_running`, `merged`, `closed`, `conflicts_appeared`, `comment_added`, `retargeted` | **0** | |
 
-**Nothing was added to the per-poll path.** That was the design constraint: a watcher fleet is one process per open MR polling every 30s forever, so a request added there is multiplied by every MR you have open, all day. A request added to a failure transition is paid once per pipeline going red.
+**Nothing was added to the per-poll path by default.** That was the design constraint: a watcher fleet is one process per open MR polling every 30s forever, so a request added there is multiplied by every MR you have open, all day. A request added to a failure transition is paid once per pipeline going red. `approved` is the one event that can cost more than once — every poll while the base fetch's own `detailed_merge_status` says approvals are the check currently blocking the merge — because that field is the only free signal telling the poller when it is worth asking; see [below](#approved-and-retargeted-2645).
 
 `comment_added` was expected to cost the per-poll kind — [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) proposed a `/notes?system=false` call on every poll of every watched MR — and on inspection it needed no call at all. See below.
 
@@ -1513,6 +1514,20 @@ So it over-reports in exactly one situation — an MR with no diff — and a con
 Requiring `conflict` would silently stop reporting conflicts on every draft and every MR with open threads — the silent-omission class, strictly worse than the false positive. An allow-list of not-a-conflict reasons fails the same way, since it would need `draft_status` in it and `draft_status` precludes nothing. And the false positive is not draft-specific in the first place: !33194 was not a draft.
 
 `radar` and `gl-mrs` render a `[conflict]` flag from the same field and carry the same false positive on a lower-stakes surface (a table column beside the row's other facts, not a lone event).
+
+### `approved` and `retargeted` ([#2645](https://github.com/Digital-Process-Tools/claude-supertool/issues/2645))
+
+Before this, the source emitted pipeline and comment transitions but stayed silent on an MR reaching its approval rule or being retargeted onto a different branch — both change what a maintainer does next, and both were only discoverable by re-reading the MR by hand.
+
+**`approved` fires GitLab's own verdict, not a headcount.** `approved` is read off `GET /projects/:id/merge_requests/:iid/approvals`, which answers whether the approval rule is satisfied (`approvals_left <= 0`) — not "someone approved", the count `approved_by` alone would give. Rising edge only: a standing `true` is not news, becoming `true` is, and the first poll never fires it even when the MR is already approved — there is no earlier read to say this was the moment it happened.
+
+**The approvals lookup is a separate GitLab request, so it is not paid on every tick.** `detailed_merge_status` already rides the base MR fetch for free, and `"not_approved"` is GitLab's own name for "the approval rule is the check currently blocking this merge". The separate request is made only when that value is true this tick or was true last tick — the one extra poll needed to catch the transition out of it — the same "once per red streak, not once per tick" budget [#509](https://github.com/Digital-Process-Tools/claude-supertool/issues/509) already holds for the failing-job lookup. A tick where neither side was `not_approved` costs nothing, same as a healthy pipeline costs nothing today.
+
+That gate has a known blind spot: `detailed_merge_status` reports only the first failing mergeability check in priority order (see the `[conflict]` vs `[empty]` reasoning above), so a push that clears approvals while a higher-priority check (draft, unresolved threads, CI) is also failing can move the field away from `"not_approved"` without the approvals lookup ever confirming it. Declined rather than guessed at: `approved` simply is not re-checked until `not_approved` is seen again, which trades a delayed `approved` event for never reporting a wrong one.
+
+**`retargeted` fires only against a genuinely known previous branch.** `target_branch` is carried in state and compared each poll; the first poll never fires it, because there is no earlier read to say what branch an MR used to target. `payload` carries `from_branch`/`to_branch` alongside the usual `observed_*` snapshot.
+
+Neither event is in `DEFAULT_ONLY` — an explicit choice left to whoever configures a session, not a claim that they should stay silent by default.
 
 ## Discovery — `gitlab-mr-feed`
 
