@@ -209,6 +209,33 @@ which have always worked:
 | ---------------- | --- |
 | `'''`            | a `"""basic"""` block — escapes apply, so backslashes double |
 | `'''` **and** `"""` | the JSON payload form, which needs no delimiter at all |
+| anything, and re-encoding it is the cost you want to avoid | `FIELD = @rest` (below) — no delimiter, no escaping, one send |
+
+### `FIELD = @rest` — a raw tail with no delimiter at all
+
+A line that is exactly `FIELD = @rest` (a bare key, the token `@rest`, nothing
+else) ends the TOML header there. Everything after that line's newline, to the
+end of the payload, is `FIELD`'s value, verbatim — no delimiter closes it, so a
+`'''`, a `"""`, a doubled backslash, even another `content = @rest` line inside
+the content, are all just bytes ([#1868](https://github.com/Digital-Process-Tools/claude-supertool/issues/1868)):
+
+```
+./supertool 'paste:@-' <<'EOF'
+path = "tests/fixtures/nested.py"
+content = @rest
+def f():
+    return """a nested ''' triple """ + "\n"
+EOF
+```
+
+Available on `paste`/`append`'s `content` and on `edit`/`replace`'s `new` —
+`old` stays in the header, since it is normally short and is where the anchor
+for the edit lives. Giving the same field twice (once as a header value, once
+as `@rest`) is refused, naming both lines; an `@rest` tail with nothing after
+it is refused as empty rather than silently writing an empty string. The
+doubled-backslash refusal and the `literal_backslashes` opt-in do not apply to
+an `@rest` tail — it was never TOML-parsed, so neither guard has anything to
+scan.
 
 Since [#394](https://github.com/Digital-Process-Tools/claude-supertool/issues/394)
 the parse error names both. **The trigger is structural, not a parity count**

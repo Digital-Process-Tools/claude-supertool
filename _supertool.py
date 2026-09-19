@@ -29718,7 +29718,10 @@ def _toml_delimiter_hint(raw: str) -> str:
     if not _TOML_LITERAL_OPENER.search(raw):
         return ""
     escapes = (
-        '    Use a \"\"\"basic\"\"\" block instead (escapes apply, so \\ doubles), '
+        "    End the header with FIELD = @rest and put the content after it, "
+        "unparsed (#1868) -- the only fix that needs no re-encoding of what "
+        "you already wrote.\n"
+        '    Or use a \"\"\"basic\"\"\" block instead (escapes apply, so \\ doubles), '
         "or the JSON payload form,\n"
         "    which needs no delimiter: {\"path\": ..., \"old\": ..., \"new\": ...}\n"
     )
@@ -30752,6 +30755,11 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
     if ext_hint:
         out.append(ext_hint)
     out.append(
+        "  " + arrow + " or end the header with FIELD = @rest and put the run "
+        "after it, unparsed -- the tail is never scanned for this pattern, so "
+        "there is nothing to decide (#1868)." + chr(10)
+    )
+    out.append(
         "  " + arrow + " TWO OPPOSITE fixes, and nothing here can tell which you "
         "meant -- decide per occurrence, then send the payload once:" + chr(10)
         + "      meant HALF the run (escape reflex -- a literal block eats "
@@ -30894,6 +30902,10 @@ def _take_payload_warnings() -> str:
     return out
 
 
+_AT_FILE_REST_MARKER_RE = re.compile(
+    r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*@rest[ \t]*\r?$", re.MULTILINE)
+
+
 def _load_at_file(ref: str, note: bool = True) -> Any:
     """Load JSON or TOML from an @file reference — thin wrapper over
     `_load_at_file_raw`, kept for the many callers that need only the
@@ -30963,16 +30975,93 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
         parser = tomllib.loads
     except ImportError:
         parser = _mini_toml_loads
+    # `FIELD = @rest` ends the TOML header there; everything after that
+    # line's newline, to end of stream, is FIELD's value verbatim -- never
+    # TOML-parsed, so a quoting collision with source code in the content
+    # cannot happen (#1868). `toml_source` is the header only; `raw` keeps
+    # the whole original text for the caller that wants provenance (#1032).
+    #
+    # Residual, named rather than hidden (self-review): the marker regex has
+    # no TOML string/table context, so a line that only LOOKS like a marker
+    # -- a `foo = @rest` line sitting inside an already-open multi-line
+    # string value earlier in the header, documenting this very feature
+    # being the likely way one arrives -- is still matched and still ends
+    # the header there. The bar this is held to is that the failure stays
+    # LOUD: the truncated header then fails to parse (an unterminated
+    # string), which is exactly what happens, never a silent misparse. A
+    # `[[table]]` array before the marker (a batch payload's [[ops]]) is
+    # refused explicitly, below, rather than relying on that same
+    # loud-failure argument, because the top level of a batch payload IS
+    # still a dict and the injection would otherwise land silently on the
+    # wrong table.
+    rest_field = None
+    toml_source = raw
+    rest_marker = _AT_FILE_REST_MARKER_RE.search(raw)
+    if rest_marker and re.search(
+            r"^[ \t]*\[", raw[:rest_marker.start()], re.MULTILINE):
+        # A `[table]` or `[[table]]` header appears before the marker, so
+        # the marker line may belong to a NESTED table rather than the
+        # top-level dict this pre-split assumes -- a `batch:@-` payload's
+        # `[[ops]]` entries, or a plain `[section]`. Treating it as the
+        # header-ending marker would inject the tail at the WRONG level
+        # (top-level `parsed[rest_field]` rather than the open table) and,
+        # for a `[[table]]` array, truncate every later entry too -- both
+        # silently (self-review, #1868; the single-bracket case was found by
+        # the oss:auditor spawn during the same self-review round). Declining
+        # the split keeps the failure loud instead: the literal `@rest`
+        # token then reaches the TOML parser as an ordinary invalid value
+        # and errors the same way it always did before this feature existed.
+        rest_marker = None
+    if rest_marker:
+        rest_field = rest_marker.group(1)
+        toml_source = raw[:rest_marker.start()]
+        marker_line = toml_source.count(chr(10)) + 1
+        nl_idx = raw.find(chr(10), rest_marker.end())
+        rest_tail = raw[nl_idx + 1:] if nl_idx != -1 else ""
+        if not rest_tail:
+            raise ValueError(
+                f"@file payload refused ({source}): the @rest tail is empty "
+                f"-- nothing follows line {marker_line} (`{rest_field} = @rest`)"
+            )
     try:
-        parsed = parser(raw)
+        parsed = parser(toml_source)
     except Exception as _e:
         raise ValueError(
-            f"@file TOML parse error ({source}): {_e}{_toml_delimiter_hint(raw)}"
+            f"@file TOML parse error ({source}): {_e}{_toml_delimiter_hint(toml_source)}"
         ) from _e
-    refusal = _toml_literal_backslash_refusal(raw)
+    if rest_field is not None:
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"@file payload refused ({source}): `{rest_field} = @rest` "
+                f"needs a table payload at the top level, got "
+                f"{type(parsed).__name__}"
+            )
+        existing = {str(k).lower(): k for k in parsed}
+        if rest_field.lower() in existing:
+            orig_key = existing[rest_field.lower()]
+            # LAST match, not first: a decoy line that merely looks like
+            # "key =" inside an earlier string value in the header would
+            # otherwise be reported as the conflicting field instead of the
+            # real assignment closer to the marker (self-review, #1868).
+            # Still context-blind -- a decoy AFTER the real assignment can
+            # still mislead -- the same accepted limitation this file
+            # already documents for provenance lookup (_payload_field_provenance:
+            # "good enough for a single-op payload, where each key appears once").
+            field_ms = list(re.finditer(
+                r"^[ \t]*" + re.escape(orig_key) + r"[ \t]*=",
+                toml_source, re.MULTILINE))
+            field_line = (toml_source.count(chr(10), 0, field_ms[-1].start()) + 1
+                          if field_ms else "?")
+            raise ValueError(
+                f"@file payload refused ({source}): `{rest_field}` is given "
+                f"twice -- as a header field (payload line {field_line}) and "
+                f"as the @rest tail (line {marker_line}). Use one."
+            )
+        parsed[rest_field] = rest_tail
+    refusal = _toml_literal_backslash_refusal(toml_source)
     if refusal:
         raise ValueError(f"@file payload refused ({source}): {refusal}")
-    refusal = _payload_sh_eol_backslash_refusal(parsed, raw)
+    refusal = _payload_sh_eol_backslash_refusal(parsed, toml_source)
     if refusal:
         raise ValueError(f"@file payload refused ({source}): {refusal}")
     # `note=False` for the read-op route: the note is about the write path, and
@@ -30980,19 +31069,23 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
     # doubled backslash there is a different question with a different answer,
     # and raising it would be noise on an op that cannot misfile a byte. The
     # refusals below are scoped the same way and for the same reason (#1087).
+    # `toml_source` rather than `raw` throughout: the @rest tail was never
+    # TOML-parsed, so none of these text-scanning guards can see it, and a
+    # doubled backslash written verbatim in the tail is exempt by construction
+    # rather than by a special case (#1868).
     if note:
         refusal = _payload_literal_backslashes_misplaced(parsed)
         if refusal:
             raise ValueError(f"@file payload refused ({source}): {refusal}")
-        refusal = _payload_double_backslash_refusal(parsed, raw)
+        refusal = _payload_double_backslash_refusal(parsed, toml_source)
         if refusal:
             raise ValueError(f"@file payload refused ({source}): {refusal}")
-        text = _payload_double_backslash_note(raw)
+        text = _payload_double_backslash_note(toml_source)
         if text:
             _PAYLOAD_WARNINGS.append(text)
-        for _abs_path, _advice in _payload_py_doubled_backslash_advisory(parsed, raw).items():
+        for _abs_path, _advice in _payload_py_doubled_backslash_advisory(parsed, toml_source).items():
             _PAYLOAD_PY_ESCAPE_ADVISORY[_abs_path] = _advice
-        refusal = _payload_shell_quote_escape_refusal(parsed, raw)
+        refusal = _payload_shell_quote_escape_refusal(parsed, toml_source)
         if refusal:
             raise ValueError(f"@file payload refused ({source}): {refusal}")
     return parsed, raw, source
@@ -31012,6 +31105,11 @@ def _payload_field_provenance(raw: str, key: str) -> str:
     finds; good enough for a single-op payload, where each key appears
     once.
     """
+    rest_m = re.search(
+        r"^[ \t]*" + re.escape(key) + r"[ \t]*=[ \t]*@rest[ \t]*\r?$",
+        raw, re.MULTILINE)
+    if rest_m:
+        return "@rest tail (unparsed, no escape processing)"
     delim_pat = (re.escape(_PAYLOAD_LINT_Q3) + "|"
                  + re.escape(_PAYLOAD_LINT_QQQ) + "|'|\\\"")
     m = re.search(
@@ -31731,6 +31829,16 @@ def _at_file_payload_hint(op: str) -> str:
         else:
             lines.append(f"    {name} = {quote}...{quote}")
     lines.append("    EOF")
+    _rest_field_for_op = {"paste": "content", "append": "content",
+                           "edit": "new", "replace": "new"}.get(op)
+    if _rest_field_for_op and any(
+            name == _rest_field_for_op for name, _o, _v in specs):
+        lines.append(
+            f"    Or end the header with {_rest_field_for_op} = @rest and put "
+            "the content after it, unparsed -- nothing after that line is "
+            "TOML-parsed, so no delimiter or backslash guard can collide "
+            "with it (#1868)."
+        )
     if op == "edit":
         # #1867 — the accepted shape (one edit per payload) is otherwise only
         # inferable from the unknown-field list on an `edits`/`[[edits]]`
