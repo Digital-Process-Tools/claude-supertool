@@ -79,9 +79,9 @@ def _head_subject(work: Path) -> str:
 def test_control_byte_hazard_flags_a_real_esc_byte() -> None:
     hazard = commit_mod._control_byte_hazard("before" + chr(0x1B) + "after")
     assert hazard is not None
-    index, ch = hazard
+    index, display, kind = hazard
     assert index == 6
-    assert ch == chr(0x1B)
+    assert kind == "control byte"
 
 
 def test_control_byte_hazard_is_none_for_the_actual_2573_message() -> None:
@@ -89,6 +89,73 @@ def test_control_byte_hazard_is_none_for_the_actual_2573_message() -> None:
     message must not trip this -- only a byte with no business being there."""
     msg = "line one\n\nline two\twith a tab\r\n"
     assert commit_mod._control_byte_hazard(msg) is None
+
+
+# --- review finding 2: U+2028/U+2029 are labelled, not called "control byte" ---
+
+
+def test_line_separator_is_labelled_as_such_not_a_control_byte() -> None:
+    hazard = commit_mod._control_byte_hazard("before" + chr(0x2028) + "after")
+    assert hazard is not None
+    _, _, kind = hazard
+    assert kind == "line separator"
+
+
+def test_paragraph_separator_is_labelled_as_such_not_a_control_byte() -> None:
+    hazard = commit_mod._control_byte_hazard("before" + chr(0x2029) + "after")
+    assert hazard is not None
+    _, _, kind = hazard
+    assert kind == "paragraph separator"
+
+
+# --- review finding 1: a real C1 byte, in the ONLY form it actually --------
+# --- arrives through a CLI call (a lone surrogate, per surrogateescape) ----
+
+
+def test_surrogateescaped_c1_byte_is_flagged_by_its_original_value() -> None:
+    """A standalone C1 byte (e.g. NEL, 0x85) is not valid UTF-8 alone, so a
+    real CLI call never hands this script `chr(0x85)` -- it hands the lone
+    surrogate `surrogateescape` produces instead. The predicate must catch
+    THAT shape, not the shape no real call can ever deliver."""
+    surrogate_for_0x85 = chr(0xDC00 + 0x85)
+    hazard = commit_mod._control_byte_hazard("before" + surrogate_for_0x85
+                                              + "after")
+    assert hazard is not None
+    index, display, kind = hazard
+    assert index == 6
+    assert kind == "control byte"
+    assert "0x85" in display
+
+
+def test_ordinary_invalid_utf8_surrogate_outside_c1_range_is_not_flagged() -> None:
+    """Positive control: `surrogateescape` uses the WHOLE 0xDC80-0xDCFF
+    window for every byte it cannot decode, not only C1 (0x80-0x9F) -- a
+    byte outside that narrower range must not be misreported as a control
+    byte."""
+    surrogate_for_0xC0 = chr(0xDC00 + 0xC0)
+    assert commit_mod._control_byte_hazard(surrogate_for_0xC0) is None
+
+
+def test_surrogateescaped_c1_byte_is_refused_through_the_real_cli_path(
+        tmp_path: Path) -> None:
+    """The reachability itself, not just the predicate: a genuine raw 0x85
+    byte handed to the OS as real argv bytes (bypassing this test runner's
+    own str encoding, the same hop a live shell/exec makes) must still be
+    caught end to end -- this is what review finding 1 said was
+    unreachable before `_surrogateescaped_c1_byte` closed it."""
+    work = _repo(tmp_path)
+    (work / "a.txt").write_text("2\n", encoding="utf-8")
+    op_bytes = b"git-commit:::before\x85after:::a.txt"
+
+    proc = subprocess.run(
+        [os.fsencode(sys.executable), os.fsencode(str(SUPERTOOL)), op_bytes],
+        capture_output=True, timeout=120, cwd=str(work), env=dict(os.environ),
+    )
+    out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+
+    assert "ERROR" in out, out
+    assert "control byte" in out, out
+    assert _head_subject(work) == "seed"
 
 
 # --- end-to-end: the colon-CLI route ---------------------------------------
