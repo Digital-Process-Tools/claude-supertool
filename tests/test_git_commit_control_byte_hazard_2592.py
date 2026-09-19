@@ -29,6 +29,8 @@ import importlib.util
 import os
 import subprocess
 import sys
+
+import pytest
 from pathlib import Path
 
 REPO = Path(__file__).parent.parent
@@ -152,13 +154,23 @@ def test_ordinary_invalid_utf8_surrogate_outside_c1_range_is_not_flagged() -> No
     assert commit_mod._control_byte_hazard(surrogate_for_0xC0) is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="argv is one UTF-16 command line on Windows, built and parsed by "
+           "CreateProcessW -- there is no OS-level byte-string argv array to "
+           "smuggle a raw invalid-UTF-8 byte through the way POSIX exec() "
+           "allows, so this reachability claim has nothing to test there; "
+           "confirmed as the actual failure mode on Windows CI (#2592): "
+           "subprocess.run's own str-encode of the bytes argv element raises "
+           "UnicodeDecodeError before the child process is even spawned")
 def test_surrogateescaped_c1_byte_is_refused_through_the_real_cli_path(
         tmp_path: Path) -> None:
     """The reachability itself, not just the predicate: a genuine raw 0x85
     byte handed to the OS as real argv bytes (bypassing this test runner's
     own str encoding, the same hop a live shell/exec makes) must still be
     caught end to end -- this is what review finding 1 said was
-    unreachable before `_surrogateescaped_c1_byte` closed it."""
+    unreachable before `_surrogateescaped_c1_byte` closed it. POSIX only --
+    see the skip above."""
     work = _repo(tmp_path)
     (work / "a.txt").write_text("2\n", encoding="utf-8")
     op_bytes = b"git-commit:::before\x85after:::a.txt"
