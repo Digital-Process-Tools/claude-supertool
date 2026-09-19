@@ -238,21 +238,39 @@ def _control_byte_refusal(msg: str, index: int, display: str, kind: str):
     `repr()` treats it as non-printable and escapes it the same way it does
     an ESC), so printing the parsed message back cannot repeat the hazard
     on whatever terminal reads this refusal.
+
+    The middle line and the closing sentence are `kind`-specific, not just
+    the opener -- a second-pass review of the fix that introduced `kind`
+    caught both still hardcoded to describe an ESC/shell-quoting mistake
+    even when `kind` is a line/paragraph separator, which arrives by a
+    completely different route (a paste, not a shell) and has nothing to
+    do with $'...' quoting.
     """
+    if kind == "control byte":
+        cause = (
+            "  This is never something a caller means to commit. A shell "
+            "quoting form like $'...' turns escape TEXT (\\x1b) into a real "
+            "byte like this one, and some invocation paths (an interactive "
+            "pty) then read it as a control sequence and silently drop part "
+            "of the line -- which is how a PATH named right after it can "
+            "vanish before this parser ever runs."
+        )
+    else:
+        cause = (
+            "  This is never something a caller means to commit -- it is an "
+            "invisible line break, not the ordinary newline a message body "
+            "already uses, and usually arrives pasted from a web page or a "
+            "document editor without anyone seeing it land."
+        )
     return [
         "ERROR: MESSAGE holds a raw %s (%s at character %d) -- refused "
         "before anything was staged, nothing committed (#2592)."
         % (kind, display, index),
-        "  This is never something a caller means to commit. A shell "
-        "quoting form like $'...' turns escape TEXT (\\x1b) into a real "
-        "byte like this one, and some invocation paths (an interactive "
-        "pty) then read it as a control sequence and silently drop part "
-        "of the line -- which is how a PATH named right after it can "
-        "vanish before this parser ever runs.",
+        cause,
         "  Parsed as: message=%r (intact -- this call reached commit.py "
         "whole)" % (msg,),
-        "  Remove the stray byte and retype the message; a raw control "
-        "byte belongs in no commit message, on either route.",
+        "  Remove the stray %s and retype the message; it belongs in no "
+        "commit message, on either route." % (kind,),
     ]
 
 

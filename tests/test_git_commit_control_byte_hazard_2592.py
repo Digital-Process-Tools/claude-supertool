@@ -108,6 +108,22 @@ def test_paragraph_separator_is_labelled_as_such_not_a_control_byte() -> None:
     assert kind == "paragraph separator"
 
 
+def test_separator_refusal_text_does_not_call_it_a_control_byte() -> None:
+    """Round-2 self-review finding: the opener named `kind` correctly but
+    the explanatory line and the closing sentence stayed hardcoded to the
+    control-byte/shell-quoting story regardless. Pin the whole rendered
+    refusal, not just the predicate's own return value."""
+    index, display, kind = commit_mod._control_byte_hazard(
+        "before" + chr(0x2028) + "after")
+    lines = commit_mod._control_byte_refusal(
+        "before" + chr(0x2028) + "after", index, display, kind)
+    full = "\n".join(lines)
+    assert "line separator" in full, full
+    assert "$'" not in full, full
+    assert "shell quoting" not in full, full
+    assert full.count("control byte") == 0, full
+
+
 # --- review finding 1: a real C1 byte, in the ONLY form it actually --------
 # --- arrives through a CLI call (a lone surrogate, per surrogateescape) ----
 
