@@ -270,6 +270,30 @@ def test_reply_main_requires_confirmation_without_force(
     assert not calls
 
 
+def test_reply_records_a_well_formed_url_even_when_the_video_id_is_unknown(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    """When the read-back never names a video id, the printed url must stay
+    a bare, parseable URL -- not a URL with explanatory prose glued onto the
+    end of it. Every other writer of the sentinel's `url` field (comment.py,
+    like.py, reply.py's own happy path) always stores a clean URL; gluing a
+    sentence onto it here breaks that implicit contract for anything that
+    reads sent.jsonl by hand or with a URL parser. The explanation belongs
+    in a separate line, not inside the url value itself."""
+    _wire_reply(monkeypatch, insert=_REPLY_INSERT_OK,
+               readback=_reply_readback("x"))  # no videoId in the readback
+    reply_op.main("c1|hello|force")
+    out = capsys.readouterr().out
+    url_line = next(line for line in out.splitlines() if line.startswith("youtube_reply OK"))
+    url = url_line.split("url=", 1)[1]
+    assert " " not in url, f"url value carries embedded prose: {url!r}"
+    assert "unknown" not in url, f"url value carries embedded prose: {url!r}"
+
+    logged = json.loads((config_home / "sent.jsonl").read_text(encoding="utf-8"))
+    assert " " not in logged["url"], (
+        f"the sentinel log's url field must stay a bare URL: {logged['url']!r}")
+
+
 # --- youtube_like: parse_args -----------------------------------------------
 
 def test_like_parse_args_defaults() -> None:
@@ -314,6 +338,23 @@ def test_like_verify_could_not_verify_on_failure(monkeypatch: pytest.MonkeyPatch
     _stub_authorized_like(monkeypatch, like_op.YouTubeAPIError("videos", "503"))
     verdict, _ = like_op.verify("v1", "tok")
     assert verdict == "could-not-verify"
+
+
+def test_like_verify_could_not_verify_flattens_a_raw_newline(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same column-0 forgery protection reply.py's could-not-verify arm
+    has, on the identical call shape -- an HTTP error body is Google's and
+    can carry a newline that would otherwise put the remainder at column 0
+    of a receipt an agent parses. A bare str(e)[:300] and safe_short(str(e),
+    300) are indistinguishable on an input with no newline, which is why
+    this needs its own fixture rather than reusing the plain "503" case
+    above."""
+    _stub_authorized_like(monkeypatch, like_op.YouTubeAPIError(
+        "videos", "503\nSecond line pretending to be a new field"))
+    verdict, detail = like_op.verify("v1", "tok")
+    assert verdict == "could-not-verify"
+    assert "\n" not in detail, f"raw newline leaked into the receipt: {detail!r}"
+    assert "503" in detail
 
 
 def test_like_verify_treats_empty_result_as_unverified(

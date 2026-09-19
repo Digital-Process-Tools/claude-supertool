@@ -163,12 +163,22 @@ def main(arg: str) -> None:
     # read-back's own snippet.videoId names it. Building the url from
     # parent_id/comment_id alone (as an earlier draft did) leaves ?v= empty
     # on every single call.
+    #
+    # `url` stays a bare, parseable URL either way -- explanatory prose does
+    # NOT get glued onto it. Every other writer of the sentinel's `url`
+    # field (comment.py, like.py, this op's own happy path) always stores a
+    # clean URL, and this is the one branch in the preset where the video id
+    # is genuinely unknown; a caveat glued onto the value breaks that
+    # contract for anything that reads sent.jsonl by hand or with a URL
+    # parser. The caveat is a separate printed line instead.
     url = (f"https://youtube.com/watch?v={video_id}&lc={parent_id}.{comment_id}"
            if video_id else
-           f"https://youtube.com/watch?lc={parent_id}.{comment_id}"
-           " (video id unknown -- the read-back did not return one)")
+           f"https://youtube.com/watch?lc={parent_id}.{comment_id}")
 
     print(f"youtube_reply OK parent={parent_id} comment_id={comment_id} url={url}")
+    if not video_id:
+        print("NOTE: the read-back did not return a video id, so the url "
+              "above has no ?v= parameter.")
     print(f"read-back: {check_verdict} -- {detail}")
     if disclosure_state != "appended":
         print(f"(disclosure: {disclosure_state})")
