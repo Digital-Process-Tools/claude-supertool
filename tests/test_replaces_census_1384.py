@@ -152,7 +152,8 @@ _ABSENT = {
     # rather than a curl mapping.
     "youtube_search": _NO_CLI, "youtube_read": _NO_CLI,
     "youtube_list": _NO_CLI, "youtube_auth": _NO_CLI,
-    "youtube_comment": _NO_CLI,
+    "youtube_comment": _NO_CLI, "youtube_reply": _NO_CLI,
+    "youtube_like": _NO_CLI, "youtube_status_since": _NO_CLI,
 
     # --- presets/slack.json -------------------------------------------------
     "slack_publish": _NO_CLI,

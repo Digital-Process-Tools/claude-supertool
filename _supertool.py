@@ -4089,8 +4089,8 @@ def _dropped_tokens_refusal(
     return chr(10).join(lines) + chr(10)
 
 #: Preset ops that name a path and predate the declaration (#1287). **This set
-#: only ever shrinks.** It is not a policy — it is a debt register: 32 shipped
-#: PRESET ops name a path, 13 declare a boundary (#227 added `youtube_comment`,
+#: only ever shrinks.** It is not a policy — it is a debt register: 33 shipped
+#: PRESET ops name a path, 14 declare a boundary (#227 added `youtube_comment`,
 #: the same `{"args": []}` shape as the ops below it -- its `file://PATH` sits
 #: inside a pipe-separated field, not in an argument slot, so the containment
 #: that matters is `safe_resolve_body_path`. `bluesky_publish` is the identical
@@ -4100,7 +4100,10 @@ def _dropped_tokens_refusal(
 #: precedent, since PATH there names an artifact's own path or a GitLab API
 #: route rather than anything on this filesystem; #532 added `worktree`, the
 #: same `"paths": {"args": []}` shape again, since PATH there deliberately
-#: points outside cwd), these 19 do not. It opened
+#: points outside cwd; #2593 added `youtube_reply`, the identical
+#: `{"args": []}` shape as `youtube_comment` right above it -- its own
+#: `file://PATH` sits inside the same pipe-separated field, so named and
+#: declared each moved by one again), these 19 do not. It opened
 #: at
 #: 20 — see the #1351 note below for the one it has lost. Counting this repo's
 #: own `.supertool.json` as well used to add one to each of those first two
