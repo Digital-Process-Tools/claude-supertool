@@ -670,7 +670,15 @@ def test_compose_plugin_identity_check_reports_route_mismatch(tmp_path):
                         "current_route": "resolved-install",
                         "prior_route": None,
                         "state": "route-mismatch",
-                        "why": "routes differ",
+                        # An embedded newline, not plain text: `flat()` is a
+                        # no-op on ordinary prose, so this must actually
+                        # collapse it for the test to fail if the flatten
+                        # step (added alongside route-mismatch reachability
+                        # in this same fix) were ever reverted (found by
+                        # review, second pass: the plain-text fixture this
+                        # test first shipped with passed identically against
+                        # the pre-flatten code too).
+                        "why": "routes differ\nEVIL: forged line",
                     }
                 )
             )
@@ -682,7 +690,8 @@ def test_compose_plugin_identity_check_reports_route_mismatch(tmp_path):
         run=_run_with_route_mismatch,
         resolve_fn=_resolved(tmp_path),
     )
-    assert rows["plugin_identity_check"] == "route-mismatch -- routes differ"
+    assert rows["plugin_identity_check"] == "route-mismatch -- routes differ EVIL: forged line"
+    assert "\n" not in rows["plugin_identity_check"]
 
 
 # A `dispatch`/`observable`/`why`/`current`/`prior` field is state-file text a
