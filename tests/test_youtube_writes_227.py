@@ -184,6 +184,45 @@ def test_parse_args_reads_force_from_the_last_field() -> None:
     assert body == "before | after"
 
 
+def test_parse_args_triple_colon_separator_avoids_the_pipe_ambiguity() -> None:
+    """':::' is not a character an operator would type into ordinary prose,
+    so a body whose own text happens to contain '|force' as a trailing
+    segment survives intact under it -- the exact string #2600 reports
+    (`vid|may the|force` silently drops "force" from the body and forges
+    the confirmation) is unambiguous once ':::' picks the field, because
+    the whole thing is then a single body field with no ':::' in it at
+    all."""
+    vid, body, force, force_dup = comment_op.parse_args("vid:::may the|force")
+    assert vid == "vid"
+    assert body == "may the|force"
+    assert (force, force_dup) == (False, False)
+
+
+def test_parse_args_triple_colon_separator_still_reads_an_explicit_flag() -> None:
+    _, body, force, force_dup = comment_op.parse_args(
+        "vid:::may the force:::force")
+    assert body == "may the force"
+    assert (force, force_dup) == (True, False)
+
+
+def test_parse_args_triple_colon_separator_reads_both_flags_either_order() -> None:
+    _, body, force, force_dup = comment_op.parse_args(
+        "vid:::hello:::force-dup:::force")
+    assert body == "hello"
+    assert (force, force_dup) == (True, True)
+
+
+def test_parse_args_pipe_mode_is_unchanged_by_the_triple_colon_addition() -> None:
+    """Documents the limitation ':::' exists to route around rather than
+    remove: default '|' parsing still cannot tell a body's own trailing
+    '|force' segment from the flag, because changing that default would
+    silently reinterpret every already-shipped '|force' call site (#2600's
+    fix is the new ':::' field, not a change to '|' semantics)."""
+    _, body, force, _ = comment_op.parse_args("vid|may the|force")
+    assert body == "may the"
+    assert force is True
+
+
 def test_parse_args_rejects_an_empty_body() -> None:
     with pytest.raises(SystemExit) as e:
         comment_op.parse_args("vid|   ")
@@ -704,3 +743,75 @@ def test_force_dup_alone_does_not_confirm_the_publish(
         comment_op.main("vid9|hello|force-dup")
     assert e.value.code == 2
     assert not calls
+
+
+# --- #2599: the three remaining raw error-body interpolations ------------
+
+def test_main_escapes_a_newline_in_the_oauth_error_when_getting_the_token(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    """Same shape as verify()'s could-not-verify arm
+    (trap.d/227.oauth-error-body-unescaped-in-receipt.md): an OAuth error
+    body is Google's and can carry a newline, which must not put the
+    remainder at column 0 of this op's own stderr."""
+    def boom():
+        raise comment_op.OAuthError(
+            "token refresh failed\nSecond line pretending to be a new field")
+    monkeypatch.setattr(comment_op, "get_access_token", boom)
+    with pytest.raises(SystemExit) as e:
+        comment_op.main("vid9|hello|force")
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert "\n" not in err.rstrip("\n"), f"raw newline leaked into stderr: {err!r}"
+    assert "token refresh failed" in err
+
+
+def test_main_escapes_a_newline_in_the_api_error_from_the_insert(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    """Same shape, the other exception arm: the insert's own YouTubeAPIError
+    carries _yt._format_oauth_http_error's raw body[:300]."""
+    _wire(monkeypatch, insert=comment_op.YouTubeAPIError(
+        "commentThreads", "400\nSecond line pretending to be a new field"),
+        readback=_readback("x"))
+    with pytest.raises(SystemExit) as e:
+        comment_op.main("vid9|hello|force")
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "\n" not in err.rstrip("\n"), f"raw newline leaked into stderr: {err!r}"
+    assert "400" in err
+
+
+def test_auth_status_escapes_a_newline_in_the_cached_scope(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    """auth.py:_status prints the token cache's own 'scope' field verbatim --
+    server-supplied, but the same misreports-not-forges reasoning as the
+    OAuth error bodies applies, and a newline embedded in it must not split
+    the receipt either."""
+    oauth._write_token_file({
+        "client_id": "cid", "refresh_token": "r", "access_token": "live",
+        "expires_at": time.time() + 3600,
+        "scope": "openid\nSecond line pretending to be a new field"})
+    assert auth_op._status() == 1
+    out = capsys.readouterr().out
+    scope_line = next(line for line in out.splitlines() if line.startswith("scope:"))
+    assert "Second line pretending to be a new field" in scope_line, (
+        "the scope text must still be visible, just not on its own line")
+
+
+def test_auth_main_escapes_a_newline_in_the_oauth_error(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    def boom(*_a, **_k):
+        # auth_op imports OAuthError off its own sys.path entry
+        # (_module_aliases's issue) -- raise the class it actually catches.
+        raise auth_op.OAuthError(
+            "authorize failed\nSecond line pretending to be a new field")
+    monkeypatch.setattr(auth_op, "authorize", boom)
+    with pytest.raises(SystemExit) as e:
+        auth_op.main("")
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "\n" not in err.rstrip("\n"), f"raw newline leaked into stderr: {err!r}"
+    assert "authorize failed" in err
