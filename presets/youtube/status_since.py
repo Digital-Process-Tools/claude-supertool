@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _console import use_utf8_stdout  # noqa: E402
 from _env import env_int  # noqa: E402
 from _oauth import OAuthError, get_access_token  # noqa: E402
+from _sanitize import detect  # noqa: E402
 from _yt import YouTubeAPIError, authorized  # noqa: E402
 
 USAGE = "youtube_status_since[:ISO]"
@@ -89,10 +90,28 @@ def new_threads(threads: list[dict], cutoff: str) -> tuple[list[dict], bool]:
 
 
 def render(video_title: str, video_id: str, matching: list[dict], truncated: bool) -> str:
+    """The receipt for one video's new comments.
+
+    `youtube_read` scans a video's description and its comments for known
+    injection patterns and prefixes a `POSSIBLE INJECTION` warning when one
+    hits -- untrusted comment text is exactly the same shape here, so this
+    runs the same `detect()` scan rather than reusing only the newline-strip
+    half of that convention.
+    """
     url = f"https://www.youtube.com/watch?v={video_id}"
     if not matching:
         return None
-    lines = [f"({len(matching)} new comment(s)) {video_title} [{url}]"]
+    all_text = " ".join(
+        (((t.get("snippet") or {}).get("topLevelComment") or {})
+         .get("snippet") or {}).get("textDisplay", "")
+        for t in matching
+    )
+    inj_hits = detect(all_text)
+    warning = ""
+    if inj_hits:
+        warning = (f"  ⚠ POSSIBLE INJECTION in this video's new comments -- "
+                   f"{', '.join(inj_hits[:3])}\n")
+    lines = [f"{warning}({len(matching)} new comment(s)) {video_title} [{url}]"]
     for thread in matching:
         top = (((thread.get("snippet") or {}).get("topLevelComment") or {})
                .get("snippet") or {})

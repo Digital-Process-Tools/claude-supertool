@@ -44,6 +44,7 @@ import _sentinel  # noqa: E402
 from _console import use_utf8_stdout  # noqa: E402
 from _oauth import OAuthError, get_access_token  # noqa: E402
 from _publish_safety import require_confirm  # noqa: E402
+from _sanitize import safe_short  # noqa: E402
 from _yt import YouTubeAPIError, authorized  # noqa: E402
 from read import parse_video_id  # noqa: E402
 
@@ -69,7 +70,12 @@ def verify(video_id: str, token: str) -> tuple[str, str]:
     try:
         data = authorized("videos/getRating", token, {"id": video_id})
     except YouTubeAPIError as e:
-        return "could-not-verify", repr(str(e)[:300])
+        # `safe_short`, not a bare slice: the same reasoning `comment.py`'s
+        # verify() gives for this exact call shape -- an HTTP error body is
+        # Google's and can carry a newline (column-0 forgery in a receipt an
+        # agent parses) or a known injection pattern, and a bare `str(e)[:300]`
+        # gives neither protection `reply.py`'s identical call gets.
+        return "could-not-verify", repr(safe_short(str(e), 300))
     items = data.get("items") or []
     if not items:
         return "could-not-verify", (

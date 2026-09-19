@@ -143,6 +143,9 @@ to catch. The written `sent.jsonl` entry's `video_id` field holds the parent
 comment id for this op; `op="youtube_reply"` in the same entry is what tells
 the two apart when reading the log by hand.
 
+`youtube_reply` costs 50 quota units for the insert plus 1 for the read-back,
+the same split `youtube_comment` costs.
+
 ## Liking a video
 
 `youtube_like:VIDEO_ID_OR_URL[|force][|force-dup]` sets this account's rating
@@ -160,6 +163,9 @@ refuse each other without `|force-dup` -- a conservative default (one video,
 one footprint, until overridden), not a claim that liking and commenting are
 the same action.
 
+`youtube_like` costs 50 quota units for the rate call plus 1 for the
+read-back.
+
 ## Sweeping for new comments on your own videos
 
 `youtube_status_since[:ISO]` lists new top-level comments on this account's
@@ -170,6 +176,11 @@ via `channels.list?mine=true` -- but it never writes, so it has no sentinel,
 no rate cap and no confirmation gate. A video with comments disabled degrades
 to a `--- comments unavailable: ... ---` note for that one video rather than
 failing the whole sweep, the same degrade `youtube_read` documents above.
+
+`youtube_status_since` costs 1 unit for `channels.list`, 1 for
+`playlistItems.list`, and 1 per video checked for `commentThreads.list` (up to
+`SUPERTOOL_DEFAULT_LIMIT` videos) -- so a default sweep costs at most
+`SUPERTOOL_DEFAULT_LIMIT + 2` units.
 
 All three reuse `_oauth.get_access_token`, `_yt.authorized`, `_sentinel` and
 `_publish_safety` unchanged -- #227's own note that these three ops are

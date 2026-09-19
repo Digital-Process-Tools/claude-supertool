@@ -90,25 +90,39 @@ def parse_args(arg: str) -> tuple[str, str, bool, bool]:
     return parts[0].strip(), body, force, force_dup
 
 
-def verify(comment_id: str, token: str, sent: str) -> tuple[str, str]:
-    """Read the reply back. `(verdict, detail)` -- same three states as
-    `comment.verify`: "verified", "MISMATCH", "could-not-verify"."""
+def verify(comment_id: str, token: str, sent: str) -> tuple[str, str, str]:
+    """Read the reply back. `(verdict, detail, video_id)` -- the same three
+    verdicts `comment.verify` uses ("verified", "MISMATCH",
+    "could-not-verify"), plus the video id the reply belongs to.
+
+    Unlike `youtube_comment`, this op is only ever given a parent COMMENT_ID
+    -- never a video id -- so `video_id` here is empty until this read-back
+    tells us: the Comment resource's own `snippet.videoId` is where it comes
+    from. Without it the receipt url below has no way to name the video at
+    all and silently renders `?v=` empty on every single call, which is the
+    op's own read-back link doing nothing for the "confirm in a logged-out
+    browser" step this preset's whole design leans on.
+    """
     try:
         data = authorized("comments", token,
                           {"part": "snippet", "id": comment_id})
     except YouTubeAPIError as e:
-        return "could-not-verify", repr(safe_short(str(e), 300))
+        return "could-not-verify", repr(safe_short(str(e), 300)), ""
     items = data.get("items") or []
     if not items:
         return "could-not-verify", (
             "the insert returned an id but comments.list came back with no "
-            "such comment -- it may be held for review")
-    got = ((items[0].get("snippet") or {}).get("textOriginal") or "").strip()
+            "such comment -- it may be held for review"), ""
+    snippet = items[0].get("snippet") or {}
+    got = (snippet.get("textOriginal") or "").strip()
+    video_id = snippet.get("videoId") or ""
     if got == sent.strip():
-        return "verified", f"{len(sent)} characters, byte-identical to what was sent"
+        return ("verified",
+                f"{len(sent)} characters, byte-identical to what was sent",
+                video_id)
     return "MISMATCH", (
         f"read back {len(got)} characters, sent {len(sent)} -- "
-        f"server text begins {safe_short(got, 120)!r}")
+        f"server text begins {safe_short(got, 120)!r}"), video_id
 
 
 def main(arg: str) -> None:
@@ -142,9 +156,17 @@ def main(arg: str) -> None:
         sys.exit(1)
 
     comment_id = data.get("id") or "?"
-    url = f"https://youtube.com/watch?v=&lc={parent_id}.{comment_id}"
 
-    check_verdict, detail = verify(comment_id, token, body)
+    check_verdict, detail, video_id = verify(comment_id, token, body)
+    # Built AFTER verify(), not before: this op is only ever given a parent
+    # COMMENT_ID, never a video id, so the video id only exists once the
+    # read-back's own snippet.videoId names it. Building the url from
+    # parent_id/comment_id alone (as an earlier draft did) leaves ?v= empty
+    # on every single call.
+    url = (f"https://youtube.com/watch?v={video_id}&lc={parent_id}.{comment_id}"
+           if video_id else
+           f"https://youtube.com/watch?lc={parent_id}.{comment_id}"
+           " (video id unknown -- the read-back did not return one)")
 
     print(f"youtube_reply OK parent={parent_id} comment_id={comment_id} url={url}")
     print(f"read-back: {check_verdict} -- {detail}")
