@@ -28,6 +28,7 @@ from _oauth import (  # noqa: E402
     _read_token_file,
     authorize,
 )
+from _sanitize import safe_short  # noqa: E402
 
 
 def _status() -> int:
@@ -37,7 +38,12 @@ def _status() -> int:
     try:
         cached = _read_token_file()
     except OAuthError as e:
-        print(f"token cache:   {TOKEN_PATH} UNREADABLE -- {e}")
+        # Same escaping as the scope print and main()'s error arm below --
+        # this wraps a local-file OSError/JSONDecodeError rather than a
+        # network body, but the same "misreports, not forges" reasoning
+        # applies, and it is not guaranteed single-line either.
+        print(f"token cache:   {TOKEN_PATH} UNREADABLE -- "
+              f"{repr(safe_short(str(e), 300))}")
         print("verdict:       CANNOT TELL -- neither authorised nor known "
               "unauthorised. Delete the file and run youtube_auth.")
         return 1
@@ -53,7 +59,13 @@ def _status() -> int:
     freshness = (f"access token valid for {int(left)}s" if left > 0
                  else "access token expired (it is refreshed on next use)")
     print(f"token cache:   {TOKEN_PATH} present, {freshness}")
-    print(f"scope:         {cached.get('scope', '(unrecorded)')}")
+    # The scope string comes back from the token cache written by whatever
+    # Google's token endpoint returned -- not attacker-chosen, but the same
+    # "misreports, not forges" reasoning as the OAuth error bodies below
+    # applies: a newline in it would still land at column 0 of this receipt
+    # (trap.d/227.oauth-error-body-unescaped-in-receipt.md).
+    print(f"scope:         "
+          f"{repr(safe_short(str(cached.get('scope', '(unrecorded)')), 300))}")
     if SCOPE not in str(cached.get("scope", "")):
         print(f"verdict:       AUTHORISED, but {SCOPE} is not in the recorded "
               "scope -- writes will 403. Re-run youtube_auth.")
@@ -75,7 +87,7 @@ def main(arg: str) -> None:
     try:
         payload = authorize()
     except OAuthError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(1)
     print(f"youtube_auth OK token={TOKEN_PATH} scope={payload.get('scope', SCOPE)}")
     print("Next: supertool 'youtube_auth:status' to confirm, then "

@@ -34,6 +34,14 @@ where doing nothing is clearly right.
 other. They shared `|force` in the first draft of #2543, which left the
 duplicate guard off on every invocation that actually published, since
 `|force` is what an operator has to pass to publish at all.
+
+**A body whose own text ends in the literal word "force"/"force-dup" is
+ambiguous under `|` splitting** (#2600): there is no telling "that is body
+text" from "that is the flag" once both spell the same word. Use `:::`
+instead of `|` as the field separator when that matters --
+`VIDEO:::body ending in the word force:::force` keeps the whole body intact
+and reads the flag from its own explicit trailing field rather than
+guessing.
 """
 from __future__ import annotations
 
@@ -59,7 +67,8 @@ from read import parse_video_id  # noqa: E402
 #: refusal before the network rather than a surprise after it.
 MAX_LEN = 10000
 _FILE_PREFIX = "file://"
-USAGE = ("youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force][|force-dup]")
+USAGE = ("youtube_comment:VIDEO_ID_OR_URL|TEXT_OR_file://PATH[|force][|force-dup]"
+          " (or ::: in place of | when the body might end in the word force/force-dup)")
 
 
 def _resolve_body(arg: str) -> str:
@@ -91,8 +100,33 @@ def parse_args(arg: str) -> tuple[str, str, bool, bool]:
     and this preset has no delete op, so that is the guard that matters.
 
     Both are read from the trailing fields, in either order.
+
+    Split on "|" by default. A body whose own last "|"-delimited segment
+    happens to spell "force"/"force-dup" is genuinely ambiguous under that
+    scheme -- there is no way to tell "the operator's last field is body
+    text" from "the operator meant the flag" once both spell the same word,
+    and #2600 is that ambiguity silently resolving in the flag's favour
+    every time, dropping the trailing word from the body AND forging the
+    publish confirmation. "|" is common in ordinary prose; ":::" is not, so
+    an operator who needs it can opt in and use it as the field separator
+    instead, and a body typed with ordinary pipes in it (like the example
+    above) survives untouched unless the operator also types out
+    ":::force" as its own explicit field.
+
+    Which one is "the separator" is decided by whichever delimiter occurs
+    FIRST in `arg`, not by a bare substring check over the whole string --
+    a video id/URL never legitimately contains either character, so the
+    first "|" or ":::" is always the boundary of that first field, and
+    checking "is ':::' anywhere in arg" would instead flip an ordinary
+    "|"-mode call into (broken) ":::" mode the moment its BODY happened to
+    contain the substring ":::" (e.g. a comment quoting a Markdown
+    container fence like ":::warning ... :::"), which is exactly the kind
+    of already-shipped call this fix must not reinterpret.
     """
-    parts = arg.split("|")
+    pipe_at = arg.find("|")
+    triple_at = arg.find(":::")
+    sep = ":::" if triple_at != -1 and (pipe_at == -1 or triple_at < pipe_at) else "|"
+    parts = arg.split(sep)
     if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
         sys.stderr.write(f"ERROR: usage {USAGE}\n")
         sys.exit(2)
@@ -107,9 +141,10 @@ def parse_args(arg: str) -> tuple[str, str, bool, bool]:
             break
         parts.pop()
     text_fields = parts[1:]
-    # Rejoin on "|" so a body containing a pipe survives, which a plain
-    # `split("|", 2)` would silently truncate at the second one.
-    body = _resolve_body("|".join(text_fields)).strip()
+    # Rejoin on the same separator that was used to split, so a body
+    # containing that character survives, which a plain `split(sep, 2)`
+    # would silently truncate at the second one.
+    body = _resolve_body(sep.join(text_fields)).strip()
     if not body:
         sys.stderr.write("ERROR: comment body is empty\n")
         sys.exit(2)
@@ -180,7 +215,10 @@ def main(arg: str) -> None:
     try:
         token = get_access_token()
     except OAuthError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        # Escaped the same way verify()'s could-not-verify arm is
+        # (trap.d/227.oauth-error-body-unescaped-in-receipt.md): the OAuth
+        # error body is Google's and can carry a newline.
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(2)
 
     try:
@@ -192,7 +230,10 @@ def main(arg: str) -> None:
             }},
         )
     except YouTubeAPIError as e:
-        sys.stderr.write(f"ERROR: {e}\n")
+        # Same escaping as the OAuthError arm above and verify()'s
+        # could-not-verify arm: this is _yt._format_oauth_http_error's raw
+        # body[:300], Google's bytes, not a stranger's.
+        sys.stderr.write(f"ERROR: {repr(safe_short(str(e), 300))}\n")
         sys.exit(1)
 
     thread_id = data.get("id") or "?"
