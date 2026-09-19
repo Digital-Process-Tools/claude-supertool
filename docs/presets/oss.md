@@ -24,8 +24,8 @@ One receipt, every row three-state, never two -- a step that is skipped and a st
 | --- | --- |
 | plugin identity | `resolved <version>` / `resolved, but its install carries no scripts/ directory` / `could-not-resolve` |
 | last state entry | entry / `no entries yet` / `FAIL` naming what is wrong |
-| pending wait | `cleared` / `holds` / `could-not-evaluate` |
-| plugin identity vs last recorded | `unchanged` / `changed` / `could-not-tell` / `route-mismatch` |
+| pending wait | `cleared` / `holds -- <detail>` / `could-not-evaluate -- <reason>` / `unresolved -- <unrecognised output>` (a shape the shim could not parse -- refused the same as a hold) |
+| plugin identity vs last recorded | `unchanged (<version>)` / `changed -- was <version>, now <version>` / `could-not-tell -- <reason>` / `route-mismatch -- <reason>` |
 | `git fetch && git pull --ff-only` | result / `could-not-run` |
 | board (gh-prs, gh-issues, gh-branch, git-worktrees) | `read` / `unread`, per op |
 | radar tier resolution | `not-configured` / `registered` / `probe-did-not-answer` |

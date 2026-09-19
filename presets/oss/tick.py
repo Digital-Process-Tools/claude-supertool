@@ -31,7 +31,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import shim  # noqa: E402
+import _untrusted  # noqa: E402  (a wait's dispatch/observable/why and a
+                    # plugin identity's current/prior all come from state-file
+                    # entries a lane or a maintainer typed, some of it a
+                    # copy-pasted PR title -- flattened before it reaches a
+                    # one-line render, same convention as every other preset
+                    # (found by review, #2639's self-review round))
 
 #: This preset's own `supertool.py`, three directories up from
 #: `presets/oss/tick.py` -- the same core the call reached this op through,
@@ -200,22 +207,32 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
             else "exit {}: {}".format(code, out.strip())
         )
     else:
-        state, record = _parse_pending_wait(out)
-        if state == "cleared":
+        wait_state, wait_record = _parse_pending_wait(out)
+        if wait_state == "cleared":
             rows["pending_wait"] = "cleared"
-        elif state == "holds":
-            rows["pending_wait"] = "holds -- {}".format(
-                record.get("dispatch") or record.get("observable")
+        elif wait_state == "holds":
+            detail = (
+                wait_record.get("dispatch") or wait_record.get("observable")
                 or "no detail given"
             )
-        elif state == "could-not-evaluate":
+            rows["pending_wait"] = "holds -- {}".format(_untrusted.flat(str(detail)))
+        elif wait_state == "could-not-evaluate":
+            why = wait_record.get("why") or "no reason recorded"
             rows["pending_wait"] = "could-not-evaluate -- {}".format(
-                record.get("why") or "no reason recorded"
+                _untrusted.flat(str(why))
             )
         else:
+            # A shape neither `_parse_pending_wait` nor this shim recognises --
+            # never rendered as a plain "could-not-evaluate", which `_next_step`
+            # treats as non-blocking (found by review, #2639's own self-review
+            # round): that would let dispatch proceed on the exact kind of
+            # ambiguous answer #2639 was filed over, one level down from the
+            # bug this diff fixes. "unresolved" is its own word so `_next_step`
+            # can gate on it distinctly from a script-confirmed could-not-
+            # evaluate measurement, which this shim still treats as advisory.
             rows["pending_wait"] = (
-                "could-not-evaluate -- unrecognised --pending-wait output: "
-                "{!r}".format(record)
+                "unresolved -- unrecognised --pending-wait output: "
+                "{!r}".format(wait_record)
             )
 
     if scripts_dir is not None:
@@ -230,23 +247,26 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
             out if code is None else "exit {}: {}".format(code, out.strip())
         )
     else:
-        record = _parse_plugin_identity_check(out)
-        state = record.get("state") if record else None
-        if state == "unchanged":
+        identity_record = _parse_plugin_identity_check(out)
+        identity_state = identity_record.get("state") if identity_record else None
+        if identity_state == "unchanged":
             rows["plugin_identity_check"] = "unchanged ({})".format(
-                record.get("current")
+                _untrusted.flat(str(identity_record.get("current")))
             )
-        elif state == "changed":
+        elif identity_state == "changed":
             rows["plugin_identity_check"] = "changed -- was {}, now {}".format(
-                record.get("prior"), record.get("current")
+                _untrusted.flat(str(identity_record.get("prior"))),
+                _untrusted.flat(str(identity_record.get("current"))),
             )
-        elif state == "could-not-tell":
+        elif identity_state == "could-not-tell":
+            why = identity_record.get("why") or "no reason recorded"
             rows["plugin_identity_check"] = "could-not-tell -- {}".format(
-                record.get("why") or "no reason recorded"
+                _untrusted.flat(str(why))
             )
-        elif state == "route-mismatch":
+        elif identity_state == "route-mismatch":
+            why = identity_record.get("why") or "no reason recorded"
             rows["plugin_identity_check"] = "route-mismatch -- {}".format(
-                record.get("why") or "no reason recorded"
+                _untrusted.flat(str(why))
             )
         else:
             rows["plugin_identity_check"] = (
@@ -320,6 +340,13 @@ def _next_step(rows):
         )
     if rows["pending_wait"].startswith("holds"):
         return "pending wait holds -- do not dispatch yet"
+    if rows["pending_wait"].startswith("unresolved"):
+        # An unrecognised --pending-wait shape (#2639's own self-review round)
+        # must not fail open the way a plain "could-not-evaluate" measurement
+        # does -- a parse failure carries no information about whether a real
+        # hold is sitting behind it, so it is refused the same as a hold
+        # rather than treated as advisory.
+        return "pending wait could not be parsed -- do not dispatch yet"
     if rows["git_sync"].startswith("could-not-run"):
         return "resolve the git sync failure before proceeding -- {}".format(
             rows["git_sync"]
