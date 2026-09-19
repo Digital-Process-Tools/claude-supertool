@@ -15,3 +15,11 @@ hunk.** A shared, low-level concurrency primitive (locking, retry, serialization
 this many same-day landings is a signal that each fix so far has been locally correct and
 non-locally incomplete — the interaction between failure branches is where the next bug lives, not
 inside any one branch reviewed alone.
+
+**#2563 (the write-probe's fail-open path on a transient `OSError`) landed**: `_lock_dir_usable`
+now retries once before concluding `lock_dir` is unusable. A follow-up pass re-read the whole
+function fresh, per this rule's own advice, and found no further residual -- but this is a
+standing warning, not a closed-issue list: the file's own history (four independently-correct
+fixes in one day, each surfacing the next) is reason enough not to claim any single fix is the
+last one. Read the whole function again next time too, rather than trusting this note as proof it
+is now settled.
