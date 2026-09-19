@@ -45,6 +45,40 @@ def test_resolve_could_not_resolve_when_record_unreadable(tmp_path):
     assert state == "could-not-resolve"
 
 
+def test_resolve_carries_read_failure_reason_distinct_from_absent(tmp_path):
+    """A record that exists but cannot be *read* (e.g. permission denied, or
+    here a directory where a file is expected) must not render identically
+    to a plugin that is simply not in the record -- #2638."""
+    bad_record = tmp_path / "installed_plugins.json"
+    bad_record.mkdir()  # IsADirectoryError on read_text, not FileNotFoundError
+    state, detail = shim.resolve(record=bad_record)
+    assert state == "could-not-resolve"
+    assert "not in the install record" not in detail
+    assert "could not be read" in detail
+
+
+def test_install_roots_carries_cache_glob_oserror_reason(tmp_path, monkeypatch):
+    """An `OSError` scanning the cache-directory fallback (e.g. a
+    permission-denied cache root -- `pathlib.Path.glob` silently returns an
+    empty iterator rather than raising for the filesystem shapes available
+    to a test fixture, so the failure is induced directly here) must not
+    collapse to the same empty result as a genuinely absent install path --
+    #2638."""
+    record = _write_record(
+        tmp_path, {"oss@marketplace": [{"version": "0.40.0"}]}
+    )
+
+    def _raise_glob(self, pattern):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "glob", _raise_glob)
+    roots, reason = shim._install_roots(
+        "oss", "0.40.0", record=record, cache_root=tmp_path / "cache"
+    )
+    assert roots == []
+    assert reason is not None
+
+
 def test_resolve_could_not_resolve_when_install_path_absent(tmp_path):
     record = _write_record(
         tmp_path,
@@ -308,6 +342,19 @@ def test_state_file_missing_local_config_is_could_not_evaluate_not_a_crash(tmp_p
     assert "not found" in reason
 
 
+def test_state_file_unreadable_local_config_is_distinct_from_missing(tmp_path):
+    """A `.oss.local.json` that exists but cannot be read (e.g. a directory
+    in its place, standing in for a permission-denied file) must not carry
+    the same "not found" reason as a config that is genuinely absent --
+    #2638."""
+    bad_cfg = tmp_path / ".oss.local.json"
+    bad_cfg.mkdir()
+    path, reason = tick.state_file(str(tmp_path))
+    assert path is None
+    assert "not found" not in reason
+    assert "could not be read" in reason
+
+
 def test_state_file_resolves_relative_to_declared_clone(tmp_path):
     clone = tmp_path / "clone"
     (clone / ".max").mkdir(parents=True)
@@ -409,7 +456,9 @@ def test_active_version_compares_numerically_not_lexicographically(tmp_path):
             ]
         },
     )
-    assert shim._active_version("oss", record=record) == "0.10.0"
+    version, reason = shim._active_version("oss", record=record)
+    assert version == "0.10.0"
+    assert reason is None
 
 
 def test_version_key_orders_multi_digit_segments_correctly():

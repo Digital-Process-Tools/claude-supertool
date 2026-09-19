@@ -37,11 +37,19 @@ PLUGIN_NAME = "oss"
 
 
 def _load_record(record=None):
+    """`(doc, reason)`. `doc` is `{}` on failure; `reason` is `None` on
+    success, else a string naming what actually went wrong reading or
+    parsing the file -- an unreadable record must not render like one that
+    is simply absent (#2638)."""
     path = Path(os.path.expanduser(record or INSTALL_RECORD))
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {}, str(exc.strerror or exc.__class__.__name__)
+    try:
+        return json.loads(text), None
+    except ValueError as exc:
+        return {}, "not valid JSON ({})".format(exc)
 
 
 def _version_key(version):
@@ -66,16 +74,17 @@ def _version_key(version):
 
 
 def _active_version(name, record=None):
-    """The version actually enabled for `name`, or `None`.
-
-    One entry per scope is possible; the highest wins, matching
+    """`(version, reason)`. `version` is `None` for both "not in the
+    record" and "record could not be read" -- `reason` is what tells them
+    apart: `None` for the former, the read/parse failure for the latter
+    (#2638). One entry per scope is possible; the highest wins, matching
     `claude-oss`'s own `active_versions` (the scope that wins at load).
     Compared numerically via `_version_key`, never as plain strings.
     """
-    doc = _load_record(record)
+    doc, reason = _load_record(record)
     plugins = doc.get("plugins") if isinstance(doc, dict) else None
     if not isinstance(plugins, dict):
-        return None
+        return None, reason
     versions = []
     for key, entries in plugins.items():
         if key.split("@", 1)[0] != name or not isinstance(entries, list):
@@ -84,12 +93,16 @@ def _active_version(name, record=None):
             if isinstance(entry, dict) and entry.get("version"):
                 versions.append(str(entry["version"]))
     if not versions:
-        return None
-    return sorted(versions, key=_version_key)[-1]
+        return None, reason
+    return sorted(versions, key=_version_key)[-1], None
 
 
 def _install_roots(name, version, record=None, cache_root=None):
-    doc = _load_record(record)
+    """`(roots, reason)`. `reason` is `None` on success, or the reason no
+    root could be resolved -- either the install record's own read/parse
+    failure (propagated from `_load_record`) or an `OSError` scanning the
+    cache-directory fallback (#2638)."""
+    doc, reason = _load_record(record)
     plugins = doc.get("plugins") if isinstance(doc, dict) else None
     roots = []
     for key, entries in (plugins or {}).items() if isinstance(plugins, dict) else ():
@@ -101,14 +114,17 @@ def _install_roots(name, version, record=None, cache_root=None):
             if entry.get("installPath"):
                 roots.append(Path(str(entry["installPath"])))
     if roots:
-        return list(dict.fromkeys(roots))
+        return list(dict.fromkeys(roots)), None
     cache = Path(os.path.expanduser(cache_root or PLUGIN_CACHE_ROOT))
     try:
-        return sorted(
+        found = sorted(
             p for p in cache.glob("*/{}/{}".format(name, version)) if p.is_dir()
         )
-    except OSError:
-        return []
+    except OSError as exc:
+        return [], str(exc.strerror or exc.__class__.__name__)
+    if found:
+        return found, None
+    return [], reason
 
 
 def resolve(name=PLUGIN_NAME, record=None, cache_root=None):
@@ -117,12 +133,21 @@ def resolve(name=PLUGIN_NAME, record=None, cache_root=None):
     `detail` is `(version, scripts_dir)` on `"resolved"`; a one-line reason
     string on `"resolved-but-different"` and `"could-not-resolve"`.
     """
-    version = _active_version(name, record)
+    version, reason = _active_version(name, record)
     if not version:
+        if reason:
+            return "could-not-resolve", (
+                "{}'s install record could not be read -- {}".format(name, reason)
+            )
         return "could-not-resolve", "{} is not in the install record".format(name)
 
-    roots = _install_roots(name, version, record=record, cache_root=cache_root)
+    roots, reason = _install_roots(name, version, record=record, cache_root=cache_root)
     if not roots:
+        if reason:
+            return "could-not-resolve", (
+                "{} {} is active, but its install path could not be resolved -- "
+                "{}".format(name, version, reason)
+            )
         return "could-not-resolve", (
             "{} {} is active, but its install path could not be resolved".format(
                 name, version

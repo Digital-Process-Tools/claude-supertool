@@ -82,9 +82,15 @@ def state_file(cwd):
     """
     local_cfg = Path(cwd) / ".oss.local.json"
     try:
-        doc = json.loads(local_cfg.read_text(encoding="utf-8"))
-    except OSError:
+        text = local_cfg.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None, "{} not found".format(local_cfg)
+    except OSError as exc:
+        return None, "{} could not be read -- {}".format(
+            local_cfg, exc.strerror or exc.__class__.__name__
+        )
+    try:
+        doc = json.loads(text)
     except ValueError as exc:
         return None, "{} is not valid JSON ({})".format(local_cfg, exc)
     rel = doc.get("state_file") if isinstance(doc, dict) else None
