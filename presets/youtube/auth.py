@@ -38,7 +38,12 @@ def _status() -> int:
     try:
         cached = _read_token_file()
     except OAuthError as e:
-        print(f"token cache:   {TOKEN_PATH} UNREADABLE -- {e}")
+        # Same escaping as the scope print and main()'s error arm below --
+        # this wraps a local-file OSError/JSONDecodeError rather than a
+        # network body, but the same "misreports, not forges" reasoning
+        # applies, and it is not guaranteed single-line either.
+        print(f"token cache:   {TOKEN_PATH} UNREADABLE -- "
+              f"{repr(safe_short(str(e), 300))}")
         print("verdict:       CANNOT TELL -- neither authorised nor known "
               "unauthorised. Delete the file and run youtube_auth.")
         return 1

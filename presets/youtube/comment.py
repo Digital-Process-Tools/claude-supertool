@@ -108,14 +108,24 @@ def parse_args(arg: str) -> tuple[str, str, bool, bool]:
     and #2600 is that ambiguity silently resolving in the flag's favour
     every time, dropping the trailing word from the body AND forging the
     publish confirmation. "|" is common in ordinary prose; ":::" is not, so
-    when the caller opts into it (present anywhere in `arg`) it becomes the
-    field separator instead, and a body typed with ordinary pipes in it
-    (like the example above) survives untouched unless the operator also
-    types out ":::force" as its own explicit field. This does not change
-    default "|" parsing -- an already-shipped "|force" call must keep
-    meaning what it always has.
+    an operator who needs it can opt in and use it as the field separator
+    instead, and a body typed with ordinary pipes in it (like the example
+    above) survives untouched unless the operator also types out
+    ":::force" as its own explicit field.
+
+    Which one is "the separator" is decided by whichever delimiter occurs
+    FIRST in `arg`, not by a bare substring check over the whole string --
+    a video id/URL never legitimately contains either character, so the
+    first "|" or ":::" is always the boundary of that first field, and
+    checking "is ':::' anywhere in arg" would instead flip an ordinary
+    "|"-mode call into (broken) ":::" mode the moment its BODY happened to
+    contain the substring ":::" (e.g. a comment quoting a Markdown
+    container fence like ":::warning ... :::"), which is exactly the kind
+    of already-shipped call this fix must not reinterpret.
     """
-    sep = ":::" if ":::" in arg else "|"
+    pipe_at = arg.find("|")
+    triple_at = arg.find(":::")
+    sep = ":::" if triple_at != -1 and (pipe_at == -1 or triple_at < pipe_at) else "|"
     parts = arg.split(sep)
     if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
         sys.stderr.write(f"ERROR: usage {USAGE}\n")

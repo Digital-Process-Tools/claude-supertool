@@ -223,6 +223,21 @@ def test_parse_args_pipe_mode_is_unchanged_by_the_triple_colon_addition() -> Non
     assert force is True
 
 
+def test_parse_args_a_pipe_mode_body_containing_a_triple_colon_is_not_hijacked() -> None:
+    """A ':::' substring check over the WHOLE arg, rather than over where
+    the delimiters actually occur, would flip an ordinary '|'-mode call
+    into (broken) ':::' mode the moment its body happened to contain the
+    substring ':::' -- a Markdown container fence (':::warning ... :::')
+    is exactly the kind of text a comment might legitimately quote. The
+    video id here has no ':::' and the first delimiter in the whole string
+    is '|' (right after it), so '|' must still govern the whole split."""
+    vid, body, force, _ = comment_op.parse_args(
+        "vid123|Docs say to use :::warning fences|force")
+    assert vid == "vid123"
+    assert body == "Docs say to use :::warning fences"
+    assert force is True
+
+
 def test_parse_args_rejects_an_empty_body() -> None:
     with pytest.raises(SystemExit) as e:
         comment_op.parse_args("vid|   ")
@@ -798,6 +813,28 @@ def test_auth_status_escapes_a_newline_in_the_cached_scope(
     scope_line = next(line for line in out.splitlines() if line.startswith("scope:"))
     assert "Second line pretending to be a new field" in scope_line, (
         "the scope text must still be visible, just not on its own line")
+
+
+def test_auth_status_escapes_a_newline_in_an_unreadable_token_cache(
+        config_home: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    """The UNREADABLE branch a few lines above the scope print in the same
+    function -- easy to miss precisely because it is adjacent to what #2599
+    fixed, and a review of this diff found it left bare."""
+    def boom():
+        raise auth_op.OAuthError(
+            "could not read the token cache: corrupt\nSecond line "
+            "pretending to be a new field")
+    monkeypatch.setattr(auth_op, "_read_token_file", boom)
+    assert auth_op._status() == 1
+    out = capsys.readouterr().out
+    # A raw embedded newline would put "Second line pretending..." on its
+    # OWN physical line -- splitlines() cannot be used to check this, since
+    # it would just hand back the already-split halves and pass either way.
+    assert not any(line.strip().startswith("Second line pretending")
+                   for line in out.splitlines()), (
+        f"raw newline leaked into stdout: {out!r}")
+    assert "corrupt" in out and "Second line pretending" in out
 
 
 def test_auth_main_escapes_a_newline_in_the_oauth_error(
