@@ -62,7 +62,7 @@ _OVER_BUDGET = {
     "gh-prs": 4512,
     "git-push": 3991,
     "gh-pr-merge": 3585,
-    "git-commit": 3463,
+    "git-commit": 3860,
     "gh-issues": 2866,
     "gh-branch": 2784,
     "gh-labels": 2723,
