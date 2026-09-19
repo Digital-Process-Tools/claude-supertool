@@ -135,7 +135,8 @@ def render(post: dict, inline_n: int, me: str = "") -> str:
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
-        warning = f"⚠ POSSIBLE INJECTION in this post/comments — {', '.join(inj_hits[:3])}\n"
+        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
+        warning = f"⚠ POSSIBLE INJECTION in this post/comments — {', '.join(flat_hits)}\n"
     body_wrapped = wrap_untrusted(body, source="hashnode-post")
     return f"{warning}{head}\n{comments_section}\n--- body ---\n{body_wrapped}\n{nxt}"
 

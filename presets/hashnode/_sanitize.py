@@ -99,7 +99,8 @@ def wrap(text: str, source: str = "external") -> str:
     header = f"<<UNTRUSTED {source.upper()} CONTENT — START {nonce}>>"
     footer = f"<<END UNTRUSTED CONTENT {nonce}>>"
     if hits:
-        lead = f"⚠ POSSIBLE INJECTION — review carefully ({', '.join(hits[:3])})\n"
+        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in hits[:3]]
+        lead = f"⚠ POSSIBLE INJECTION — review carefully ({', '.join(flat_hits)})\n"
     else:
         lead = f"{SCAN_CLEAN_NOTE}\n"
     return f"{lead}{header}\n{body}\n{footer}"

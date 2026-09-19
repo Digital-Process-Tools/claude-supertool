@@ -88,7 +88,8 @@ def render(video: dict, comments: list[dict], comments_note: str, inline_n: int)
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
-        warning = f"⚠ POSSIBLE INJECTION in this video's text — {', '.join(inj_hits[:3])}\n"
+        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
+        warning = f"⚠ POSSIBLE INJECTION in this video's text — {', '.join(flat_hits)}\n"
     desc_wrapped = wrap_untrusted(description, source="youtube-video")
     return f"{warning}{head}\n--- description ---\n{desc_wrapped}\n{comments_section}\n{nxt}"
 
