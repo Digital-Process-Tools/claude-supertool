@@ -33,39 +33,64 @@ _GH_OPS = json.loads(
 # ===========================================================================
 
 def test_number_and_payload_are_read_off_the_colon_form():
-    number, path, err = m.parse_args(["2078", "@.max/comment.toml"])
+    number, path, edit_id, err = m.parse_args(["2078", "@.max/comment.toml"])
     assert err == ""
     assert number == "2078"
     assert path == "@.max/comment.toml"
+    assert edit_id == ""
 
 
 def test_a_missing_payload_is_refused():
-    _n, _p, err = m.parse_args(["2078"])
+    _n, _p, _e, err = m.parse_args(["2078"])
     assert err != ""
     assert "payload" in err.lower(), err
 
 
 def test_a_missing_number_is_refused():
-    _n, _p, err = m.parse_args([])
+    _n, _p, _e, err = m.parse_args([])
     assert err != ""
 
 
 def test_a_non_ascii_digit_number_is_refused_not_coerced():
     # U+0661 ARABIC-INDIC ONE. `int()` accepts it; GitHub does not.
-    _n, _p, err = m.parse_args(["١737", "@-"])
+    _n, _p, _e, err = m.parse_args(["١737", "@-"])
     assert err != ""
 
 
 def test_a_windows_drive_letter_is_reassembled_not_read_as_a_stray_token():
-    number, path, err = m.parse_args(["2078", "@C", "\\repo\\comment.toml"])
+    number, path, edit_id, err = m.parse_args(["2078", "@C", "\\repo\\comment.toml"])
     assert err == "", err
     assert number == "2078"
     assert path == "@C:\\repo\\comment.toml"
+    assert edit_id == ""
 
 
 def test_a_trailing_token_this_op_does_not_have_is_refused():
-    _n, _p, err = m.parse_args(["2078", "@-", "unlink"])
+    _n, _p, _e, err = m.parse_args(["2078", "@-", "unlink"])
     assert err != ""
+
+
+# ---------------------------------------------------------------------------
+# edit=COMMENT_ID (#2643)
+# ---------------------------------------------------------------------------
+
+def test_a_trailing_edit_token_is_read_off_and_stripped_from_the_payload_slot():
+    number, path, edit_id, err = m.parse_args(["2078", "@-", "edit=555"])
+    assert err == "", err
+    assert number == "2078"
+    assert path == "@-"
+    assert edit_id == "555"
+
+
+def test_a_non_numeric_edit_id_is_refused():
+    _n, _p, _e, err = m.parse_args(["2078", "@-", "edit=abc"])
+    assert err != ""
+    assert "comment id" in err.lower(), err
+
+
+def test_edit_still_refuses_an_unrelated_second_trailing_token():
+    _n, _p, _e, err = m.parse_args(["2078", "@-", "unlink", "edit=555"])
+    assert err != "", "edit=555 must not silently swallow an earlier stray token"
 
 
 # ===========================================================================
@@ -168,6 +193,29 @@ def test_main_writes_and_confirms_an_exact_landing(monkeypatch, capsys, tmp_path
     assert "555" in out
 
 
+def test_main_create_path_posts_to_the_collection_endpoint_not_patch(
+        monkeypatch, capsys, tmp_path):
+    # Positive control for the create/POST branch, now that main() branches
+    # on edit_id between two transports (#2643) -- without this, a
+    # regression that made the create path also emit PATCH would pass every
+    # other test in this file, since none of them inspect the args _gh_json
+    # was actually called with.
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "scoping note"})
+    monkeypatch.setattr(sys, "argv", ["issue_comment.py", "2078", payload_file])
+
+    seen = {}
+
+    def fake_gh_json(args, stdin=None, timeout=30):
+        seen["args"] = args
+        return ({"id": 555, "body": "scoping note", "html_url": "https://x/555"}, "")
+    monkeypatch.setattr(m, "_gh_json", fake_gh_json)
+
+    assert m.main() == 0
+    assert "-X" in seen["args"] and seen["args"][seen["args"].index("-X") + 1] == "POST"
+    assert "repos/o/r/issues/2078/comments" in seen["args"]
+    assert "repos/o/r/issues/comments/" not in " ".join(seen["args"])
+
+
 def test_main_reports_mismatch_and_exits_nonzero(monkeypatch, capsys, tmp_path):
     payload_file = _payload(tmp_path, {"repo": "o/r", "body": "scoping note"})
     monkeypatch.setattr(sys, "argv", ["issue_comment.py", "2078", payload_file])
@@ -206,6 +254,59 @@ def test_an_unrecognised_payload_key_is_refused_before_anything_is_written(
     assert m.main() == 1
     out = capsys.readouterr().out
     assert "unrecognised" in out
+
+
+# ===========================================================================
+# end-to-end through main() -- edit=COMMENT_ID (#2643)
+# ===========================================================================
+
+def test_main_edit_patches_the_existing_comment_not_the_create_endpoint(
+        monkeypatch, capsys, tmp_path):
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "corrected note"})
+    monkeypatch.setattr(
+        sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
+
+    seen = {}
+
+    def fake_gh_json(args, stdin=None, timeout=30):
+        seen["args"] = args
+        return ({"id": 555, "body": "corrected note", "html_url": "https://x/555"}, "")
+    monkeypatch.setattr(m, "_gh_json", fake_gh_json)
+
+    assert m.main() == 0
+    assert "-X" in seen["args"] and seen["args"][seen["args"].index("-X") + 1] == "PATCH"
+    assert "repos/o/r/issues/comments/555" in seen["args"]
+    out = capsys.readouterr().out
+    assert "edited" in out
+    assert "byte-identical" in out
+
+
+def test_main_edit_reports_not_edited_when_the_patch_itself_fails(
+        monkeypatch, capsys, tmp_path):
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "corrected note"})
+    monkeypatch.setattr(
+        sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
+    monkeypatch.setattr(
+        m, "_gh_json", lambda args, stdin=None, timeout=30: (None, "404 Not Found"))
+
+    assert m.main() == 1
+    out = capsys.readouterr().out
+    assert "NOT edited" in out
+
+
+def test_main_edit_with_a_non_numeric_id_is_refused_before_any_gh_call(
+        monkeypatch, capsys, tmp_path):
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "x"})
+    monkeypatch.setattr(
+        sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=abc"])
+
+    def _must_not_be_called(*a, **k):
+        raise AssertionError("gh must not be called when edit_id is invalid")
+    monkeypatch.setattr(m, "_gh_json", _must_not_be_called)
+
+    assert m.main() == 1
+    out = capsys.readouterr().out
+    assert "comment id" in out.lower()
 
 
 # ===========================================================================

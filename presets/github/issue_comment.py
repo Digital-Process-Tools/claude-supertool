@@ -8,6 +8,17 @@ comment on an issue already filed, so it left supertool for raw
 filed an issue with `gh-issue-create:@FILE`, needed a scoping comment right
 after, and had no op for it while every other step of the same task had one.
 
+A trailing `:edit=COMMENT_ID` corrects a comment already posted (#2643).
+Observed 2026-09-19: a comment on #1868 went out with a wrong figure, and the
+only route to fix it was raw `gh api -X PATCH repos/.../issues/comments/ID
+-f body=@file`, hand-verified afterwards -- no byte-identical read-back, and
+no re-application of the #2100 disclosure marker if the corrected body
+dropped it. `edit=COMMENT_ID` PATCHes `repos/{repo}/issues/comments/{id}`
+instead of POSTing a new comment, then runs the same read-back and the same
+disclosure step this op already gives a fresh comment. The id is already in
+this op own `[result]` line from when the comment was first posted
+(`comment id=5741496503`), so the caller has it without another lookup.
+
 `gh-pr-edit` (#1739) set the bar for a write in this family: publish, then
 read back what the server actually stored and compare it byte for byte
 against what was sent. `gh issue comment` gives no such proof -- a 0 exit
@@ -27,8 +38,10 @@ call meant to publish. This carries the same three-part guarantee:
   response carried no body field at all. Only EXACT and NORMALISED exit 0.
 
 No closing-reference gate here -- a comment does not replace a published
-body, so there is nothing an update could drop. No title, no `unlink`: this
-op has one shape, publish a comment and confirm it landed.
+body, so there is nothing an update could drop. No title: `edit=COMMENT_ID`
+is the only mode token this op takes, and it switches the write between the
+two shapes above (publish a new comment, or correct one already posted) --
+it does not add a third one.
 """
 from __future__ import annotations
 
@@ -69,37 +82,52 @@ CRLF = chr(13) + chr(10)
 CR = chr(13)
 LF = chr(10)
 
+EDIT_PREFIX = "edit="
+
 
 # ---------------------------------------------------------------------------
 # arguments
 # ---------------------------------------------------------------------------
 
-def parse_args(argv: List[str]) -> Tuple[str, str, str]:
-    """`(number, payload_path, error)` -- a non-empty error means stop.
+def parse_args(argv: List[str]) -> Tuple[str, str, str, str]:
+    """`(number, payload_path, edit_id, error)` -- a non-empty error means stop.
 
-    A trailing token this op does not have is REFUSED rather than ignored --
-    the same reasoning `gh-pr-edit` gives for its own `unlink` token: an
-    ignored mode word on a writing op runs a call nobody typed, at exit 0.
-    This op has no such token, so anything past the payload is refused.
+    A trailing `edit=COMMENT_ID` switches this op from posting a new
+    comment to correcting one already on the issue (#2643) -- PATCH instead
+    of POST, same payload, same read-back. Any other trailing token is
+    REFUSED rather than ignored -- the same reasoning `gh-pr-edit` gives for
+    its own `unlink` token: an ignored mode word on a writing op runs a call
+    nobody typed, at exit 0.
     """
     tokens = [t for t in argv if t != ""]
     if not tokens:
-        return ("", "", (
+        return ("", "", "", (
             "ERROR: gh-issue-comment needs an issue number and a payload -- "
             "gh-issue-comment:NUMBER:@FILE, or @- for stdin (JSON or TOML "
-            "with body or body_file)."))
+            "with body or body_file). To correct an already-posted comment, "
+            "add :edit=COMMENT_ID."))
 
     number = tokens[0]
     if not _digits.is_ascii_int(number):
-        return ("", "", (
+        return ("", "", "", (
             f"ERROR: {number!r} is not an issue number. gh-issue-comment "
             f"takes the number of an issue that already exists -- "
             f"gh-issue-comment:NUMBER:@FILE, or gh-issue-comment:NUMBER:@- "
             f"for stdin."))
 
     rest = tokens[1:]
+    edit_id = ""
+    if rest and rest[-1].startswith(EDIT_PREFIX):
+        edit_id = rest[-1][len(EDIT_PREFIX):]
+        rest = rest[:-1]
+        if not _digits.is_ascii_int(edit_id):
+            return ("", "", "", (
+                f"ERROR: {edit_id!r} is not a comment id. edit=COMMENT_ID "
+                f"takes the numeric id gh-issue-comment's own [result] line "
+                f"reports (comment id=...)."))
+
     if not rest:
-        return ("", "", (
+        return ("", "", "", (
             "ERROR: gh-issue-comment needs a payload file -- "
             "gh-issue-comment:NUMBER:@FILE, or @- to read it from stdin."))
     # A Windows drive letter is reassembled, the same way gh-pr-edit
@@ -110,11 +138,12 @@ def parse_args(argv: List[str]) -> Tuple[str, str, str]:
     if len(rest) > 1 and len(rest[0]) == 2 and rest[0][1:].isalpha():
         rest = [":".join(rest)]
     if len(rest) > 1:
-        return ("", "", (
-            f"ERROR: gh-issue-comment does not take {rest[1]!r}. There is "
-            f"only the payload after the number. Nothing was written."))
+        return ("", "", "", (
+            f"ERROR: gh-issue-comment does not take {rest[1]!r}. The only "
+            f"token past the payload is edit=COMMENT_ID. Nothing was "
+            f"written."))
 
-    return (number, rest[0], "")
+    return (number, rest[0], edit_id, "")
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +271,8 @@ def landed_verdict(sent: str, stored: object) -> Tuple[str, str]:
         f"stored. {_first_difference(sent, stored)}"))
 
 
-def result_line(number: str, landed_state: str, comment_id: object) -> str:
+def result_line(number: str, landed_state: str, comment_id: object,
+                 edited: bool = False) -> str:
     """One line, no newline, that survives `| tail -1`."""
     if landed_state == LANDED_EXACT:
         landed = "comment verified byte-identical on the server"
@@ -253,11 +283,13 @@ def result_line(number: str, landed_state: str, comment_id: object) -> str:
     else:
         landed = "what the server holds was not read back — UNVERIFIED"
     id_note = f" id={comment_id}" if comment_id not in (None, "") else ""
-    return f"[result] issue #{number} comment{id_note} posted; {landed}"
+    verb = "edited" if edited else "posted"
+    return f"[result] issue #{number} comment{id_note} {verb}; {landed}"
 
 
-def refusal_line(number: str, why: str) -> str:
-    return f"[result] issue #{number} NOT commented; {why} — nothing was written"
+def refusal_line(number: str, why: str, edited: bool = False) -> str:
+    verb = "NOT edited" if edited else "NOT commented"
+    return f"[result] issue #{number} {verb}; {why} — nothing was written"
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +324,7 @@ def _gh_json(args: List[str], stdin: str | None = None,
 
 def main() -> int:
     use_utf8_stdout()
-    number, raw_arg, err = parse_args(sys.argv[1:])
+    number, raw_arg, edit_id, err = parse_args(sys.argv[1:])
     if err:
         print(err)
         return 1
@@ -355,26 +387,37 @@ def main() -> int:
     content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
 
     repo = str(payload["repo"])
-    endpoint = f"repos/{repo}/issues/{number}/comments"
+    if edit_id:
+        endpoint = f"repos/{repo}/issues/comments/{edit_id}"
+        method = "PATCH"
+    else:
+        endpoint = f"repos/{repo}/issues/{number}/comments"
+        method = "POST"
 
     response, write_err = _gh_json(
-        ["api", "-X", "POST", "-H", "Accept: application/vnd.github+json",
+        ["api", "-X", method, "-H", "Accept: application/vnd.github+json",
          endpoint, "--input", "-"],
         stdin=json.dumps({"body": content}), timeout=30)
 
     repo_note = (f"  (repo from {repo_source})"
                  if repo_source not in ("", "payload") else "")
-    print(f"# gh-issue-comment — {repo}#{number}{repo_note}")
+    header = f"# gh-issue-comment — {repo}#{number}{repo_note}"
+    if edit_id:
+        header += f" (editing comment {edit_id})"
+    print(header)
 
     if not isinstance(response, dict):
         why = write_err or "no detail"
+        action = "edit" if edit_id else "comment"
         print()
-        print(f"ERROR: the comment was refused ({why})")
-        print(refusal_line(number, why))
+        print(f"ERROR: the {action} was refused ({why})")
+        print(refusal_line(number, why, bool(edit_id)))
         return 1
 
     landed_state, landed_msg = landed_verdict(content, response.get("body"))
     comment_id = response.get("id")
+    if comment_id in (None, "") and edit_id:
+        comment_id = edit_id
     url = _untrusted.flat(str(response.get("html_url") or ""))
 
     print()
@@ -383,7 +426,7 @@ def main() -> int:
     print(f"  disclosure: {disclosure_state}")
     print(f"  URL: {url or '(not returned by gh)'}")
     print()
-    print(result_line(number, landed_state, comment_id))
+    print(result_line(number, landed_state, comment_id, bool(edit_id)))
     return 0 if landed_state in (LANDED_EXACT, LANDED_NORMALISED) else 1
 
 
