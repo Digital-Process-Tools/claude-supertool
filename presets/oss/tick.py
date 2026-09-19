@@ -107,6 +107,58 @@ def _oss_state(scripts_dir, state_path, args, run=None):
     )
 
 
+def _parse_pending_wait(out):
+    """`oss_state.py --pending-wait`'s real stdout, not the prose the shim used
+    to assume (#2639): a bare `holds`/`cleared` never leaves that script. It
+    prints the literal string ``no pending wait`` for both "nothing was ever
+    recorded" and "the most recent wait was cleared" -- those two collapse to
+    the same bytes at the source, so this shim cannot and does not try to tell
+    them apart -- or a JSON object (``json.dumps(record, indent=2)``) whose
+    own ``state`` key is ``holds`` or ``could-not-evaluate`` for anything still
+    outstanding.
+
+    Returns ``(state, record)`` where ``state`` is ``"cleared"``, ``"holds"``,
+    ``"could-not-evaluate"`` or ``"unrecognised"`` (a shape neither of the two
+    known ones -- the script's own output changed under this shim, or the
+    process printed something else entirely) with ``record`` set to the raw
+    text/value in that last case, never a crash.
+    """
+    text = (out or "").strip()
+    if not text or text == "no pending wait":
+        return "cleared", None
+    try:
+        record = json.loads(text)
+    except ValueError:
+        return "unrecognised", text
+    if not isinstance(record, dict) or record.get("state") not in (
+        "holds", "could-not-evaluate",
+    ):
+        return "unrecognised", record
+    return record["state"], record
+
+
+def _parse_plugin_identity_check(out):
+    """`oss_state.py --check-plugin-identity`'s real stdout (#2639's sibling,
+    same root cause): `_run` merges stderr into stdout, and the script writes
+    its one-line receipt to stderr *before* the JSON record on stdout -- so the
+    combined text is that receipt line, then the JSON. This finds the JSON by
+    its first `{` rather than assuming the output is bare JSON with nothing
+    ahead of it.
+
+    Returns the parsed record dict, or ``None`` when no valid JSON object
+    could be found in the output at all.
+    """
+    text = (out or "").strip()
+    brace = text.find("{")
+    if brace == -1:
+        return None
+    try:
+        record = json.loads(text[brace:])
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
 def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
     """Every row, always attempted, never silently skipped. Returns a dict."""
     cwd = cwd or os.getcwd()
@@ -148,7 +200,23 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
             else "exit {}: {}".format(code, out.strip())
         )
     else:
-        rows["pending_wait"] = out.strip() or "could-not-evaluate"
+        state, record = _parse_pending_wait(out)
+        if state == "cleared":
+            rows["pending_wait"] = "cleared"
+        elif state == "holds":
+            rows["pending_wait"] = "holds -- {}".format(
+                record.get("dispatch") or record.get("observable")
+                or "no detail given"
+            )
+        elif state == "could-not-evaluate":
+            rows["pending_wait"] = "could-not-evaluate -- {}".format(
+                record.get("why") or "no reason recorded"
+            )
+        else:
+            rows["pending_wait"] = (
+                "could-not-evaluate -- unrecognised --pending-wait output: "
+                "{!r}".format(record)
+            )
 
     if scripts_dir is not None:
         identity = "oss {}".format(version)
@@ -162,7 +230,29 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
             out if code is None else "exit {}: {}".format(code, out.strip())
         )
     else:
-        rows["plugin_identity_check"] = out.strip() or "could-not-tell"
+        record = _parse_plugin_identity_check(out)
+        state = record.get("state") if record else None
+        if state == "unchanged":
+            rows["plugin_identity_check"] = "unchanged ({})".format(
+                record.get("current")
+            )
+        elif state == "changed":
+            rows["plugin_identity_check"] = "changed -- was {}, now {}".format(
+                record.get("prior"), record.get("current")
+            )
+        elif state == "could-not-tell":
+            rows["plugin_identity_check"] = "could-not-tell -- {}".format(
+                record.get("why") or "no reason recorded"
+            )
+        elif state == "route-mismatch":
+            rows["plugin_identity_check"] = "route-mismatch -- {}".format(
+                record.get("why") or "no reason recorded"
+            )
+        else:
+            rows["plugin_identity_check"] = (
+                "could-not-tell -- unrecognised --check-plugin-identity "
+                "output: {!r}".format(out.strip())
+            )
 
     code, out = _run(["git", "fetch"], run=run, cwd=cwd)
     if code != 0:
