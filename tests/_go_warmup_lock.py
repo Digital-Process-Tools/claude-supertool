@@ -105,43 +105,56 @@ def _lock_dir_usable(lock_dir: Path) -> bool:
     still be a one-off hiccup unrelated to `lock_dir`'s own writability (a
     transient AV scan touching the just-created probe file, the same
     Windows phenomenon `tests/conftest.py` names for a different lock) --
-    this function cannot tell that apart from a genuinely broken directory,
-    so it reports it (self-review, auditor) rather than swallowing it the
-    way #2551's original absence-recheck bug did, and answers `False`
-    either way: the caller's contract is "never fails, always falls back to
-    `fn()` safely", so treating an unreadable probe result as `unusable` is
-    the same safe direction `_exists_or_assume_so` already takes for the
-    read side of this same ambiguity.
+    this function cannot tell that apart from a genuinely broken directory
+    from a single attempt alone, so it retries once, against a fresh
+    uuid4 probe name, after a brief pause (#2563): a one-off hiccup then
+    clears and answers `True`, while a genuinely broken directory fails
+    both attempts and reports it (self-review, auditor) rather than
+    swallowing it the way #2551's original absence-recheck bug did. Only
+    after both attempts fail does it answer `False`: the caller's contract
+    is "never fails, always falls back to `fn()` safely", so treating a
+    probe that could not be confirmed usable after retrying as `unusable`
+    is the same safe direction `_exists_or_assume_so` already takes for
+    the read side of this same ambiguity.
     """
-    probe_path = lock_dir / (".serialize_once_probe_%d_%s" % (
-        os.getpid(), uuid.uuid4().hex))
-    try:
-        fd = os.open(str(probe_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError as exc:
-        warnings.warn(
-            "serialize_once's lock_dir probe could not create %s: %s -- "
-            "treating lock_dir as unusable" % (probe_path, exc),
-            stacklevel=2)
-        return False
-    try:
-        os.close(fd)
-    except OSError as exc:
-        # Closing a handle this process itself just opened should never
-        # fail, but the same transient interference the comment above
-        # names could still hit it -- caught rather than left to propagate
-        # out of a function whose whole contract is "never raises"
-        # (self-review, auditor).
-        warnings.warn(
-            "serialize_once's lock_dir probe could not close its own "
-            "handle on %s: %s -- treating lock_dir as unusable" % (
-                probe_path, exc),
-            stacklevel=2)
-        return False
-    try:
-        probe_path.unlink()
-    except OSError:
-        pass
-    return True
+    last_exc = None
+    for attempt in range(2):
+        if attempt:
+            # A one-off hiccup (the transient AV-scan case the docstring
+            # names) has had time to clear by now; a genuinely unusable
+            # lock_dir will fail again, immediately, below. 0.05s is
+            # negligible against the whole point of this probe, which is
+            # to avoid spending the caller's full multi-minute timeout_s
+            # (#2563).
+            time.sleep(0.05)
+        probe_path = lock_dir / (".serialize_once_probe_%d_%s" % (
+            os.getpid(), uuid.uuid4().hex))
+        try:
+            fd = os.open(str(probe_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except OSError as exc:
+            last_exc = exc
+            continue
+        try:
+            os.close(fd)
+        except OSError as exc:
+            # Closing a handle this process itself just opened should
+            # never fail, but the same transient interference named
+            # above could still hit it -- caught rather than left to
+            # propagate out of a function whose whole contract is
+            # "never raises" (self-review, auditor).
+            last_exc = exc
+            continue
+        try:
+            probe_path.unlink()
+        except OSError:
+            pass
+        return True
+    warnings.warn(
+        "serialize_once's lock_dir probe on %s failed twice, most "
+        "recently: %s -- treating lock_dir as unusable" % (
+            lock_dir, last_exc),
+        stacklevel=2)
+    return False
 
 
 def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
