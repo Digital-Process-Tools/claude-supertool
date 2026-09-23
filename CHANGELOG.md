@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-09-23
+
+### Added
+
+- `paste`/`append`'s `content` field and `edit`/`replace`'s `new` field now accept `FIELD = @rest`: a line that is exactly `FIELD = @rest` ends the TOML header there, and everything after that line's newline, to the end of the payload, becomes `FIELD`'s value verbatim -- no delimiter, no escaping, nothing to collide. Previously, a payload whose content was source code in the same language family as the payload format (Python written through TOML, most often) paid a full re-send whenever it hit a nested `'''` or an even backslash run: both refusals were correct, but the re-send was the whole cost. Giving the same field twice (a header value and an `@rest` tail) is refused, naming both payload lines; an `@rest` tail with nothing after it is refused as empty. The doubled-backslash refusal and the `literal_backslashes` opt-in do not apply to an `@rest` tail -- it is never TOML-parsed, so neither guard has anything to scan (#1868).
+
+- **`gh-issue-comment` grows `:edit=COMMENT_ID`, correcting a posted comment through
+  the same guarantee its create path already gives** ([#2643](https://github.com/Digital-Process-Tools/claude-supertool/issues/2643)).
+  Observed 2026-09-19: a comment on #1868 went out with a wrong figure, and the only route to fix
+  it was raw `gh api -X PATCH repos/.../issues/comments/ID -f body=@file`, hand-verified
+  afterwards -- no byte-identical read-back, and no re-application of the #2100 disclosure marker
+  if the corrected body dropped it. A trailing `:edit=COMMENT_ID` now PATCHes
+  `repos/{repo}/issues/comments/{id}` instead of POSTing a new comment, then runs the same
+  four-state receipt (`EXACT`/`NORMALISED`/`MISMATCH`/`UNKNOWN`) and the same idempotent
+  disclosure step the create path already had. The comment id is already in this op's own prior
+  `[result]` line (`comment id=...`), so the caller needs no extra lookup.
+
+- `gitlab-mr` watch source: two new events, `approved` (the merge request's approval rule became satisfied) and `retargeted` (the target branch changed) — previously invisible on the channel, only discoverable by re-reading the merge request by hand. Both fire on a rising edge only, never on the first poll, and `only=` accepts them like any other event. `approved` costs an extra GitLab request only while `detailed_merge_status` says approvals are the check currently blocking the merge, never on the common path (#2645).
+
+### Fixed
+
+- **`git-commit` refuses a MESSAGE holding a raw control byte (an ESC, a stray C0/C1) before anything is staged, instead of leaving the caller to hit a misleading `no PATHS were given` further down the same call** ([#2592](https://github.com/Digital-Process-Tools/claude-supertool/issues/2592)). Lane fix/2573 hit this twice: `git-commit:::MESSAGE:::PATH` refused with `no PATHS were given` despite a PATH given inline, and one of the two real commit messages carries a genuine ESC (0x1B) byte embedded in prose quoting a Python string literal. Fed through this repo's own argv-list parser with no shell involved, that exact message-plus-path combination commits cleanly -- confirmed live -- so the tokenizer itself is not at fault; the leading theory is a shell quoting form (`$'...'`) turning escape TEXT into the real byte, with an interactive pty's own readline then reading it as a control sequence and dropping part of the line before this script's argv ever forms, upstream of anything this repo controls. What is in reach: catching the same hazardous byte the next time a call carries it whole, and naming it plainly instead of a caller re-diagnosing a symptom two hops removed from the cause.
+
+- `radar`'s `_arg` was handed to every registered tier instead of only the tier whose name prefixes it, so a `gh-`-prefixed argument also reached a `gl-issue` tier configured alongside it, which either ignored it or misread it silently. `_arg` naming a registered tier is now routed to that tier only; an argument that names no registered tier (an ordinary filter string in a population tier's own vocabulary) still reaches every tier unchanged, as before (#2644).
+
+- **Applied three already-shipped `presets/youtube/` conventions to the sibling files four
+  near-simultaneous PRs left behind** ([#2649](https://github.com/Digital-Process-Tools/claude-supertool/issues/2649)).
+  `status_since.py`'s injection-warning join now flattens a bare carriage return as well as a
+  newline, matching `_sanitize.wrap()`/`read.py` (#2636). `reply.py::parse_args` now accepts the
+  same `:::` field separator `comment.py` does, so a reply body whose own trailing field spells
+  "force" can no longer forge the publish confirmation the way `comment.py` was fixed for in
+  #2600. Every remaining raw `ERROR: {e}`-shaped interpolation of a YouTube/OAuth error body
+  across `reply.py`, `like.py`, `list.py`, `search.py`, `status_since.py` and `read.py` now goes
+  through `repr(safe_short(str(e), 300))`, matching #2599's fix in `comment.py`/`auth.py`.
+
+- **`git-commit` refuses a subject whose first line still carries an unparsed `paths = [` or `message = ` payload key, instead of committing it as the commit's subject** ([#2656](https://github.com/Digital-Process-Tools/claude-supertool/issues/2656)). Observed as commit `112e504` in `claude-swarm-builder`, whose subject read `paths = ["--all"] doctor: scaffold owned files, ...` -- the `paths` line had prepended itself onto the message. The exact bytes that produced it were never recovered, and the payload parser's own leftover-detection for an embedded triple-single-quote run inside a message body (#1830, #1868) already refuses the one reproducible shape before this script ever runs. This is defence in depth for every OTHER way the same leak could reach `git-commit`, including a route that never touches the TOML parser at all: whatever produced the message, a subject that still looks like a payload key is never a wanted subject.
+
+- **`git-push` now says so when a branch has no open MR/PR, instead of printing nothing** ([#2657](https://github.com/Digital-Process-Tools/claude-supertool/issues/2657)). Previously, once the open-MR lookup answered "none", the receipt fell silent -- and a branch whose MR had just been merged read identically to a branch that never had one, which is how a push to a dead-end branch went unnoticed until an unrelated `git-status:brief` happened to print `State: merged`. A second lookup (`query_last_mr_result`) now runs only in that case, asking what the branch's most recent request was regardless of state, and the receipt says `MR: none open for this branch` plus the merged/closed request's number, state and target when one existed, or `MR: none -- new branch, nothing tracking it` when it genuinely never did. Same posture as the existing open-MR lookup: a tracker that cannot be reached degrades to a stated unknown, never a block on the push that already landed.
+
+- `channel:health` could report `channel: FORWARDING` with `0 forwarded` and `last forwarded never` -- a bound, verified, subscribed consumer that had never moved a single event, indistinguishable in its headline word from one that had. It now reports a sixth state, `channel: BOUND, UNPROVEN` (`RC_UNPROVEN`), for exactly that combination. Separately, a `.refused.json` marker could still be printed under `refused:` as a live #2133 collision finding even when `subscription()`'s own census, one paragraph below, had already concluded no standing `claude-channel` server is configured and the marker was this report's own `claude mcp get` probe residue; the `refused:` line is now relabelled to match that conclusion instead of contradicting it in the same report (#2658).
+
 ## [0.63.0] - 2026-09-19
 
 ### Added
@@ -8489,7 +8530,8 @@ All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.63.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.64.0...HEAD
+[0.64.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.64.0
 [0.63.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.63.0
 [0.62.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.62.0
 [0.61.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.61.0
