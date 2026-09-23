@@ -580,7 +580,7 @@ def board_from_cache(cache, now=None):
 # ------------------------------------------------------------------ release progress
 
 
-def release_progress(commits, tags_by_hash):
+def release_progress(commits, tags_by_hash, window=RELEASE_WINDOW):
     """How far into the next release this clone is: commits banked, over the usual size.
 
     Both halves come from the same two facts -- the log window and where the version tags
@@ -590,6 +590,13 @@ def release_progress(commits, tags_by_hash):
     renders as `0`, which is a measurement this repository takes seriously enough to name
     itself after: zero commits since the tag is a real and common state, and it has to stay
     distinguishable from never having looked.
+
+    A repository with NO version tag at all is a third case, distinct from "never looked"
+    (#1692): every commit in the window is banked toward a first release, and that count is
+    known exactly as long as the window reached the root commit (`len(commits) < window`).
+    When the window is exactly `window` commits long, whether more history exists beyond it
+    is unmeasured -- the count is a floor, not a measurement, and `since_floor` says so
+    rather than letting a truncated count render as if it were exact.
 
     `commits` is newest-first, as `git rev-list` prints it. `tags_by_hash` maps a commit to
     the tag names on it; anything `_version_tuple` cannot parse is not a release boundary
@@ -608,7 +615,12 @@ def release_progress(commits, tags_by_hash):
             if version is not None:
                 found.append((version, index))
     if not found:
-        return unknown
+        return {
+            "state": "no-tag",
+            "since": len(commits),
+            "typical": None,
+            "since_floor": len(commits) >= window,
+        }
     found.sort(key=lambda pair: pair[0], reverse=True)
     since = found[0][1]
     gaps = []
@@ -642,6 +654,11 @@ def git_release_progress(root, window=RELEASE_WINDOW):
     ``for-each-ref`` rather than ``show-ref`` because an annotated tag's own object hash is
     not the commit's: ``*objectname`` dereferences it, and is empty for a lightweight tag,
     so one format string covers both without a second call to tell them apart.
+
+    Callers that have `.oss.json`'s `release.triggers.merged_prs` in hand fold it onto the
+    returned dict themselves (`dict(progress, trigger=...)`), rather than this function
+    taking it as a parameter -- several tests monkeypatch this whole function with a
+    single-argument stand-in, and this keeps that call shape unchanged (#1692).
     """
     refs = _run(
         [
@@ -665,7 +682,7 @@ def git_release_progress(root, window=RELEASE_WINDOW):
             continue
         direct, dereferenced, name = parts
         tags.setdefault(dereferenced or direct, []).append(name)
-    return release_progress(log.split(), tags)
+    return release_progress(log.split(), tags, window=window)
 
 
 #: The rollup states GitHub reports that mean the checks passed, and the ones that mean
@@ -1206,18 +1223,47 @@ def _group(count, symbol, shade, color):
     return (shade if count else DIM) + text + RESET
 
 
+def _with_release_trigger(progress, config):
+    """Fold `.oss.json`'s `release.triggers.merged_prs` onto a release-progress dict.
+
+    A merged-PR count is a different unit from `since`'s commit count (#1692), so this
+    never rewrites `since` or `typical` -- it only adds `trigger`, which `_release_field`
+    renders with its own unit marker rather than ever presenting the two as one ratio.
+    """
+    trigger = ((config or {}).get("release") or {}).get("triggers") or {}
+    trigger = trigger.get("merged_prs")
+    if not isinstance(trigger, int):
+        return progress
+    return dict(progress or {}, trigger=trigger)
+
+
 def _release_field(progress):
     """`rel 4/17` -- banked since the last release, over what a release here usually costs.
 
     Each half carries its own `?`, because they fail separately: a clone with one tag knows
     exactly how much is banked and nothing about the usual size, and `rel 4/?` says that
     where a single `?` would throw away the half that was measured.
+
+    A repository with no version tag at all still has a measured numerator -- every commit
+    in the window is banked toward a first release (#1692) -- rendered plain (`rel 5/?`) when
+    the window reached the root commit, or with a trailing `+` (`rel 500+/?`) when
+    `since_floor` says the count is a truncation rather than the whole history.
+
+    `trigger` is a merged-PR count, a different unit from `since`'s commits, so whenever it
+    is present both halves carry a unit marker (`rel 5c/8pr`) rather than ever rendering as
+    one bare ratio that looks like a single unit.
     """
     progress = progress or {}
     since = progress.get("since")
     typical = progress.get("typical")
+    trigger = progress.get("trigger")
+    since_text = "?" if not isinstance(since, int) else str(since)
+    if isinstance(since, int) and progress.get("since_floor"):
+        since_text += "+"
+    if isinstance(trigger, int):
+        return "rel {}c/{}pr".format(since_text, trigger)
     return "rel {}/{}".format(
-        "?" if not isinstance(since, int) else since,
+        since_text,
         "?" if not isinstance(typical, int) else typical,
     )
 
@@ -1395,13 +1441,17 @@ def _doctor_field(state, symbols, color=False):
     `symbols["own"]`, doctor's `usable with gaps` -- reusing the glyph `_channel_field`
     uses for its own "a real finding that is neither pass nor fail" state, because that
     is exactly what a WARN is here too. `"bad"` -> `symbols["bad"]`, `not usable`.
+    `"timeout"` -> `symbols["run"]`, in YELLOW rather than DIM (#1650): a refresh that
+    hit `DOCTOR_TIMEOUT` is real work that did not finish in time, the same "not
+    settled yet, look again later" shape `_gh_branch_field`'s own `running`/`no-run`
+    collapse already argues for -- never the same glyph as "no reading was ever taken".
     Anything else -- `None`, because the reading was never taken at all, or a due
-    refresh was actually attempted and got nothing back (`doctor_refresh_failed_at`,
-    folded by `gather()` before this function ever sees it -- #1635), or a verdict
-    shape doctor has never printed -- renders `symbols["unk"]`, never a guess. A
-    reading merely due for its own refresh interval is NOT folded here any more
-    (#1635): `gather()` keeps rendering the last-known verdict while a refresh is
-    merely in flight.
+    refresh was actually attempted and got nothing back for a reason other than a
+    timeout (`doctor_refresh_failed_at`, folded by `gather()` before this function
+    ever sees it -- #1635), or a verdict shape doctor has never printed -- renders
+    `symbols["unk"]`, never a guess. A reading merely due for its own refresh interval
+    is NOT folded here any more (#1635): `gather()` keeps rendering the last-known
+    verdict while a refresh is merely in flight.
 
     **Named risk, not fixed here (the issue's own "Edge case" section, #1314): a
     single persistent false-positive WARN pins this marker at the `gaps` glyph
@@ -1417,6 +1467,8 @@ def _doctor_field(state, symbols, color=False):
         text, shade = "dr" + symbols["own"], YELLOW
     elif state == "bad":
         text, shade = "dr" + symbols["bad"], RED
+    elif state == "timeout":
+        text, shade = "dr" + symbols["run"], YELLOW
     else:
         text, shade = "dr" + symbols["unk"], DIM
     if not color:
@@ -1558,9 +1610,12 @@ def render(facts, ascii_only=False, color=False):
     # Always shown, unlike `ch` above -- there is no deliberate off switch for
     # `/oss:doctor` the way `watch_channel: false` turns the channel field off
     # (#613's own convention), so a reading never taken, or one a due refresh
-    # actually attempted and failed to get back, renders `dr?` rather than
-    # disappearing from the line (#1314). A reading merely due for its own
-    # refresh interval renders its last-known verdict instead (#1635).
+    # actually attempted and failed to get back for a reason other than a
+    # timeout, renders `dr?` rather than disappearing from the line (#1314). A
+    # refresh that instead hit DOCTOR_TIMEOUT renders its own distinct marker
+    # (#1650) -- never the same `dr?` a never-configured doctor gets. A reading
+    # merely due for its own refresh interval renders its last-known verdict
+    # instead (#1635).
     blocks.append(_doctor_field(facts.get("doctor_state"), symbols, color))
     return symbols["sep"].join(blocks)
 
@@ -2852,13 +2907,25 @@ def _doctor_verdict_state(verdict):
     return None
 
 
+#: Sentinel `_doctor_reading` returns instead of `None` specifically when
+#: `DOCTOR_TIMEOUT` was hit (#1650) -- distinct from every other absence (no
+#: `doctor.py` found, the subprocess could not start, a non-zero exit, no
+#: `VERDICT:` line in its output), which still return plain `None`. A timeout
+#: is real work that ran out of time, not evidence there is nothing to report;
+#: folding it into the same `None` as a never-configured doctor is this
+#: repository's own defect class -- an absence produced by the instrument,
+#: rendered the same as an absence in the world (#1650).
+_DOCTOR_TIMED_OUT = object()
+
+
 def _doctor_reading(root):
     """Run `doctor.py --root <root>` and read back its own last `VERDICT:` line
-    (#1314). Returns the raw text after `"VERDICT:"`, or `None` when no `doctor.py`
-    could be located (`_doctor_script_path`), the subprocess could not be started,
-    timed out, or exited non-zero -- which, by doctor's own "exit 0 always" contract
-    (see its module docstring), should never happen, but is treated here as a real
-    absence rather than trusted blindly.
+    (#1314). Returns the raw text after `"VERDICT:"`; `_DOCTOR_TIMED_OUT` when the
+    run hit `DOCTOR_TIMEOUT` specifically (#1650); or `None` for every other kind
+    of absence -- no `doctor.py` could be located (`_doctor_script_path`), the
+    subprocess could not be started, or it exited non-zero, which, by doctor's own
+    "exit 0 always" contract (see its module docstring), should never happen, but
+    is treated here as a real absence rather than trusted blindly.
 
     Not routed through `_run()`: that helper resolves `command[0]` on `PATH` via
     `_safe_which` (#1295), which defends against a same-named `git.exe`/`gh.cmd`
@@ -2882,6 +2949,8 @@ def _doctor_reading(root):
             stderr=subprocess.DEVNULL,
             timeout=DOCTOR_TIMEOUT,
         )
+    except subprocess.TimeoutExpired:
+        return _DOCTOR_TIMED_OUT
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
@@ -3092,24 +3161,40 @@ def refresh(root, now=None, session_id=None):
     doctor_due = not isinstance(previous_doctor_stamp, (int, float)) or (
         now - previous_doctor_stamp >= DOCTOR_REFRESH_AFTER
     )
+    previous_doctor_timed_out_at = previous.get("doctor_refresh_timed_out_at")
     if doctor_due:
         new_verdict = _doctor_reading(root)
-        if new_verdict is None:
-            # Asked and got nothing back. Mirrors `latest`'s own failure handling
-            # (#1464) and the board's above (#1635): the old stamp stays in place
-            # (so the next render treats this as still due, retrying sooner rather
-            # than waiting out a fresh-looking `DOCTOR_REFRESH_AFTER`), the old
-            # verdict is kept rather than overwritten with `None`, and the failure
-            # IS recorded so `gather()` can tell "still due" from "asked and failed".
+        if new_verdict is _DOCTOR_TIMED_OUT:
+            # Asked and the run itself hit DOCTOR_TIMEOUT (#1650) -- a real
+            # attempt that ran out of time, not the same "nothing to report" as
+            # every other absence. Same carry-forward shape as the plain-failure
+            # branch below, plus its own stamp so `gather()` can render a state
+            # distinct from "asked and failed for some other reason".
             document["doctor_verdict"] = previous.get("doctor_verdict")
             document["doctor_fetched_at"] = previous_doctor_stamp
             document["doctor_refresh_failed_at"] = now
+            document["doctor_refresh_timed_out_at"] = now
+        elif new_verdict is None:
+            # Asked and got nothing back, for a reason other than a timeout.
+            # Mirrors `latest`'s own failure handling (#1464) and the board's
+            # above (#1635): the old stamp stays in place (so the next render
+            # treats this as still due, retrying sooner rather than waiting out
+            # a fresh-looking `DOCTOR_REFRESH_AFTER`), the old verdict is kept
+            # rather than overwritten with `None`, and the failure IS recorded
+            # so `gather()` can tell "still due" from "asked and failed".
+            document["doctor_verdict"] = previous.get("doctor_verdict")
+            document["doctor_fetched_at"] = previous_doctor_stamp
+            document["doctor_refresh_failed_at"] = now
+            # This attempt was not a timeout -- clear a stale timeout marker so
+            # a later, non-timeout failure does not keep rendering as one.
+            document["doctor_refresh_timed_out_at"] = None
         else:
             document["doctor_verdict"] = new_verdict
             document["doctor_fetched_at"] = now
             # A success clears any prior failure -- leaving a stale failure marker
             # in place would keep folding a now-good reading to `unknown`.
             document["doctor_refresh_failed_at"] = None
+            document["doctor_refresh_timed_out_at"] = None
     else:
         # Carried forward under its OWN old stamp, same shape as `channel`/`latest`
         # above and for the same reason: re-stamping `now` would make an old reading
@@ -3119,6 +3204,7 @@ def refresh(root, now=None, session_id=None):
         # Not attempted this pass -- whatever failure record was already there (or
         # was not) carries forward unchanged; this is not itself an ask.
         document["doctor_refresh_failed_at"] = previous_doctor_failed_at
+        document["doctor_refresh_timed_out_at"] = previous_doctor_timed_out_at
     path = cache_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -3485,8 +3571,20 @@ def gather(payload, root, now=None):
         not isinstance(raw_doctor_stamp, (int, float))
         or doctor_failed_at >= raw_doctor_stamp
     )
+    # #1650: a refresh that hit DOCTOR_TIMEOUT is a distinct state from every
+    # other flavour of "asked and got nothing back" -- real work that ran out
+    # of time, not the same absence a never-configured doctor renders. Only
+    # consulted once a failure is already established above, and only when
+    # this specific failed attempt (not a stale, superseded one) was the timeout.
+    doctor_timed_out_at = (cache or {}).get("doctor_refresh_timed_out_at")
+    doctor_timed_out = doctor_refresh_failed and (
+        isinstance(doctor_timed_out_at, (int, float))
+        and doctor_timed_out_at >= doctor_failed_at
+    )
     if isinstance(raw_doctor_stamp, (int, float)) and not doctor_refresh_failed:
         doctor_state = _doctor_verdict_state((cache or {}).get("doctor_verdict"))
+    elif doctor_timed_out:
+        doctor_state = "timeout"
     else:
         doctor_state = None
 
@@ -3499,7 +3597,7 @@ def gather(payload, root, now=None):
         "default_branch": config.get("default_branch"),
         "version": repo_version(root),
         "board": board,
-        "release": git_release_progress(root),
+        "release": _with_release_trigger(git_release_progress(root), config),
         "traps": _trap_count(root),
         "outbound": _outbound_count(root),
         "last": _render_stamp(now),
