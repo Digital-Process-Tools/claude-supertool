@@ -1,5 +1,8 @@
 """A `FIELD = @rest` header line ends TOML parsing there and hands
-everything after it, byte for byte, as FIELD's value (#1868).
+everything after it as FIELD's value (#1868) -- byte for byte only for
+`content` (`_AT_FILE_REST_RAW_FIELDS`); every other field has exactly one
+trailing newline stripped by `_rest_tail_value` before it lands in the
+parsed dict (#2668).
 
 A literal (`'''`) block cannot carry a nested `'''`, and a doubled
 backslash in a literal block trips the write-time refusal even when it
@@ -184,11 +187,71 @@ def test_rest_tail_without_trailing_newline_is_unaffected_by_stripping(
 
 
 def test_rest_tail_strips_a_crlf_trailing_newline_too(tmp_path: Path) -> None:
+    # `_write()` round-trips through `Path.write_text()` then `open(path)`,
+    # both of which do universal-newline translation -- a "\r\n" written
+    # this way is already plain "\n" by the time `_load_at_file` sees it,
+    # so this test alone cannot tell the `\r\n`-stripping branch in
+    # `_rest_tail_value` apart from an absent one (oss:auditor finding,
+    # #2668 self-review). Kept as the end-to-end shape; the two tests below
+    # are what actually pin the CRLF branch.
     tail = "x = 9\r\n"
     raw = 'old = "x = 1"\nnew = @rest\n' + tail
     ref = _write(tmp_path, raw)
     parsed = supertool._load_at_file(ref)
     assert parsed["new"] == "x = 9"
+
+
+def test_rest_tail_value_strips_crlf_directly() -> None:
+    # Whitebox, on purpose: calls the stripping helper directly so a
+    # regression in the `\r\n`-before-`\n` branch fails here even though
+    # every `@file`-route test above goes through a translation that
+    # already collapsed `\r\n` to `\n` before this function ever ran
+    # (#2668, oss:auditor finding).
+    assert supertool._rest_tail_value("new", "x = 9\r\n") == "x = 9"
+    assert supertool._rest_tail_value("new", "x = 9\r\n\r\n") == "x = 9\r\n"
+
+
+def test_rest_tail_stdin_route_preserves_and_strips_crlf(monkeypatch) -> None:
+    # `@-` (stdin) does NOT get universal-newline translation the way
+    # `_write()`'s file round-trip does (confirmed directly: `sys.stdin`
+    # here is an `io.StringIO`, which returns its bytes unchanged on
+    # `.read()`) -- this is the one real `@file` route where a `\r\n`
+    # tail actually reaches `_rest_tail_value` intact, and the auditor
+    # finding was that nothing exercised it end to end (#2668).
+    import io
+    raw = 'old = "x = 1"\nnew = @rest\nx = 9\r\n'
+    monkeypatch.setattr("sys.stdin", io.StringIO(raw))
+    parsed = supertool._load_at_file("@-")
+    assert parsed["new"] == "x = 9"
+
+
+def test_rest_tail_refuses_when_empty_after_stripping(tmp_path: Path) -> None:
+    # `new = @rest` followed by nothing but one blank line: `rest_tail`
+    # itself is "\n", so the pre-existing empty-tail check (which runs
+    # before stripping) does not catch it, and stripping that single
+    # newline would silently hand a non-`content` field an empty string --
+    # `edit`/`replace`'s `new` would delete the matched text, and `grep`'s
+    # `pattern` would match every line, the exact silent-wrong-answer shape
+    # #2668 was filed to eliminate (self-review, oss:developer review
+    # round).
+    raw = 'old = "x = 1"\nnew = @rest\n\n'
+    ref = _write(tmp_path, raw)
+    with pytest.raises(ValueError) as excinfo:
+        supertool._load_at_file(ref)
+    message = str(excinfo.value)
+    assert "empty" in message
+    assert "new" in message
+
+
+def test_rest_tail_content_field_keeps_a_blank_line_tail(tmp_path: Path) -> None:
+    # The refusal above is scoped to non-`content` fields: `content`
+    # (paste/append/replace_lines) keeps the tail byte for byte on
+    # purpose, and a file whose whole body is one blank line is a
+    # legitimate thing to write.
+    raw = 'path = "x.py"\ncontent = @rest\n\n'
+    ref = _write(tmp_path, raw)
+    parsed = supertool._load_at_file(ref)
+    assert parsed["content"] == "\n"
 
 
 def test_rest_tail_marker_tolerates_a_crlf_line_ending() -> None:
