@@ -156,3 +156,57 @@ Curate pass over `trap.d/`, 2026-09-23.
   a real header, or something else) cannot be confirmed from here. The fragment's own text already
   names this as the right next step ("determine via `scripts/review_return.py`'s actual regex")
   and the right owner (the `oss` plugin's own source, not this repo).
+
+Curate pass over `trap.d/`, 2026-09-23 (second pass, worktree curate/20260923T162954Z).
+
+- **2661.fetch-approvals-severity-nuance-dropped** -- merged, not declined: folded a short
+  severity-bound sentence back into `.claude/jit-context/paths/00-manual/presets-watch.md`'s
+  `_fetch_approvals()` section ("Bounded, not a standing outage: fires at most once per real
+  transition, so a failure caps at one missed tick."), the paragraph #2660's curate commit dropped
+  when folding in `trap.d/2645.approvals-lookup-failure-not-surfaced.md`. Kept to 110 bytes so the
+  file stays under the 6,000-byte paths-rule budget (`tests/test_jit_rule_body_budget_1433.py`) --
+  5,988 bytes after the edit, the same cap #2660 was closed for exceeding.
+- **1868.rest-message-swallows-paths**, **1868.rest-tail-newline-any-field** and
+  **1868.rest-tail-trailing-newline-edit-replace** -- three one-off code defects in the generic
+  `_load_at_file_raw`/`@rest` payload-tail parser (a following `paths = [...]` line swallowed into
+  the message body; the raw trailing newline turning a `pattern = @rest` into a match-everything;
+  the same newline landing verbatim in `edit`/`replace`'s `new` field). All three are parser fixes
+  release-auditor flagged as "worth a maintainer glance," not agent-facing lessons -- no
+  path/tool/vocabulary trigger here would change what an agent does differently, only what the
+  parser does.
+- **1868.stale-comment-reference** -- #1868's 2026-09-16 comment (propose folding in #2545/#2204)
+  is stale relative to its own later 2026-09-19 comment, which already treats both as
+  resolved/superseded. The fragment's own text says this was "not acted on as written" -- nothing
+  for a rule to change, since the later comment already supersedes the earlier one on the same
+  issue.
+- **2645.approved-missed-behind-other-blocker** -- one-off code defect in
+  `presets/watch/sources/gitlab-mr/poller.py` (the `approved` event never re-fires once the
+  approvals endpoint has answered False on the one tick it is asked); a fixture/fix task for that
+  poller, not an agent-facing lesson.
+- **2649.youtube-linesep-unicode-not-flattened** -- one-off code defect: the `\r`/`\n` flattening
+  #2649 added does not cover U+2028/U+2029 and other Unicode line separators, and `_untrusted.flat`
+  already exists unused at all three call sites; a code fix (route through the existing helper),
+  not a jit rule.
+- **2656.leaked-key-guard-spacing-variants** -- one-off code defect: `_leaked_key_hazard` matches
+  only the canonical `paths = [`/`message = ` spacing, missing `paths=`, extra spaces, or leading
+  whitespace; a regex widening plus a parametrised test, not an agent-facing lesson.
+- **2657.commit-py-existing-mr-hint-same-gap** -- `presets/git/commit.py`'s post-commit MR hint has
+  the identical "open lookup found nothing" gap #2657 already fixed on the push side; a wiring task
+  (point it at the same `query_last_mr_result` seam), not a new lesson.
+- **2657.dead-mr-lookup-matches-fork-prs** -- `query_last_mr_result`/`_dead_mr_lines`'s `gh pr list
+  --head BRANCH --state all` can match a stranger's cross-repo fork PR sharing the same branch
+  name; a code fix (filter `isCrossRepository`), not a jit rule -- no path/tool trigger here
+  changes what an agent does differently.
+- **2657.mr-lookup-state-absent-fallback** -- `_glab_last_fields`/`_gh_last_fields` fold a
+  genuinely-absent `state` key into the same `or "closed"` fallback a real closed state reads as;
+  flagged informational-only by oss:auditor since it requires a malformed CLI response neither
+  gh's nor glab's contract produces. A three-state fix for next time the file is touched, not a
+  rule to write now.
+- **2658.dispatcher-transport-verdict-disagreement** -- recon note that `presets/watch/dispatcher.py`
+  /`transport.py`'s radar-board delivery classifier may share the same verdict-disagreement shape
+  #2658 fixed in `channel.py` (#2663); not investigated or fixed here, a different subsystem's own
+  diff. An investigation task for whoever next touches that file, not an agent-facing lesson yet.
+- **2658.health-description-and-statusline-lack-unproven** -- `presets/watch.json`'s `channel:health`
+  description still names five states after #2658 added a sixth (`BOUND, UNPROVEN`, exit 8); a
+  one-line description fix. The vendored `.oss/statusline.py` half is not this repo's to fix --
+  scaffolded wholesale from the `claude-oss` plugin's own template.
