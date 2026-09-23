@@ -335,6 +335,11 @@ def test_main_edit_refuses_when_the_ownership_check_itself_fails(
         monkeypatch, capsys, tmp_path):
     # The GET that should confirm ownership errors outright (404, network,
     # bad JSON) -- refuse rather than proceeding to PATCH on no evidence.
+    #
+    # The PATCH branch is stubbed to SUCCEED (unlike the GET) so this test
+    # cannot pass by accident if the ownership GET were removed entirely:
+    # without the #2665 check, main() would go straight to a successful
+    # PATCH and report "edited", not "NOT edited".
     payload_file = _payload(tmp_path, {"repo": "o/r", "body": "corrected note"})
     monkeypatch.setattr(
         sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
@@ -343,11 +348,36 @@ def test_main_edit_refuses_when_the_ownership_check_itself_fails(
 
     def fake_gh_json(args, stdin=None, timeout=30):
         calls.append(args)
-        return (None, "404 Not Found")
+        if "-X" not in args:
+            return (None, "404 Not Found")
+        return ({"id": 555, "body": "corrected note", "html_url": "https://x/555"}, "")
     monkeypatch.setattr(m, "_gh_json", fake_gh_json)
 
     assert m.main() == 1
     assert len(calls) == 1, "the PATCH must not run once the ownership GET fails"
+    out = capsys.readouterr().out
+    assert "NOT edited" in out
+    assert "edited" not in out.replace("NOT edited", "")
+
+
+def test_main_edit_refuses_when_the_ownership_get_returns_a_non_dict(
+        monkeypatch, capsys, tmp_path):
+    # A malformed or unexpected gh response (e.g. a JSON array) is not a
+    # dict, and must be treated the same as a GET failure -- refuse rather
+    # than reading .get() off something that is not the comment object.
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "corrected note"})
+    monkeypatch.setattr(
+        sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
+
+    calls = []
+
+    def fake_gh_json(args, stdin=None, timeout=30):
+        calls.append(args)
+        return ([1, 2, 3], "")
+    monkeypatch.setattr(m, "_gh_json", fake_gh_json)
+
+    assert m.main() == 1
+    assert len(calls) == 1, "the PATCH must not run once the ownership GET is malformed"
     out = capsys.readouterr().out
     assert "NOT edited" in out
 

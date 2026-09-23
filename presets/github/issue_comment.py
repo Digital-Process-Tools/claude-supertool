@@ -312,7 +312,10 @@ def edit_target_error(check_response: object, check_err: str, number: str) -> st
     if not isinstance(check_response, dict):
         return (f"could not verify the comment belongs to issue #{number} "
                 f"before editing it ({check_err or 'no detail'})")
-    issue_url = str(check_response.get("issue_url") or "")
+    # The GitHub API writes issue_url, same as html_url a few lines below in
+    # main() -- flatten it before it can reach column 0 of this op's own
+    # receipt (#1606, the reason _untrusted is imported here at all).
+    issue_url = _untrusted.flat(str(check_response.get("issue_url") or ""))
     if not issue_url.endswith(f"/issues/{number}"):
         return (f"that comment belongs to "
                 f"{issue_url or '(no issue_url in the response)'}, not "
