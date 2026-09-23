@@ -33,6 +33,8 @@ import sys
 
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).parent.parent
 SUPERTOOL = REPO / "supertool.py"
 
@@ -116,6 +118,29 @@ def test_leaked_key_hazard_only_fires_at_the_front_of_the_subject() -> None:
         "feat: support paths = [] shorthand in the payload grammar") is None
     assert commit_mod._leaked_key_hazard(
         "docs: rename message = field to text = in payload spec") is None
+
+
+@pytest.mark.parametrize("subject", [
+    'paths=["a"]',
+    'paths  = ["a"]',
+    '  paths = ["a"]',
+    "\tpaths = [\"a\"]",
+])
+def test_leaked_key_hazard_flags_paths_spacing_variants(subject: str) -> None:
+    """#2669: the guard used byte-for-byte `startswith("paths = [")`, so a
+    missing space, doubled space or leading indent all slipped through.
+    Any of those is still the same leaked key, not a different subject."""
+    assert commit_mod._leaked_key_hazard(subject) is not None
+
+
+@pytest.mark.parametrize("subject", [
+    'message="x"',
+    'message  = "x"',
+    '  message = "x"',
+])
+def test_leaked_key_hazard_flags_message_spacing_variants(subject: str) -> None:
+    """#2669, the `message` marker's own spacing variants."""
+    assert commit_mod._leaked_key_hazard(subject) is not None
 
 
 # --- unit level: the refusal message itself --------------------------------

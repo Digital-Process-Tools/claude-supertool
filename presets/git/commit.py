@@ -48,6 +48,7 @@ after it.
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
@@ -274,6 +275,12 @@ def _control_byte_refusal(msg: str, index: int, display: str, kind: str):
     ]
 
 
+# #2669 -- tolerant of any TOML-legal spacing around the `=`, and of
+# leading indentation, not just the canonical `paths = [`/`message = ` the
+# #2656 guard originally matched byte-for-byte.
+_LEAKED_KEY_RE = re.compile(r"^\s*(paths|message)\s*=")
+
+
 def _leaked_key_hazard(msg: str):
     """Does MSG's first line carry an unparsed payload key (#2656)?
 
@@ -294,10 +301,62 @@ def _leaked_key_hazard(msg: str):
     Returns the marker found, or None.
     """
     first_line = msg.split("\n", 1)[0]
-    for marker in ("paths = [", "message = "):
-        if first_line.startswith(marker):
-            return marker
-    return None
+    m = _LEAKED_KEY_RE.match(first_line)
+    if m is None:
+        return None
+    return "paths = [" if m.group(1) == "paths" else "message = "
+
+
+# #2667 -- a `message = @rest` header ends the TOML header at that line
+# (#1868); everything after it, including a would-be `paths = [...]` line
+# the caller meant as its own field, is taken verbatim into MESSAGE. The
+# generic `@rest` split in `_load_at_file_raw` has no schema for MESSAGE's
+# sibling fields and cannot tell a swallowed field from ordinary body text
+# (self-review, #1868's own docstring). This is git-commit's own defence:
+# when NO paths were given on the argument list at all, a trailing line
+# shaped like a `paths = [...]` assignment is never a wanted last line of a
+# commit body -- it is the shape a swallowed sibling field takes. Scoped to
+# "paths is empty" so a real commit body that legitimately ends on a line
+# mentioning `paths = [` while paths WERE also given normally is untouched.
+_TRAILING_PATHS_RE = re.compile(r"^[ \t]*paths[ \t]*=[ \t]*\[")
+
+
+def _trailing_paths_hazard(msg: str, paths):
+    """Does MSG's last non-blank line look like a swallowed `paths = [...]`
+    payload field (#2667)? Only checked when PATHS is empty."""
+    if paths:
+        return False
+    body_lines = [ln for ln in msg.splitlines() if ln.strip()]
+    if not body_lines:
+        return False
+    return _TRAILING_PATHS_RE.match(body_lines[-1]) is not None
+
+
+def _trailing_paths_refusal(msg: str):
+    """MSG's last line holds a `paths = [...]` payload key that never split
+    off, and no paths were given any other way (#2667)."""
+    hint = st_hint("git-commit:@-")
+    lines = [
+        "ERROR: the commit message's last line looks like a `paths = "
+        "[...]` payload field -- refused before anything was staged, "
+        "nothing committed (#2667).",
+        "  No PATHS were given on the argument list either, which is the "
+        "shape a `message = @rest` tail takes when it swallows a `paths` "
+        "line meant as its own field, rather than as part of the message.",
+        "  Parsed as: message=%r (intact -- this call reached commit.py "
+        "whole)" % (msg,),
+        "  Put `paths = [...]` BEFORE the `message = @rest` marker line, "
+        "as its own header field, not after it:",
+    ]
+    if hint.startswith("("):
+        lines.append("  " + hint)
+    else:
+        lines.append("    " + hint + " <<'EOF'")
+        lines.append("    paths = [\"a.py\"]")
+        lines.append("    message = @rest")
+        lines.append("    your subject line")
+        lines.append("    EOF")
+    return lines
 
 
 def _leaked_key_refusal(msg: str, marker: str):
@@ -1309,6 +1368,15 @@ def main() -> int:
         marker = _leaked_key_hazard(msg)
         if marker is not None:
             for line in _leaked_key_refusal(msg, marker):
+                print(line)
+            return 1
+
+        # #2667 -- a different shape of the same swallow: the leaked key
+        # lands at the END of the message (a `message = @rest` tail) rather
+        # than at the front of the subject. Checked right after the subject
+        # check, before anything else reads MSG.
+        if _trailing_paths_hazard(msg, paths):
+            for line in _trailing_paths_refusal(msg):
                 print(line)
             return 1
 
