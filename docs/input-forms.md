@@ -242,8 +242,9 @@ as `@rest`) is refused, naming both lines; an `@rest` tail with nothing after
 it is refused as empty rather than silently writing an empty string, and so is
 a tail that strips down to nothing but its own trailing newline (a `new =
 @rest` marker line followed by one blank line and end of file) — for every
-field except `content`, which keeps the tail byte for byte and may legitimately
-be empty. The doubled-backslash refusal and the `literal_backslashes` opt-in do
+field except `content`, which keeps the tail byte for byte and may
+legitimately end on a blank line. The doubled-backslash refusal and the
+`literal_backslashes` opt-in do
 not apply to an `@rest` tail — it was never TOML-parsed, so neither guard has
 anything to scan.
 
