@@ -213,7 +213,12 @@ def test_rest_tail_strips_a_crlf_trailing_newline_too(tmp_path: Path) -> None:
     tail = "x = 9\r\n"
     raw = 'old = "x = 1"\nnew = @rest\n' + tail
     p = tmp_path / "p.toml"
-    p.write_text(raw, newline="")
+    # `Path.write_text`'s `newline` keyword needs Python 3.10+ (this repo's
+    # floor is 3.9, pyproject.toml's `requires-python`) -- `open()`'s own
+    # `newline` keyword has been there since 3.9, so use that directly
+    # instead (caught by CI on all three 3.9 legs, #2668 review).
+    with open(p, "w", newline="", encoding="utf-8") as f:
+        f.write(raw)
     parsed = supertool._load_at_file("@" + str(p))
     assert parsed["new"] == "x = 9"
 
