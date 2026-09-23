@@ -30905,6 +30905,31 @@ def _take_payload_warnings() -> str:
 _AT_FILE_REST_MARKER_RE = re.compile(
     r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*@rest[ \t]*\r?$", re.MULTILINE)
 
+# Fields where the @rest tail is used byte for byte, trailing newline and
+# all -- a whole-file/whole-block write, where the payload author's own
+# file legitimately ends on a blank line. Every other field (`old`/`new`
+# for edit/replace, `pattern` for grep/around/...) strips exactly one
+# trailing newline off the tail below: the heredoc form's own closing
+# newline is not part of the value, and left in it turns an exact `old`/
+# `new` pair into a spurious blank line in the written file and a `pattern`
+# into one that matches every line (#2668). Matched case-insensitively
+# against the field name the payload author wrote after `=`.
+_AT_FILE_REST_RAW_FIELDS = {"content"}
+
+
+def _rest_tail_value(field: str, tail: str) -> str:
+    """The @rest tail as it lands in the parsed payload dict for `field`.
+
+    See `_AT_FILE_REST_RAW_FIELDS` above for which fields are exempt.
+    """
+    if field.lower() in _AT_FILE_REST_RAW_FIELDS:
+        return tail
+    if tail.endswith("\r\n"):
+        return tail[:-2]
+    if tail.endswith("\n"):
+        return tail[:-1]
+    return tail
+
 
 def _load_at_file(ref: str, note: bool = True) -> Any:
     """Load JSON or TOML from an @file reference — thin wrapper over
@@ -30976,10 +31001,14 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
     except ImportError:
         parser = _mini_toml_loads
     # `FIELD = @rest` ends the TOML header there; everything after that
-    # line's newline, to end of stream, is FIELD's value verbatim -- never
-    # TOML-parsed, so a quoting collision with source code in the content
-    # cannot happen (#1868). `toml_source` is the header only; `raw` keeps
-    # the whole original text for the caller that wants provenance (#1032).
+    # line's newline, to end of stream, is FIELD's tail -- never TOML-parsed,
+    # so a quoting collision with source code in the content cannot happen
+    # (#1868). It is NOT the field's value verbatim for every field: outside
+    # `_AT_FILE_REST_RAW_FIELDS`, `_rest_tail_value` (below) strips exactly
+    # one trailing newline before it lands in `parsed` (#2668) -- `content`
+    # is the one field that still gets the tail byte for byte. `toml_source`
+    # is the header only; `raw` keeps the whole original text for the caller
+    # that wants provenance (#1032).
     #
     # Residual, named rather than hidden (self-review): the marker regex has
     # no TOML string/table context, so a line that only LOOKS like a marker
@@ -31057,7 +31086,25 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
                 f"twice -- as a header field (payload line {field_line}) and "
                 f"as the @rest tail (line {marker_line}). Use one."
             )
-        parsed[rest_field] = rest_tail
+        _rest_value = _rest_tail_value(rest_field, rest_tail)
+        if not _rest_value and rest_field.lower() not in _AT_FILE_REST_RAW_FIELDS:
+            # `rest_tail` itself was non-empty (the check above already
+            # refused a true empty tail), but it was nothing except the
+            # marker line's own trailing newline -- e.g. `new = @rest`
+            # followed immediately by one blank line and EOF. Stripping
+            # that single newline would otherwise silently hand the caller
+            # an empty string: `edit`/`replace`'s `new` would delete the
+            # matched text and `grep`'s `pattern` would match every line,
+            # the exact silent-wrong-answer shape #2668 was filed to
+            # eliminate, just reached through a blank-line tail instead of
+            # an unstripped one (self-review, oss:developer review round).
+            raise ValueError(
+                f"@file payload refused ({source}): the @rest tail for "
+                f"`{rest_field}` is empty once its trailing newline is "
+                f"stripped -- line {marker_line} (`{rest_field} = @rest`) "
+                f"is followed by nothing but a blank line"
+            )
+        parsed[rest_field] = _rest_value
     refusal = _toml_literal_backslash_refusal(toml_source)
     if refusal:
         raise ValueError(f"@file payload refused ({source}): {refusal}")

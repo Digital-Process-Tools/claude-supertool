@@ -215,9 +215,16 @@ which have always worked:
 
 A line that is exactly `FIELD = @rest` (a bare key, the token `@rest`, nothing
 else) ends the TOML header there. Everything after that line's newline, to the
-end of the payload, is `FIELD`'s value, verbatim — no delimiter closes it, so a
-`'''`, a `"""`, a doubled backslash, even another `content = @rest` line inside
-the content, are all just bytes ([#1868](https://github.com/Digital-Process-Tools/claude-supertool/issues/1868)):
+end of the payload, is `FIELD`'s tail — no delimiter closes it, so a `'''`, a
+`"""`, a doubled backslash, even another `content = @rest` line inside the
+content, are all just bytes ([#1868](https://github.com/Digital-Process-Tools/claude-supertool/issues/1868)).
+It is byte-for-byte verbatim only for `content` (`paste`/`append`/`replace_lines`'s
+whole-block field, where a payload author's own file may legitimately end on a
+blank line) — every other field, including `edit`/`replace`'s `new`, has
+exactly one trailing newline stripped before it lands in the payload: the
+heredoc form's own closing newline is not part of the value, and left in it
+turned `new` into a spurious blank line and a `grep` `pattern` into one that
+matched every line ([#2668](https://github.com/Digital-Process-Tools/claude-supertool/issues/2668)):
 
 ```
 ./supertool 'paste:@-' <<'EOF'
@@ -232,10 +239,14 @@ Available on `paste`/`append`'s `content` and on `edit`/`replace`'s `new` —
 `old` stays in the header, since it is normally short and is where the anchor
 for the edit lives. Giving the same field twice (once as a header value, once
 as `@rest`) is refused, naming both lines; an `@rest` tail with nothing after
-it is refused as empty rather than silently writing an empty string. The
-doubled-backslash refusal and the `literal_backslashes` opt-in do not apply to
-an `@rest` tail — it was never TOML-parsed, so neither guard has anything to
-scan.
+it is refused as empty rather than silently writing an empty string, and so is
+a tail that strips down to nothing but its own trailing newline (a `new =
+@rest` marker line followed by one blank line and end of file) — for every
+field except `content`, which keeps the tail byte for byte and may
+legitimately end on a blank line. The doubled-backslash refusal and the
+`literal_backslashes` opt-in do
+not apply to an `@rest` tail — it was never TOML-parsed, so neither guard has
+anything to scan.
 
 Since [#394](https://github.com/Digital-Process-Tools/claude-supertool/issues/394)
 the parse error names both. **The trigger is structural, not a parity count**
