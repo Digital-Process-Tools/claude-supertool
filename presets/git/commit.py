@@ -295,7 +295,7 @@ def _leaked_key_hazard(msg: str):
     """
     first_line = msg.split("\n", 1)[0]
     for marker in ("paths = [", "message = "):
-        if marker in first_line:
+        if first_line.startswith(marker):
             return marker
     return None
 

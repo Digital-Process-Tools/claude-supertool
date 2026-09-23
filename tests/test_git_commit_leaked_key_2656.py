@@ -104,6 +104,20 @@ def test_leaked_key_hazard_only_looks_at_the_first_line() -> None:
     assert commit_mod._leaked_key_hazard(msg) is None
 
 
+def test_leaked_key_hazard_only_fires_at_the_front_of_the_subject() -> None:
+    """Self-review finding: the marker has to LEAD the subject, not merely
+    appear in it -- an ordinary commit subject that legitimately discusses
+    this op's own syntax (documenting it, adding the feature) must not be
+    refused just because it mentions `paths = [` or `message = ` mid-sentence.
+    A leaked key always prepends itself to the FRONT of the subject (the
+    observed #2656 shape: `paths = [\"--all\"] doctor: scaffold ...`), so
+    anchoring here is not a narrower guess -- it is the actual mechanism."""
+    assert commit_mod._leaked_key_hazard(
+        "feat: support paths = [] shorthand in the payload grammar") is None
+    assert commit_mod._leaked_key_hazard(
+        "docs: rename message = field to text = in payload spec") is None
+
+
 # --- end-to-end: the colon-CLI route ---------------------------------------
 
 
