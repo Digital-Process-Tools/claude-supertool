@@ -28,8 +28,10 @@ never these three literals, so the canonical fix itself never trips this scan.
 
 **Scanned trees, and why**: exactly the presets that render text chosen by
 someone other than this repo's own operator -- `bluesky`, `devto`, `hashnode`,
-`youtube`, `watch` (poller-sourced notification/engagement text), `github`,
-`gitlab`, `git` (the existing #965 scanner's own trees) and `notifiers`.
+`youtube`, `slack` (a publish/reply-echo preset whose own docstrings already
+name reply text as stranger-authored -- see `presets/slack/publish.py`),
+`watch` (poller-sourced notification/engagement text), `github`, `gitlab`,
+`git` (the existing #965 scanner's own trees) and `notifiers`.
 `presets/xml/_common.py` and `presets/claude-log/_common.py` are deliberately
 NOT scanned: #2681's own commit message excludes both as rendering *local*
 files, not remote/tracker text, and neither sits under any of the trees named
@@ -66,12 +68,26 @@ BARE_SEPARATOR_LITERALS = frozenset({"\r", "\n", "\r\n"})
 #: are excluded by not being reached by `rglob` at all.
 _SCANNED = (
     "presets/bluesky", "presets/devto", "presets/hashnode", "presets/youtube",
-    "presets/watch", "presets/github", "presets/gitlab", "presets/git",
-    "notifiers",
+    "presets/slack", "presets/watch", "presets/github", "presets/gitlab",
+    "presets/git", "notifiers",
 )
 
 
-def _bare_separator_replaces(path: Path) -> list[str]:
+def _bare_separator_replaces(path: Path, label: "str | None" = None) -> list[str]:
+    """`label` is what a finding is reported under -- the file's path relative
+    to the repo root by default, NOT `path.name` alone. #2671/#2680/#2681's own
+    fixed sites share filenames across trees (`list.py`, `read.py`,
+    `status_since.py` each exist in bluesky/devto/hashnode/youtube), so a
+    basename-only label would collapse two distinct offending files at the
+    same line number into one displayed finding under `set()`-dedup --
+    correctly still failing the assertion, but under-reporting how many files
+    need fixing.
+    """
+    if label is None:
+        try:
+            label = str(path.relative_to(_ROOT))
+        except ValueError:
+            label = path.name
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found: list[str] = []
     for node in ast.walk(tree):
@@ -81,7 +97,7 @@ def _bare_separator_replaces(path: Path) -> list[str]:
         first = node.args[0]
         if (isinstance(first, ast.Constant) and isinstance(first.value, str)
                 and first.value in BARE_SEPARATOR_LITERALS):
-            found.append(f"{path.name}:{node.lineno} .replace({first.value!r}, ...)")
+            found.append(f"{label}:{node.lineno} .replace({first.value!r}, ...)")
     return sorted(set(found))
 
 
@@ -108,6 +124,19 @@ def test_no_preset_hand_rolls_the_bare_separator_replace_idiom() -> None:
         f"separator literals tracked "
         f"({', '.join(sorted(repr(s) for s in BARE_SEPARATOR_LITERALS))})."
     )
+    # A tree renamed or moved out from under `_SCANNED` (#965's own sibling
+    # scanner has the identical gap: it prints its file count too but never
+    # floors it) must not let this guard go quietly dark for that tree --
+    # `offenders == []` alone cannot tell "nothing to find" from "nothing was
+    # looked at". Per-tree, not just an aggregate floor, so one moved
+    # directory among nine is still named rather than lost in the total.
+    missing = [d for d in _SCANNED if not (_ROOT / d).exists()]
+    assert not missing, (
+        f"{len(missing)} of {len(_SCANNED)} scanned trees do not exist -- "
+        f"this guard has gone dark for them: {', '.join(missing)}")
+    assert scanned_files > 0, (
+        "0 files scanned across all of _SCANNED -- this guard is not "
+        "looking at anything")
     assert offenders == [], (
         "a .replace() call hand-rolls the bare CR/LF-only flattening idiom "
         "instead of calling _untrusted.flat() (or .scrub()), which also "
