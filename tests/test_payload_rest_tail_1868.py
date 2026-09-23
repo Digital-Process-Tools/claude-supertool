@@ -136,6 +136,61 @@ def test_marker_inside_a_plain_table_section_is_refused_loudly(tmp_path: Path) -
     assert "TOML parse error" in str(excinfo.value)
 
 
+def test_rest_tail_strips_trailing_newline_for_edit_new_field(tmp_path: Path) -> None:
+    # `new = @rest` on an `edit`-shaped payload: the heredoc's own closing
+    # newline is not part of the replacement text, and left in it turns
+    # `old = "x = 1"` / `new = @rest` / tail `x = 9` into a spurious blank
+    # line in the written file (#2668). `content` (paste/append) is the
+    # only field that keeps the tail byte for byte -- see the positive
+    # control above.
+    tail = "x = 9\n"
+    raw = 'old = "x = 1"\nnew = @rest\n' + tail
+    ref = _write(tmp_path, raw)
+    parsed = supertool._load_at_file(ref)
+    assert parsed["new"] == "x = 9"
+
+
+def test_rest_tail_strips_trailing_newline_for_grep_pattern_field(tmp_path: Path) -> None:
+    # `pattern = @rest`: an unstripped trailing newline turns an exact
+    # single-line pattern into one that matches every line (#2668).
+    tail = "y = 2\n"
+    raw = 'path = "."\npattern = @rest\n' + tail
+    ref = _write(tmp_path, raw)
+    parsed = supertool._load_at_file(ref)
+    assert parsed["pattern"] == "y = 2"
+
+
+def test_rest_tail_strips_only_one_trailing_newline(tmp_path: Path) -> None:
+    # A tail with a genuinely blank last line (two trailing newlines)
+    # keeps one of them -- only the heredoc's own closing newline is not
+    # part of the value, not a blank line the payload author wrote on
+    # purpose.
+    tail = "x = 9\n\n"
+    raw = 'old = "x = 1"\nnew = @rest\n' + tail
+    ref = _write(tmp_path, raw)
+    parsed = supertool._load_at_file(ref)
+    assert parsed["new"] == "x = 9\n"
+
+
+def test_rest_tail_without_trailing_newline_is_unaffected_by_stripping(
+        tmp_path: Path) -> None:
+    # A tail whose last line has no trailing newline at all (the payload
+    # file itself was not newline-terminated) has nothing to strip.
+    tail = "x = 9"
+    raw = 'old = "x = 1"\nnew = @rest\n' + tail
+    ref = _write(tmp_path, raw)
+    parsed = supertool._load_at_file(ref)
+    assert parsed["new"] == "x = 9"
+
+
+def test_rest_tail_strips_a_crlf_trailing_newline_too(tmp_path: Path) -> None:
+    tail = "x = 9\r\n"
+    raw = 'old = "x = 1"\nnew = @rest\n' + tail
+    ref = _write(tmp_path, raw)
+    parsed = supertool._load_at_file(ref)
+    assert parsed["new"] == "x = 9"
+
+
 def test_rest_tail_marker_tolerates_a_crlf_line_ending() -> None:
     # A marker line terminated \r\n (a CRLF-authored payload piped through
     # stdin, which does not get universal-newline translation the way a
