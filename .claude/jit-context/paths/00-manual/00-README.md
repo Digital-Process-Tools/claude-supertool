@@ -142,3 +142,17 @@ Curate pass over `trap.d/`, 2026-09-19.
   A specific, already-scoped wording fix to two comments, not a recurring agent-facing lesson --
   no path/tool trigger here would change what an agent does differently next time, only what two
   comments claim.
+
+Curate pass over `trap.d/`, 2026-09-23.
+
+- **1868.review-return-classifier-false-positive** -- another false positive in the `oss`
+  plugin's own `review_return.py` classifier, same class as `2375.review-return-backref-false-positive`
+  above and declined for the same reason: it is plugin-tooling behaviour, not something a
+  claude-supertool jit-context rule can change. Re-running the classifier against synthetic
+  messages shaped like the one described (a trailing "Findings: N" tally sentence after
+  properly-headed enumerated findings) reproduced neither `states-findings` nor
+  `referred-not-stated` -- the fragment's own raw message text was not preserved, and without it
+  the exact trigger (whether `_HEADER`'s `re.search` matched the trailing tally line rather than
+  a real header, or something else) cannot be confirmed from here. The fragment's own text already
+  names this as the right next step ("determine via `scripts/review_return.py`'s actual regex")
+  and the right owner (the `oss` plugin's own source, not this repo).
