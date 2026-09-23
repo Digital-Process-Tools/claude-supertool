@@ -1405,6 +1405,10 @@ RESET_EXEMPT_GLOBALS = (
     # _build_at_file_registry, which rebinds it (`[:] = dropped`) rather than
     # mutating in place, gated by the same _AT_FILE_REGISTRY_BUILT flag.
     "_AT_FILE_DROPPED_ROUTES",
+    # A fixed set literal ({"content"}), built at import and only ever read
+    # via `field.lower() in _AT_FILE_REST_RAW_FIELDS` -- same shape and same
+    # lifetime as _READ_OP_AT_FIELDS below (#2668).
+    "_AT_FILE_REST_RAW_FIELDS",
     "_AROUND_DIR_SKIP",
     # The entry-point shim and the sibling holding the code it stands for
     # (#1259). A fact about how this tool is laid out on disk, fixed at
