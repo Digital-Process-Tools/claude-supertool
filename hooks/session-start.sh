@@ -112,12 +112,14 @@ fi
 # reader looks for the right absence.
 #
 # 'ops:session' — signatures, with the names-only roster as a measured fallback
-# (#2028). Not 'ops-compact': `ops-compact` is ~19.77KB and `ops:full` ~89.55KB
-# (moved from ~89.11KB by #2643's gh-issue-comment edit=COMMENT_ID description,
-# itself moved from ~88.71KB by #2592's git-commit control-byte refusal, itself
-# moved from ~87.46KB by #1985's oss-tick preset description text, itself moved
-# from ~87.11KB by #1315's gl-pipeline/mcp_stop description and syntax text,
-# and from ~86.89KB by #2536/#2544's desktop-notification knob text) against a
+# (#2028). Not 'ops-compact': `ops-compact` is ~19.77KB and `ops:full` ~89.76KB
+# (moved from ~89.55KB by #2665's gh-issue-comment GET-before-PATCH
+# ownership-check description, itself moved from ~89.11KB by #2643's
+# gh-issue-comment edit=COMMENT_ID description, itself moved from ~88.71KB
+# by #2592's git-commit control-byte refusal, itself moved from ~87.46KB by
+# #1985's oss-tick preset description text, itself moved from ~87.11KB by
+# #1315's gl-pipeline/mcp_stop description and syntax text, and from
+# ~86.89KB by #2536/#2544's desktop-notification knob text) against a
 # 10,000-byte cap, so the compact listing was truncated every session
 # everything alphabetically after `grep` was hidden — the whole gh-*/git-*
 # families, radar, watch, read, paste, tree. It disclosed the truncation
