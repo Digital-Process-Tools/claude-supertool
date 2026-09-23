@@ -154,7 +154,7 @@ def test_trailing_paths_shape_with_real_paths_given_is_not_refused(
     (work / "a.py").write_text("mine\n", encoding="utf-8")
 
     out = _run(
-        ["git-commit:::fix: subject\n\nbody\nparts = [\"x\"]:::a.py"],
+        ["git-commit:::fix: subject\n\nbody\npaths = [\"x\"]:::a.py"],
         cwd=work)
 
     assert "ERROR" not in out, out

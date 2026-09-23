@@ -143,6 +143,20 @@ def test_leaked_key_hazard_flags_message_spacing_variants(subject: str) -> None:
     assert commit_mod._leaked_key_hazard(subject) is not None
 
 
+@pytest.mark.parametrize("subject", [
+    'paths=3 alternate routes computed for this branch merge',
+    'paths = 3 things changed here',
+])
+def test_leaked_key_hazard_requires_the_bracket_for_paths(subject: str) -> None:
+    """Self-review finding: the #2669 spacing tolerance must not drop the
+    `[` requirement for `paths` -- the payload field is always an array, so
+    a leaked `paths` line is never anything but `paths = [...]`. Without
+    this, an ordinary subject that merely starts with `paths=` or
+    `paths = ` followed by a number was refused too, which neither #2656
+    nor #2669 ever asked for."""
+    assert commit_mod._leaked_key_hazard(subject) is None
+
+
 # --- unit level: the refusal message itself --------------------------------
 
 

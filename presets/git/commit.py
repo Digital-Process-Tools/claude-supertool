@@ -277,8 +277,14 @@ def _control_byte_refusal(msg: str, index: int, display: str, kind: str):
 
 # #2669 -- tolerant of any TOML-legal spacing around the `=`, and of
 # leading indentation, not just the canonical `paths = [`/`message = ` the
-# #2656 guard originally matched byte-for-byte.
-_LEAKED_KEY_RE = re.compile(r"^\s*(paths|message)\s*=")
+# #2656 guard originally matched byte-for-byte. `paths` keeps its `\[`
+# requirement (the payload field is always an array, self-review finding:
+# without it, an ordinary subject like "paths=3 alternate routes computed"
+# was refused too -- never a leaked key, since a leaked `paths` line is
+# never anything but an array). `message` keeps no such requirement -- its
+# payload value can be any TOML type (a quoted string, a triple-quoted
+# block), so #2656's own canonical case never required a bracket either.
+_LEAKED_KEY_RE = re.compile(r"^\s*(?:(paths)\s*=\s*\[|(message)\s*=)")
 
 
 def _leaked_key_hazard(msg: str):
@@ -304,7 +310,9 @@ def _leaked_key_hazard(msg: str):
     m = _LEAKED_KEY_RE.match(first_line)
     if m is None:
         return None
-    return "paths = [" if m.group(1) == "paths" else "message = "
+    # group(1) is set only by the `paths` alternative, group(2) only by
+    # `message` -- exactly one is non-None on any match.
+    return "paths = [" if m.group(1) else "message = "
 
 
 # #2667 -- a `message = @rest` header ends the TOML header at that line
