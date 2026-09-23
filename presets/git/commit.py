@@ -302,7 +302,8 @@ def _leaked_key_hazard(msg: str):
 
 def _leaked_key_refusal(msg: str, marker: str):
     """MSG's subject holds a payload key that never split off (#2656)."""
-    return [
+    hint = st_hint("git-commit:@-")
+    lines = [
         "ERROR: the commit subject contains %r -- refused before anything "
         "was staged, nothing committed (#2656)." % (marker,),
         "  This is never a subject a caller means to commit -- it is a "
@@ -312,11 +313,24 @@ def _leaked_key_refusal(msg: str, marker: str):
         "whole)" % (msg,),
         "  Re-send the payload with the key on its own line, outside the "
         "message value:",
-        "    " + st_hint("git-commit:@-") + " <<'EOF'",
-        "    message = " + _TRIPLE + "<subject>" + _TRIPLE,
-        "    paths = [\"path/to/file\"]",
-        "    EOF",
     ]
+    if hint.startswith("("):
+        # `st_hint`'s third state -- no runnable supertool wrapper found at
+        # all -- is a prose sentence in parentheses, not an invocation.
+        # Appending `<<'EOF'` to it would print a parenthesized error
+        # sentence followed by a heredoc redirect: not valid shell, and a
+        # reader would be pointed at piping a TOML payload into what looks
+        # like a subshell wrapped around the error itself.
+        lines.append("  " + hint)
+        lines.append("  The payload shape, once a runnable supertool is "
+                      "found:")
+    else:
+        lines.append("    " + hint + " <<'EOF'")
+    lines.append("    message = " + _TRIPLE + "<subject>" + _TRIPLE)
+    lines.append("    paths = [\"path/to/file\"]")
+    if not hint.startswith("("):
+        lines.append("    EOF")
+    return lines
 
 
 def _no_verify_ambiguous_refusal():

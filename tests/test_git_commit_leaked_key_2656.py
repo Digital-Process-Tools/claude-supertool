@@ -118,6 +118,37 @@ def test_leaked_key_hazard_only_fires_at_the_front_of_the_subject() -> None:
         "docs: rename message = field to text = in payload spec") is None
 
 
+# --- unit level: the refusal message itself --------------------------------
+
+
+def test_leaked_key_refusal_appends_a_heredoc_marker_to_a_runnable_hint(
+        monkeypatch) -> None:
+    monkeypatch.setattr(commit_mod, "st_hint",
+                        lambda arg: "./supertool " + repr(arg))
+    lines = commit_mod._leaked_key_refusal("paths = [\"--all\"] x", "paths = [")
+    joined = "\n".join(lines)
+    assert "./supertool 'git-commit:@-' <<'EOF'" in joined
+    assert joined.count("EOF") == 2  # the opener and the closer
+
+
+def test_leaked_key_refusal_does_not_print_a_malformed_heredoc_when_no_supertool_is_found(
+        monkeypatch) -> None:
+    """Self-review finding: `st_hint`'s third state -- no runnable
+    `./supertool` at all -- is a prose sentence in parentheses, not an
+    invocation. Appending ` <<'EOF'` to it used to print a parenthesized
+    error sentence followed by a heredoc redirect, which is not valid
+    shell and would send a reader piping a TOML payload into what reads
+    like a subshell wrapped around the error itself."""
+    unrunnable = ("(no runnable supertool found in /nonexistent/dir -- "
+                  "the op is 'git-commit:@-')")
+    monkeypatch.setattr(commit_mod, "st_hint", lambda arg: unrunnable)
+    lines = commit_mod._leaked_key_refusal("paths = [\"--all\"] x", "paths = [")
+    joined = "\n".join(lines)
+    assert unrunnable in joined
+    assert "<<'EOF'" not in joined
+    assert "EOF" not in joined.replace(unrunnable, "")
+
+
 # --- end-to-end: the colon-CLI route ---------------------------------------
 
 
