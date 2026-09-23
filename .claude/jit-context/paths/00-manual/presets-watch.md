@@ -72,14 +72,18 @@ Three states: verified / `CONTRADICTED` (`RC_CONTRADICTED = 4`) / unable. Peer-p
 FreeBSD has `LOCAL_PEERCRED` but not `LOCAL_PEERPID` → lands in the **unable** arm too — Windows is
 not the only platform that can't answer.
 
+# `gh-branch` streak sentence -- run-list arm still conflates attribution
+
+`UNKNOWN_CONFIRM_STREAK`'s `else` arm (`poller.py:414-422`) still says "...empty run list, most
+recently" -- misattributing every poll in a mixed streak to the run list. Only the `if` arm was
+reworded cause-first (#2537, closed via #2548); this sentence defect is untracked.
+
 # `github-pr-feed/poller.py:pr_only()` -- one `except Exception` covers two different failures (#2560)
 
-`pr_only()`'s `except Exception: _pr_only_cache = []`, justified for a malformed
-`pr_exclude_events`, also swallows an `ImportError`, missing `radar.py`, or a `read_tiers()`
-decode failure -- none validated by radar -- silently and permanently dropping the event filter
-on every per-PR poller this feed forks. `terminal_coverage(spawned=True)` then reports the `[]`
-as a *known* filter rather than "could not tell". Narrow the `except`, or give it a distinct
-could-not-resolve state.
+`pr_only()`'s `except Exception: _pr_only_cache = []` (for a malformed `pr_exclude_events`) also
+swallows an `ImportError`, missing `radar.py`, or a `read_tiers()` decode failure -- none
+validated by radar -- silently dropping the event filter on every per-PR poller this feed forks.
+`terminal_coverage(spawned=True)` then reports the `[]` as *known* rather than "could not tell".
 
 # `gitlab-mr/poller.py:_fetch_approvals()` -- a confirm-tick fetch failure has no surfaced state (#2645)
 
