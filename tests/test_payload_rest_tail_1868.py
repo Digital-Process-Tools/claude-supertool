@@ -187,17 +187,34 @@ def test_rest_tail_without_trailing_newline_is_unaffected_by_stripping(
 
 
 def test_rest_tail_strips_a_crlf_trailing_newline_too(tmp_path: Path) -> None:
-    # `_write()` round-trips through `Path.write_text()` then `open(path)`,
-    # both of which do universal-newline translation -- a "\r\n" written
-    # this way is already plain "\n" by the time `_load_at_file` sees it,
-    # so this test alone cannot tell the `\r\n`-stripping branch in
-    # `_rest_tail_value` apart from an absent one (oss:auditor finding,
-    # #2668 self-review). Kept as the end-to-end shape; the two tests below
-    # are what actually pin the CRLF branch.
+    # `_load_at_file`'s own `open(resolved, "r", encoding="utf-8")` call
+    # (no `newline=` argument) reads in universal-newline mode, which
+    # collapses ANY "\r\n" in the file to plain "\n" before `raw` is ever
+    # built -- deterministically, on every platform, since this is
+    # CPython io behaviour and not OS-conditioned. So this test alone
+    # cannot tell the `\r\n`-stripping branch in `_rest_tail_value` apart
+    # from an absent one, on any OS (oss:auditor finding, #2668
+    # self-review). Kept as the end-to-end shape; the two tests below are
+    # what actually pin the CRLF branch.
+    #
+    # `_write()` is deliberately NOT used here: it writes through
+    # `Path.write_text()` with its default `newline=None`, which -- on
+    # the *write* side -- translates every "\n" in the string to
+    # `os.linesep` before it reaches disk. On POSIX `os.linesep` is "\n",
+    # so that translation is a no-op and the intended "x = 9\r\n" lands on
+    # disk unchanged. On Windows `os.linesep` is "\r\n", so the single
+    # "\n" inside the "\r\n" tail this test builds is rewritten to "\r\n",
+    # producing "x = 9\r\r\n" on disk -- a payload this test never meant
+    # to write -- and CI caught the resulting platform-only failure
+    # (windows-latest/3.12, #2668 review). `newline=""` on the write call
+    # below disables that write-side translation, so the on-disk bytes
+    # are exactly the string given, on every platform; the read-side
+    # collapse described above then behaves identically everywhere too.
     tail = "x = 9\r\n"
     raw = 'old = "x = 1"\nnew = @rest\n' + tail
-    ref = _write(tmp_path, raw)
-    parsed = supertool._load_at_file(ref)
+    p = tmp_path / "p.toml"
+    p.write_text(raw, newline="")
+    parsed = supertool._load_at_file("@" + str(p))
     assert parsed["new"] == "x = 9"
 
 
