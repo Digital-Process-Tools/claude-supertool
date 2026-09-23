@@ -48,10 +48,15 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _run(args: list, cwd: Path, input_bytes: bytes = None) -> str:
+    # No `env=` at all -- the child inherits this process's environment,
+    # which `tests/_pathenv_scan.py` (#1151) reads as the always-safe case.
+    # An explicit `env=None` is a DIFFERENT AST shape to that scanner (a
+    # literal it cannot classify, not "no env kwarg"), and was flagged
+    # `unresolved` on CI for exactly that reason.
     proc = subprocess.run(
         [sys.executable, str(SUPERTOOL), *args],
         capture_output=True, timeout=120, cwd=str(cwd),
-        env=None, input=input_bytes,
+        input=input_bytes,
     )
     out = proc.stdout + proc.stderr
     return out.decode("utf-8", errors="replace")
