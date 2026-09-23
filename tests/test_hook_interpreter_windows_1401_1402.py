@@ -62,6 +62,7 @@ from typing import Dict, List, Optional, Sequence
 
 import pytest
 
+from _adapter_budget import wrapper_budget
 from _toolchain_gate import posix_ci_promised, require_or_skip
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -254,7 +255,7 @@ def _blind(directory: Path, name: str) -> Path:
 
 
 def _run_wrapper(command: str, cwd: Path, extra_path: Path,
-                 timeout: int = 120) -> subprocess.CompletedProcess:
+                 timeout: int | None = None) -> subprocess.CompletedProcess:
     payload = json.dumps({"tool_name": "Bash",
                           "tool_input": {"command": command}})
     env = dict(os.environ)
@@ -267,7 +268,7 @@ def _run_wrapper(command: str, cwd: Path, extra_path: Path,
     return subprocess.run(
         [_BASH, str(_WRAPPER)], input=payload, capture_output=True,
         text=True, encoding="utf-8", errors="replace", cwd=str(cwd),
-        env=env, timeout=timeout)
+        env=env, timeout=timeout if timeout is not None else wrapper_budget())
 
 
 def _envelope(proc: subprocess.CompletedProcess) -> Dict[str, object]:

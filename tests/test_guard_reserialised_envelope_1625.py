@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 
 import _guard_wire
+from _adapter_budget import wrapper_budget
 from test_guard_envelope_serialisation_1613 import _toolbox, _venv
 from test_guard_interpreter_ladder_1390 import _BASH, needs_wrapper
 
@@ -99,7 +100,7 @@ def _run(tmp_path: Path, venv: Path) -> subprocess.CompletedProcess:
     return subprocess.run([_BASH, str(_WRAPPER)], input=payload,
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", cwd=str(tmp_path), env=env,
-                          timeout=120)
+                          timeout=wrapper_budget())
 
 
 def _hook(proc: subprocess.CompletedProcess) -> dict:
