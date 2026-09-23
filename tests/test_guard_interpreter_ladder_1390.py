@@ -35,6 +35,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import pytest
 
+from _adapter_budget import wrapper_budget
 from _toolchain_gate import posix_ci_promised, require_or_skip
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -142,7 +143,7 @@ def _ladder_answers() -> Tuple[bool, str]:
         proc = subprocess.run(
             [_BASH, str(_WRAPPER)], input=payload, capture_output=True,
             text=True, encoding="utf-8", errors="replace", env=env,
-            timeout=120)
+            timeout=wrapper_budget())
     except (OSError, subprocess.SubprocessError) as exc:
         return False, "the wrapper could not be spawned: " + str(exc)
     hook, why = _envelope_or_reason(proc.returncode, proc.stdout)
@@ -256,7 +257,7 @@ def _run_wrapper(command: str, cwd: Path,
     return subprocess.run(
         [_BASH, str(_WRAPPER)], input=payload, capture_output=True,
         text=True, encoding="utf-8", errors="replace", cwd=str(cwd),
-        env=env, timeout=120)
+        env=env, timeout=wrapper_budget())
 
 
 @pytest.fixture

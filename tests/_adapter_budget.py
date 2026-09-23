@@ -143,3 +143,33 @@ def adapter_budget(adapter: str | Path, inner: int | None = None) -> int:
         return forced
     base = inner_budget(adapter) if inner is None else inner
     return (base + SPAWN_HEADROOM_S) * platform_factor()
+
+
+# Same shape as ENV_OVERRIDE above, one spawn family over (#2687).
+WRAPPER_ENV_OVERRIDE = "SUPERTOOL_TEST_WRAPPER_TIMEOUT"
+
+
+def _wrapper_override() -> int | None:
+    try:
+        val = int(os.environ.get(WRAPPER_ENV_OVERRIDE, ""))
+    except (TypeError, ValueError):
+        return None
+    return val if val > 0 else None
+
+
+def wrapper_budget(base: int = 120) -> int:
+    """Seconds a test may wait on `hooks/pre-bash-guard.sh` under `bash.EXE`.
+
+    #2687: `test_the_wrapper_denies_a_replaced_command` timed out at exactly
+    120s on `windows-latest` while it was already the slowest test in the
+    suite on a run that did not hit the timeout -- the margin was thin even
+    on an ordinary run. Unlike an adapter under `validators/`, the bash
+    wrapper declares no internal `timeout=` of its own for `inner_budget()`
+    to read, so `base` is the whole outer number rather than a derived one:
+    unchanged on POSIX, scaled by the same Windows multiplier
+    `adapter_budget` uses, from the same #658 evidence.
+    """
+    forced = _wrapper_override()
+    if forced is not None:
+        return forced
+    return base * platform_factor()
