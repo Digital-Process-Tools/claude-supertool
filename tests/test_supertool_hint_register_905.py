@@ -159,9 +159,11 @@ REGISTER: dict[str, str] = {
         "REMEDY-DEBT - the payload-fields heredoc remedy.",
     "presets/git/commit.py::_payload_remedy":
         "REMEDY-DEBT - the generic payload remedy builder.",
-    "presets/git/commit.py::main":
-        "REMEDY-DEBT - the post-commit `Next:` line, two invocations on one "
-        "line (git-push and mr).",
+    "presets/git/commit.py::_push_hint_when_no_open_mr":
+        "REMEDY-DEBT - the post-commit `Next:` hint's base remedy string, "
+        "two invocations on one line (git-push and mr); moved here from "
+        "`main` (#2674) so the hint can fall back to query_last_mr_result "
+        "and name a dead MR instead of always printing this line.",
     "presets/git/diverge.py::main":
         "REMEDY-DEBT - the `Next:` merge suggestion.",
     "presets/git/merge.py::main":

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from unittest import mock
 
 
 PRESET = Path(__file__).parent.parent / "presets" / "git" / "commit.py"
@@ -134,6 +133,33 @@ def test_next_hint_names_a_merged_mr_instead_of_a_plain_push(monkeypatch, capsys
     assert rc == 0
     assert "35214" in out, out
     assert "merged" in out, out
+
+
+def test_push_hint_missing_state_is_not_read_as_closed(monkeypatch) -> None:
+    """The same #2673 guard applied to commit.py's own hint (#2674): a
+    tracker row with no `state` key must not silently read as `closed`."""
+    monkeypatch.setattr(commit, "query_last_mr_result",
+                         lambda branch: _common.MrLookup({
+                             "source": "github", "iid": 9001, "target": "main",
+                             # no "state" key at all
+                             "merged_at": None, "closed_at": None,
+                         }))
+    hint = commit._push_hint_when_no_open_mr("some-branch")
+    assert "closed" not in hint, hint
+    assert "unknown" in hint, hint
+    assert "9001" in hint, hint
+
+
+def test_push_hint_unanswered_lookup_says_unknown_not_new_branch(monkeypatch) -> None:
+    """The second lookup can fail too -- and when it does, this must NOT
+    collapse into the plain new-branch hint, which is a positive claim the
+    lookup never earned."""
+    monkeypatch.setattr(commit, "query_last_mr_result",
+                         lambda branch: _common.MrLookup(
+                             None, "gh timed out after 5s"))
+    hint = commit._push_hint_when_no_open_mr("some-branch")
+    assert "UNKNOWN" in hint, hint
+    assert "gh timed out after 5s" in hint, hint
 
 
 def test_no_edit_during_merge_uses_prepared_message(monkeypatch, capsys, tmp_path) -> None:

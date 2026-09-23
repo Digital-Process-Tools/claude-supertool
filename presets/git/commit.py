@@ -110,7 +110,8 @@ def _push_hint_when_no_open_mr(branch: str) -> str:
     base = "./supertool 'git-push' (or ./supertool 'mr:.max/mr.md|TIME|LABELS' for push+MR)"
     last = query_last_mr_result(branch)
     if not last.answered:
-        return f"{base} -- whether this branch ever had a request is UNKNOWN ({last.reason})"
+        reason = _untrusted.flat(str(last.reason))
+        return f"{base} -- whether this branch ever had a request is UNKNOWN ({reason})"
     mr = last.mr
     if not mr:
         return base
@@ -1698,7 +1699,11 @@ def main() -> int:
             if existing:
                 print(f"Next: git push (updates {existing})")
             else:
-                print(f"Next: {_push_hint_when_no_open_mr(branch)}")
+                # branch is `_git(...).stdout.strip()` (#1475's own taint
+                # model) -- flat() is a no-op on any name git itself would
+                # accept (no control chars, no newline) and keeps this call
+                # from being a new raw-stream reach at the print above it.
+                print(f"Next: {_push_hint_when_no_open_mr(_untrusted.flat(branch))}")
         else:
             print("Next: git push -u origin HEAD (no upstream set)")
         return 0
