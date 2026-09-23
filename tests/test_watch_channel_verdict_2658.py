@@ -42,7 +42,13 @@ for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets"), str(REPO / 
         sys.path.insert(0, _dir)
 
 import channel  # noqa: E402
+import _symlink  # noqa: E402
 from _changelog_findable import assert_change_is_findable  # noqa: E402
+
+needs_nofollow = pytest.mark.skipif(
+    not hasattr(os, "O_NOFOLLOW"),
+    reason="this platform has no O_NOFOLLOW, so the guard cannot be enforced",
+)
 
 CONSUMER_ARGV = "bun /Users/x/notifiers/claude-channel/channel.ts"
 SESSION_PID = 4242
@@ -220,6 +226,31 @@ def test_control_a_refusal_marker_with_a_configured_rival_stays_a_finding(
     assert report.splitlines()[0] == "channel: CANNOT DETERMINE", report
     assert "pid 90927 lost this socket" in report, report
     assert "accounted for below" not in report, report
+
+
+@needs_nofollow
+def test_an_unreadable_refusal_marker_is_not_laundered_into_probe_residue(
+        actually_forwarded, monkeypatch):
+    """Self-review finding: `sub.probe_residue` only says `standing is False`
+    -- it never looked at the marker itself, because `subscription()`'s own
+    collision gates are skipped entirely on that branch. An unreadable marker
+    (the same-uid symlink shape #1184/#1187 guard against) must keep its own
+    warning live rather than being swapped for the reassuring probe-residue
+    text; folding the two together would let that attack hide behind a report
+    that reads as harmless."""
+    _process_table(monkeypatch)
+
+    def answer(name, _budget=None):
+        if name == channel.CONSUMER_SERVER:
+            return False, ""
+        return True, ""
+    monkeypatch.setattr(channel, "_configured", answer)
+    os.symlink(str(Path(actually_forwarded).parent / "nowhere.json"),
+               f"{actually_forwarded}{channel.REFUSAL_SUFFIX}")
+    _, report = channel.health(actually_forwarded)
+    assert "symlink" in report, report
+    assert "accounted for below" not in report, report
+    assert "not printed as a live collision finding" not in report.lower(), report
 
 
 # --- documentation -----------------------------------------------------------

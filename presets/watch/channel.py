@@ -9,7 +9,7 @@ does not pretend otherwise.** `channel.ts` reaches the session through
 `mcp.notification()` — a JSON-RPC notification, so no id, no response and
 nothing to await — and it never writes back to the producer connection either.
 No ack exists to read. That is a finding, not a gap in this implementation, and
-it is why the answer here has five states rather than two:
+it is why the answer here has six states rather than two:
 
     NOT DELIVERING   a definite negative. Nothing is listening on the socket, so
                      every event a poller emits right now is lost at the source.
@@ -2066,8 +2066,19 @@ def health(path: str) -> tuple[int, str]:
     # own probe residue rather than a rival session's collision. Once it has
     # said so, the `refused:` line built into `head` above must not go on
     # disagreeing with it in the same report.
+    #
+    # Only when the marker was actually READ, though (self-review, #2658): an
+    # unreadable marker -- the same-uid-symlink shape #1184/#1187 already
+    # guard against -- is a different finding than "no standing server is
+    # configured", and relabelling it here would launder that warning into
+    # this report's reassuring text instead of leaving it live. `standing is
+    # False` never even looked at the marker (`subscription()`'s collision
+    # gates only run when `standing is not False`), so `sub.probe_residue`
+    # alone cannot tell the two apart -- this file has to ask again.
     if sub.probe_residue:
-        head = _drop_refusal_as_probe_residue(head)
+        refusal_record, _refusal_why = read_refusal(path)
+        if refusal_record is not None:
+            head = _drop_refusal_as_probe_residue(head)
     counters = [
         f"  counters : {_num(_counter(record, 'lines_read'))} lines read, "
         f"{_num(_counter(record, 'forwarded'))} forwarded, "
@@ -2415,7 +2426,7 @@ def stranded_report(path: str) -> tuple[int, str]:
     if len(rows) > _ROW_CAP:
         lines.append(f">   ... and {len(rows) - _ROW_CAP} more")
     lines.append(
-        "> `channel:health` says which of its five states this is; "
+        "> `channel:health` says which of its six states this is; "
         "`channel:probe` writes one synthetic event and reports what took it. "
         "Nothing here is queued for replay -- an event emitted with no listener "
         "is gone (#2478).")

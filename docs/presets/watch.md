@@ -2494,7 +2494,7 @@ ack to read, at either end. **Whether a session is *subscribed* to the channel
 is a different question, and half of it is readable from outside** — see the
 row below and
 [#1543](https://github.com/Digital-Process-Tools/claude-supertool/issues/1543).
-So the answer has five states:
+So the answer has six states:
 
 | State | Exit | What is actually known |
 |---|---|---|
@@ -2503,6 +2503,7 @@ So the answer has five states:
 | `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number, or a health file that is a symlink and was not followed. This is the state the old tooling reported as green. It now names the process holding the socket — see below |
 | `CONTRADICTED` | 4 | The process holding the socket is not the one the health file names ([#1192](https://github.com/Digital-Process-Tools/claude-supertool/issues/1192)). A finding, not a degraded read — a forged file, or a stale one left beside a legitimate consumer |
 | `BOUND, NOT SUBSCRIBED` | 5 | A consumer is bound, verified and counting, and **no session is subscribed to its channel** ([#1543](https://github.com/Digital-Process-Tools/claude-supertool/issues/1543)): the events it reads are handed to a transport nobody is listening on, and discarded |
+| `BOUND, UNPROVEN` | 8 | A consumer is bound, verified, counting **and** subscribed, but `forwarded == 0` with no `last_forwarded` — nothing has ever moved through it ([#2658](https://github.com/Digital-Process-Tools/claude-supertool/issues/2658)). Everything above renders identically to a dead channel under `FORWARDING`, which this word is reserved for once a channel has demonstrated delivery at least once |
 
 **`BOUND, NOT SUBSCRIBED` is the state every other row above renders as a quiet
 morning.** On 2026-08-13 the channel over this clone reported `FORWARDING` with
@@ -2754,15 +2755,17 @@ costume of a measurement, which is the defect this op exists to remove rather
 than relocate.
 
 **Branch on the report's first line, not on the exit code.** The distinct codes
-0/1/3/4/5 survive only when `presets/watch/channel.py` is run directly; the
+0/1/3/4/5/8 survive only when `presets/watch/channel.py` is run directly; the
 supertool wrapper collapses every non-zero to 1. The first line is
 `channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` / `CONTRADICTED` /
-`BOUND, NOT SUBSCRIBED` and is what the tests key on. (`5` and the fifth spelling
-joined in [#1543](https://github.com/Digital-Process-Tools/claude-supertool/issues/1543)
+`BOUND, NOT SUBSCRIBED` / `BOUND, UNPROVEN` and is what the tests key on. (`5`
+and the fifth spelling joined in
+[#1543](https://github.com/Digital-Process-Tools/claude-supertool/issues/1543)
 and this paragraph did not follow them until
 [#1593](https://github.com/Digital-Process-Tools/claude-supertool/issues/1593) —
 a caller keying on the list as written would have treated the state the whole
-row above exists for as an unrecognised one.)
+row above exists for as an unrecognised one. `8` and the sixth spelling joined
+in [#2658](https://github.com/Digital-Process-Tools/claude-supertool/issues/2658).)
 
 **Why the heartbeat exists.** An idle consumer and a wedged one publish the same
 numbers — the counters only distinguish them if the *stamp* moves. `channel.ts`
@@ -2924,7 +2927,7 @@ consumer is bound, so events are being LOST, not queued.
 > Each watcher below recorded that its own last send found nobody listening.
 These are the pollers' own words, not a probe:
 >   github-pr 2477 -- last emit 2026-09-09T14:51:41Z
-> `channel:health` says which of its five states this is; `channel:probe`
+> `channel:health` says which of its six states this is; `channel:probe`
 writes one synthetic event and reports what took it. Nothing here is queued
 for replay -- an event emitted with no listener is gone (#2478).
 ```
