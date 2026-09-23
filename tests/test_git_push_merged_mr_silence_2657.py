@@ -298,6 +298,24 @@ def test_dead_mr_lines_says_new_branch_when_nothing_ever_existed() -> None:
     assert "nothing tracking it" in full, full
 
 
+def test_dead_mr_lines_missing_state_is_not_read_as_closed_2673() -> None:
+    """A tracker row with no `state` key must not render as an ordinary
+    `closed` MR (#2673) -- a missing field is not an answer."""
+    lookup = common.MrLookup(None)
+    with mock.patch.object(push, "query_last_mr_result",
+                           return_value=common.MrLookup({
+                               "source": "github", "iid": 9001,
+                               "target": "master",
+                               # no "state" key at all
+                               "merged_at": None, "closed_at": None,
+                           })):
+        lines = push._dead_mr_lines(lookup, "some-branch")
+
+    full = "\n".join(lines)
+    assert "closed" not in full, full
+    assert "unknown" in full, full
+
+
 def test_dead_mr_lines_degrades_to_unknown_not_a_false_new_branch_claim() -> None:
     """The second lookup can fail too -- and when it does, this must NOT
     collapse into "new branch, nothing tracking it", which is a positive

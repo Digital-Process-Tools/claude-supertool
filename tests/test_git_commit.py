@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest import mock
 
 
 PRESET = Path(__file__).parent.parent / "presets" / "git" / "commit.py"
@@ -10,6 +11,12 @@ _spec = importlib.util.spec_from_file_location("git_commit", PRESET)
 assert _spec is not None and _spec.loader is not None
 commit = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(commit)
+
+_COMMON = Path(__file__).parent.parent / "presets" / "git" / "_git_common.py"
+_cspec = importlib.util.spec_from_file_location("_git_common_2674", _COMMON)
+assert _cspec is not None and _cspec.loader is not None
+_common = importlib.util.module_from_spec(_cspec)
+_cspec.loader.exec_module(_common)
 
 
 def test_first_error_line_picks_error_keyword() -> None:
@@ -89,6 +96,44 @@ def test_next_hint_recommends_git_push_op(monkeypatch, capsys, tmp_path) -> None
     assert rc == 0
     assert "Next: ./supertool 'git-push'" in out
     assert "Next: git push (" not in out
+
+
+def test_next_hint_names_a_merged_mr_instead_of_a_plain_push(monkeypatch, capsys, tmp_path) -> None:
+    """When the branch has no OPEN MR because its request was already merged
+    or closed, the hint must say so (#2674) instead of silently recommending
+    a plain push into a dead request -- the same disclosure #2657 gave
+    git-push's own receipt."""
+    import subprocess
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
+    monkeypatch.chdir(work)
+    subprocess.run(["git", "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "config", "user.name", "t"], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], check=True)
+    (work / "a.txt").write_text("hi\n")
+    subprocess.run(["git", "add", "a.txt"], check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], check=True)
+
+    (work / "a.txt").write_text("hi\nmore\n")
+    subprocess.run(["git", "add", "a.txt"], check=True)
+
+    monkeypatch.setattr(commit, "_existing_mr_for_branch", lambda branch: None)
+    monkeypatch.setattr(commit, "query_last_mr_result",
+                         lambda branch: _common.MrLookup({
+                             "source": "github", "iid": 35214, "target": "main",
+                             "state": "merged", "merged_at": "2026-09-21T10:00:00Z",
+                             "closed_at": "2026-09-21T10:00:00Z",
+                         }))
+    monkeypatch.setattr(commit.sys, "argv", ["commit.py", "second"])
+
+    rc = commit.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "35214" in out, out
+    assert "merged" in out, out
 
 
 def test_no_edit_during_merge_uses_prepared_message(monkeypatch, capsys, tmp_path) -> None:
