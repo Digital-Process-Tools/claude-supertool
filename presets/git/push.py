@@ -1291,9 +1291,13 @@ def _dead_mr_lines(lookup: MrLookup, branch: str) -> list[str]:
     if not mr:
         return ["MR: none -- new branch, nothing tracking it"]
     target = _untrusted.flat(str(mr.get("target", "?")))
-    state = (mr.get("state") or "closed").lower()
+    raw_state = mr.get("state")
+    state = raw_state.lower() if isinstance(raw_state, str) else None
     when = mr.get("merged_at") or mr.get("closed_at")
-    when_clause = f"{state} {when.split('T')[0]}" if when else state
+    if state is None:
+        when_clause = "state unknown (the tracker row carried none)"
+    else:
+        when_clause = f"{state} {when.split('T')[0]}" if when else state
     sigil = "!" if mr["source"] == "gitlab" else "#"
     return [
         "MR: none open for this branch",

@@ -66,6 +66,7 @@ from _git_common import (  # noqa: E402
     _first_error_line,
     _git,
     probe_repo,
+    query_last_mr_result,
     query_open_mr,
     relayed_block,
     repo_label,
@@ -93,6 +94,33 @@ def _existing_mr_for_branch(branch: str) -> str:
         return ""
     prefix = "!" if mr["source"] == "gitlab" else "#"
     return f"{prefix}{mr['iid']}"
+
+
+def _push_hint_when_no_open_mr(branch: str) -> str:
+    """What to print after 'Next:' when the OPEN lookup found nothing for
+    `branch` (#2674) -- distinguishes a branch that never had a request from
+    one whose request was already merged or closed, instead of sending the
+    caller to push blind into a dead request and finding out only from
+    git-push's own #2657 disclosure.
+
+    Issues a second CLI call, only reached when the open lookup already found
+    nothing -- the common case (an open MR exists) never gets here, mirroring
+    push.py's `_dead_mr_lines` posture.
+    """
+    base = "./supertool 'git-push' (or ./supertool 'mr:.max/mr.md|TIME|LABELS' for push+MR)"
+    last = query_last_mr_result(branch)
+    if not last.answered:
+        reason = _untrusted.flat(str(last.reason))
+        return f"{base} -- whether this branch ever had a request is UNKNOWN ({reason})"
+    mr = last.mr
+    if not mr:
+        return base
+    raw_state = mr.get("state")
+    state = (raw_state.lower() if isinstance(raw_state, str)
+             else "state unknown (the tracker row carried none)")
+    sigil = "!" if mr["source"] == "gitlab" else "#"
+    return (f"{base} -- {sigil}{mr['iid']} ({state}) was this branch's "
+            f"request; these commits are not on it")
 
 
 def _head_sha() -> str:
@@ -1671,7 +1699,11 @@ def main() -> int:
             if existing:
                 print(f"Next: git push (updates {existing})")
             else:
-                print("Next: ./supertool 'git-push' (or ./supertool 'mr:.max/mr.md|TIME|LABELS' for push+MR)")
+                # branch is `_git(...).stdout.strip()` (#1475's own taint
+                # model) -- flat() is a no-op on any name git itself would
+                # accept (no control chars, no newline) and keeps this call
+                # from being a new raw-stream reach at the print above it.
+                print(f"Next: {_push_hint_when_no_open_mr(_untrusted.flat(branch))}")
         else:
             print("Next: git push -u origin HEAD (no upstream set)")
         return 0
