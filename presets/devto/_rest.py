@@ -20,6 +20,7 @@ from _http import (  # noqa: E402
     read_capped,
     urlopen,
 )
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 BASE = "https://dev.to/api"
 
@@ -51,10 +52,10 @@ def _format_http_error(e: urllib.error.HTTPError, *secrets: str) -> str:
     if e.code == 404:
         return "404 Not Found — article ID/slug invalid"
     if e.code == 422:
-        return f"422 Unprocessable — bad request shape: {body[:200]}"
+        return f"422 Unprocessable — bad request shape: {flat(body)[:200]}"
     if e.code == 429:
         return "429 Rate Limited — Dev.to allows 1 post per 5 min on new accounts; wait and retry"
-    short = body[:200].replace("\n", " ")
+    short = flat(body)[:200]
     return f"HTTP {e.code} {e.reason}: {short}"
 
 
