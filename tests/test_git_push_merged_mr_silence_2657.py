@@ -29,14 +29,39 @@ _COMMON = Path(__file__).parent.parent / "presets" / "git" / "_git_common.py"
 _cspec = importlib.util.spec_from_file_location("_git_common_2657", _COMMON)
 assert _cspec is not None and _cspec.loader is not None
 common = importlib.util.module_from_spec(_cspec)
+# Registered under the SHARED "_git_common" key only long enough for push.py's
+# own `from _git_common import ...` below to bind to THIS isolated instance --
+# never left there. A prior version of this setup left the shared key pointing
+# at `common` for the rest of the test session: any test file collected AFTER
+# this one (alphabetically, "test_git_push_merged_mr_silence_2657.py" sorts
+# after "test_git_push.py") then found `sys.modules["_git_common"]` rebound to
+# THIS module, not the one `test_git_push.py`'s own `push` had already bound
+# its `st_hint`/`install_dir` imports to at ITS OWN collection time -- so a
+# `monkeypatch.setattr(sys.modules["_git_common"], "install_dir", ...)` in
+# that other file's tests silently patched an object no production call path
+# reads, and `test_advisories_mergeability_warn` asserted against the REAL,
+# unpatched `install_dir()` instead (#2664 CI red, all 12 legs, not
+# reproducible from this file alone or from test_git_push.py alone -- only
+# from the combination, in collection order). Saving and restoring the prior
+# value the moment this file's own setup is done is the same isolation this
+# module already registers a private module name for (`_git_common_2657`);
+# this closes the one place that intent leaked past this file's own scope.
+_PRIOR_GIT_COMMON = sys.modules.get("_git_common")
 sys.modules["_git_common"] = common
-_cspec.loader.exec_module(common)
+sys.modules["_git_common_2657"] = common
+try:
+    _cspec.loader.exec_module(common)
 
-PRESET = Path(__file__).parent.parent / "presets" / "git" / "push.py"
-_spec = importlib.util.spec_from_file_location("git_push_2657", PRESET)
-assert _spec is not None and _spec.loader is not None
-push = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(push)
+    PRESET = Path(__file__).parent.parent / "presets" / "git" / "push.py"
+    _spec = importlib.util.spec_from_file_location("git_push_2657", PRESET)
+    assert _spec is not None and _spec.loader is not None
+    push = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(push)
+finally:
+    if _PRIOR_GIT_COMMON is not None:
+        sys.modules["_git_common"] = _PRIOR_GIT_COMMON
+    else:
+        sys.modules.pop("_git_common", None)
 
 
 def _proc(returncode: int = 0, stdout: str = "", stderr: str = ""):
