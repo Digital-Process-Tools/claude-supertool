@@ -183,7 +183,7 @@ def main(arg: str) -> None:
     for item in videos:
         snip = item.get("snippet") or {}
         vid = (snip.get("resourceId") or {}).get("videoId")
-        title = (snip.get("title") or "?").replace("\n", " ")
+        title = flat(snip.get("title") or "?")
         if not vid:
             continue
         try:

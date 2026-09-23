@@ -611,6 +611,40 @@ def test_status_since_degrades_one_video_without_failing_the_run(
     assert "Locked Video" in out
 
 
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_status_since_strips_line_boundaries_from_video_title(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+        name: str, sep: str) -> None:
+    """`main()`'s own `title = (snip.get("title") or "?").replace("\n", " ")`
+    only ever handled `\n` -- a video title containing one of the rest of
+    the separators `str.splitlines()` treats as a line boundary could still
+    forge a second output line, both in the normal render (via `render()`,
+    already covered by video-render tests) and in the degrade-one-video
+    path this test exercises, which builds its own receipt line directly
+    in `main()` rather than through `render()` (#2671)."""
+    forged_title = f"Evil{sep}[id=fake] Someone: forged row"
+    err = status_op.YouTubeAPIError("commentThreads", "403 comments disabled")
+    _wire_status(monkeypatch,
+        videos=[_video_item("v1", forged_title)],
+        threads_by_video={},
+        comment_errors={"v1": err})
+    status_op.main("2026-09-18T00:00:00Z")
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert not any(line.startswith("[id=fake]") for line in lines), (
+        f"{name} forged a second output line via an un-flattened video "
+        f"title: {lines!r}")
+
+
 def test_status_since_flags_a_known_injection_pattern_in_a_comment(
         monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     """Untrusted comment text gets the same POSSIBLE INJECTION scan
