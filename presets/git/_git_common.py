@@ -1310,3 +1310,101 @@ def query_open_mr(branch: str) -> Optional[dict]:
     call `query_open_mr_result` and disclose the unknown.
     """
     return query_open_mr_result(branch).mr
+
+def _glab_last_fields(row: dict) -> dict:
+    """Field extractor for query_last_mr_result's glab probe (#2657).
+
+    Not _glab_fields: this row can be merged or closed, so it also carries
+    state and merged_at/closed_at, which an OPEN-only lookup has no use for
+    and which _glab_fields therefore never reads.
+    """
+    return {
+        "source": "gitlab",
+        "iid": row.get("iid") or row.get("number") or "?",
+        "target": row.get("target_branch", "?"),
+        "state": row.get("state"),
+        "merged_at": row.get("merged_at"),
+        "closed_at": row.get("closed_at"),
+    }
+
+
+def _gh_last_fields(row: dict) -> dict:
+    """Field extractor for query_last_mr_result's gh probe (#2657).
+
+    gh answers state upper-cased (OPEN/CLOSED/MERGED, confirmed against a
+    live call, not assumed) -- lower-cased here so a caller comparing it
+    against glab's own lower-case opened/closed/merged needs one
+    convention, not two.
+    """
+    state = row.get("state")
+    return {
+        "source": "github",
+        "iid": row.get("number", "?"),
+        "target": row.get("baseRefName", "?"),
+        "state": state.lower() if isinstance(state, str) else state,
+        "merged_at": row.get("mergedAt"),
+        "closed_at": row.get("closedAt"),
+    }
+
+
+def query_last_mr_result(branch: str) -> MrLookup:
+    """The most recent MR/PR for branch, whatever its state (#2657).
+
+    git-push calls this only when query_open_mr_result found no OPEN request
+    for the branch: an open request is what that lookup already answers, and
+    asking this on every push would double the CLI round-trips for no new
+    information on the common path (an open MR exists). This exists to
+    answer the one question that matters once there is no open request: was
+    there ever one, and did it die under this branch's feet -- a merged MR
+    is a dead end for further pushes that looks EXACTLY like a brand new
+    branch from the receipt alone, which is the whole of #2657.
+
+    Same three-state MrLookup shape and the same posture as
+    query_open_mr_result: a tracker that cannot be reached degrades to a
+    stated unknown, never a block on the push that already landed.
+
+    --all, not --state, on the glab arm -- glab has no --state flag (see
+    query_open_mr_result's own docstring and
+    test_the_glab_call_uses_flags_this_glab_actually_has, which pins that
+    for the OPEN lookup); --all is glab's own documented opt-in to every
+    state (confirmed against `glab mr list --help`, glab 1.115.0), and
+    --order updated_at --sort desc --per-page 1 puts this branch's most
+    recently touched request first regardless of which state it is in. gh's
+    --state all is a real, documented flag (gh pr list --help) and needs no
+    such workaround.
+    """
+    if not branch or branch == "HEAD":
+        return MrLookup(None)
+    could_host, repo_why = _remotes_could_host_a_request()
+    if could_host is False:
+        return MrLookup(None)
+    probes = []
+    glab_bin = which_excluding_cwd("glab")
+    if glab_bin:
+        probes.append((
+            [glab_bin, "mr", "list", "--source-branch", branch, "--all",
+             "--order", "updated_at", "--sort", "desc", "--per-page", "1",
+             "--output", "json"], _glab_last_fields))
+    gh_bin = which_excluding_cwd("gh")
+    if gh_bin:
+        probes.append((
+            [gh_bin, "pr", "list", "--head", branch, "--state", "all",
+             "--json", "number,baseRefName,state,mergedAt,closedAt",
+             "--limit", "1"], _gh_last_fields))
+    if not probes:
+        why = ("neither `glab` nor `gh` is installed, so no tracker can be "
+               "read from here")
+        return MrLookup(None, f"{repo_why}; {why}" if repo_why else why)
+    answered = False
+    reasons: list = [repo_why] if repo_why else []
+    for argv, parse in probes:
+        mr, state, why = _probe_open_request(argv, parse)
+        if mr is not None:
+            return MrLookup(mr)
+        if state == "answered":
+            answered = True
+        elif state == "failed" and why:
+            reasons.append(why)
+    if answered or not reasons:
+        return MrLookup(None)
+    return MrLookup(None, "; ".join(reasons))

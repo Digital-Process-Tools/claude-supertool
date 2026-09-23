@@ -92,7 +92,9 @@ def test_success_verdict_survives_tail_under_untracked_junk(capsys) -> None:
                            side_effect=_base_git(push_result=_proc("", 0),
                                                  ls_remote=HEAD_SHA,
                                                  status=JUNK)), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -108,7 +110,9 @@ def test_untracked_files_demoted_to_a_count_with_escape_hatch(capsys) -> None:
                            side_effect=_base_git(push_result=_proc("", 0),
                                                  ls_remote=HEAD_SHA,
                                                  status=JUNK)), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         push.main()
     out = capsys.readouterr().out
     assert "23 change(s) NOT in this push" in out
@@ -122,7 +126,9 @@ def test_result_line_marks_sha_verified_when_ls_remote_matches_head(capsys) -> N
     with mock.patch.object(push, "_git",
                            side_effect=_base_git(push_result=_proc("", 0),
                                                  ls_remote=HEAD_SHA)), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         push.main()
     out = capsys.readouterr().out
     assert "verified" in out.lower()
@@ -134,7 +140,9 @@ def test_result_line_says_unverified_when_ls_remote_is_silent(capsys) -> None:
     with mock.patch.object(push, "_git",
                            side_effect=_base_git(push_result=_proc("", 0),
                                                  ls_remote="")), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         push.main()
     out = capsys.readouterr().out
     assert "unverified" in out.lower()
@@ -148,7 +156,9 @@ def test_already_up_to_date_tail_says_not_pushed(capsys) -> None:
                                                  ls_remote=HEAD_SHA,
                                                  status=JUNK,
                                                  shas=("aaa1111", "aaa1111"))), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -165,7 +175,9 @@ def test_rejected_by_hook_verdict_survives_long_git_output(capsys) -> None:
                            side_effect=_base_git(
                                push_result=_proc("", 1, rejected),
                                ls_remote=OLD_SHA)), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc != 0
@@ -178,7 +190,9 @@ def test_network_error_verdict_survives_tail(capsys) -> None:
            "Could not resolve host: gitlab")
     with mock.patch.object(push, "_git",
                            side_effect=_base_git(push_result=_proc("", 128, err))), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc != 0
@@ -220,7 +234,9 @@ def test_non_fast_forward_rebase_conflict_verdict_survives_tail(capsys) -> None:
         return _proc("", 0)
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc != 0
@@ -235,7 +251,9 @@ def test_push_timeout_unverified_verdict_survives_tail(capsys) -> None:
     with mock.patch.object(push, "_git",
                            side_effect=_base_git(push_result=boom,
                                                  ls_remote=OLD_SHA)), \
-            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+            mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+            mock.patch.object(push, "query_last_mr_result",
+                              return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc != 0

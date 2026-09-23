@@ -325,7 +325,7 @@ def test_advisories_disclose_the_unknown_and_do_not_raise(capsys) -> None:
     with mock.patch.object(push, "_uncommitted_leftovers", return_value=(0, "")):
         push._post_push_advisories(
             common.MrLookup(None, "gh could not be run (ENOENT)"),
-            set(), "origin")
+            set(), "origin", "feature/x")
     out = capsys.readouterr().out
     assert "UNKNOWN" in out, out
 

@@ -159,7 +159,14 @@ def remoteless_box():
 
 
 def _no_mr():
-    return mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None))
+    # #2657: _post_push_advisories now reaches a SECOND lookup
+    # (query_last_mr_result) whenever the open one answers none -- mocked
+    # here too so this stays a fixture-driven test, not a live CLI call.
+    return mock.patch.multiple(
+        push,
+        _mr_lookup=lambda branch: push.MrLookup(None),
+        query_last_mr_result=lambda branch: push.MrLookup(None),
+    )
 
 
 def _last_result(out: str) -> str:

@@ -274,6 +274,51 @@ def _control_byte_refusal(msg: str, index: int, display: str, kind: str):
     ]
 
 
+def _leaked_key_hazard(msg: str):
+    """Does MSG's first line carry an unparsed payload key (#2656)?
+
+    A `paths = [...]` or `message = ` line landing at the front of the
+    subject is never a wanted subject -- it is what a stray payload line
+    reads as once it fails to split from the message, on whichever route
+    produced MSG. This is defence in depth, not a diagnosis of any one
+    parse failure: the payload parser's own `'''` early-close case already
+    refuses loudly before this script ever runs (#1830, #1868). This catches
+    every OTHER way the same shape could reach commit.py, including a route
+    that never touches the TOML parser at all -- the colon CLI, or a caller
+    that built MSG by hand.
+
+    Only the SUBJECT line is checked, not the whole message: a body
+    paragraph that happens to mention `paths = [` in prose (quoting old
+    code, say) is not a leaked key.
+
+    Returns the marker found, or None.
+    """
+    first_line = msg.split("\n", 1)[0]
+    for marker in ("paths = [", "message = "):
+        if marker in first_line:
+            return marker
+    return None
+
+
+def _leaked_key_refusal(msg: str, marker: str):
+    """MSG's subject holds a payload key that never split off (#2656)."""
+    return [
+        "ERROR: the commit subject contains %r -- refused before anything "
+        "was staged, nothing committed (#2656)." % (marker,),
+        "  This is never a subject a caller means to commit -- it is a "
+        "payload key (`paths = [...]` or `message = ...`) that landed in "
+        "MESSAGE instead of being read as its own field.",
+        "  Parsed as: message=%r (intact -- this call reached commit.py "
+        "whole)" % (msg,),
+        "  Re-send the payload with the key on its own line, outside the "
+        "message value:",
+        "    ./supertool 'git-commit:@-' <<'EOF'",
+        "    message = " + _TRIPLE + "<subject>" + _TRIPLE,
+        "    paths = [\"path/to/file\"]",
+        "    EOF",
+    ]
+
+
 def _no_verify_ambiguous_refusal():
     """git knows a path literally called `--no-verify`, so the token means
     two things (#2276).
@@ -1237,6 +1282,19 @@ def main() -> int:
         if hazard is not None:
             for line in _control_byte_refusal(
                     msg, hazard[0], hazard[1], hazard[2]):
+                print(line)
+            return 1
+
+    # #2656 -- after the control-byte hazard check (a different fact about
+    # MSG, checked first because it needs no route-shape reasoning at all),
+    # before anything else reads MSG. A leaked payload key at the front of
+    # the subject is never a wanted subject on ANY route -- this is defence
+    # in depth, not a diagnosis of the one parse failure that is already
+    # refused elsewhere (see _leaked_key_hazard's docstring).
+    if not no_edit:
+        marker = _leaked_key_hazard(msg)
+        if marker is not None:
+            for line in _leaked_key_refusal(msg, marker):
                 print(line)
             return 1
 
