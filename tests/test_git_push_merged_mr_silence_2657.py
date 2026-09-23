@@ -43,12 +43,12 @@ common = importlib.util.module_from_spec(_cspec)
 # unpatched `install_dir()` instead (#2664 CI red, all 12 legs, not
 # reproducible from this file alone or from test_git_push.py alone -- only
 # from the combination, in collection order). Saving and restoring the prior
-# value the moment this file's own setup is done is the same isolation this
-# module already registers a private module name for (`_git_common_2657`);
-# this closes the one place that intent leaked past this file's own scope.
+# value the moment this file's own setup is done closes that leak; only the
+# shared "_git_common" key is ever read elsewhere (the "_git_common_2657"
+# spec name passed to spec_from_file_location above is never itself a
+# sys.modules key -- nothing outside this file looks it up).
 _PRIOR_GIT_COMMON = sys.modules.get("_git_common")
 sys.modules["_git_common"] = common
-sys.modules["_git_common_2657"] = common
 try:
     _cspec.loader.exec_module(common)
 
@@ -62,6 +62,25 @@ finally:
         sys.modules["_git_common"] = _PRIOR_GIT_COMMON
     else:
         sys.modules.pop("_git_common", None)
+
+# Pins the restore itself, not just this file's own tests: without it, a
+# regression here is only ever caught transitively, through
+# test_git_push.py::test_advisories_mergeability_warn passing when the WHOLE
+# suite is collected together -- exactly the failure mode #2664's CI hit, and
+# a mode a per-file or -k run never exercises (this repro needed the whole
+# tests/ directory collected in one process; #2664's own report to CI is the
+# only evidence this bug ever surfaced on). This assertion is local and
+# collection-order-independent: it only checks that THIS file did not leave
+# the shared key different from what it found, regardless of what a sibling
+# file collected before or after it does with that key.
+assert sys.modules.get("_git_common") is _PRIOR_GIT_COMMON, (
+    "this file must restore sys.modules['_git_common'] to what it found -- "
+    "leaving it pointed at this file's own isolated `common` instance is "
+    "the exact #2664 CI regression (a later-collected test's push.st_hint "
+    "stays bound to whatever _git_common was cached at ITS OWN collection "
+    "time, so a monkeypatch on the now-wrong sys.modules entry is invisible "
+    "to it)"
+)
 
 
 def _proc(returncode: int = 0, stdout: str = "", stderr: str = ""):
