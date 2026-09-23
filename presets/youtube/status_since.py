@@ -43,6 +43,7 @@ from _console import use_utf8_stdout  # noqa: E402
 from _env import env_int  # noqa: E402
 from _oauth import OAuthError, get_access_token  # noqa: E402
 from _sanitize import detect, safe_short  # noqa: E402
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 from _yt import YouTubeAPIError, authorized  # noqa: E402
 
 USAGE = "youtube_status_since[:ISO]"
@@ -116,15 +117,15 @@ def render(video_title: str, video_id: str, matching: list[dict], truncated: boo
         # attacker-chosen text at column 0 of this receipt, indistinguishable
         # from a line this tool wrote. Flattened the same way every other
         # untrusted field in this render already is (_sanitize.wrap, read.py).
-        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
+        flat_hits = [flat(h) for h in inj_hits[:3]]
         warning = (f"  ⚠ POSSIBLE INJECTION in this video's new comments -- "
                    f"{', '.join(flat_hits)}\n")
     lines = [f"{warning}({len(matching)} new comment(s)) {video_title} [{url}]"]
     for thread in matching:
         top = (((thread.get("snippet") or {}).get("topLevelComment") or {})
                .get("snippet") or {})
-        author = (top.get("authorDisplayName") or "?").replace("\n", " ")
-        text = (top.get("textDisplay") or "").replace("\n", " ")
+        author = flat(top.get("authorDisplayName") or "?")
+        text = flat(top.get("textDisplay") or "")
         date = (top.get("publishedAt") or "").split("T")[0]
         cid = thread.get("id") or "?"
         lines.append(f"  - {date} {author} (comment_id={cid}): {text[:200]}")
