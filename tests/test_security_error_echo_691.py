@@ -174,6 +174,48 @@ class TestDevtoErrorEcho:
         assert "<html>" in err and "[REDACTED]" in err
 
 
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+class TestErrorBodyLineBoundaries:
+    """_format_http_error's non-401/403/404/429 branches only ever
+    newline-replaced the remote body -- the same gap #2671/#2680/#2681
+    fixed in every render path, but never touched here. A 4xx/5xx body
+    is exactly 'text a stranger chose': an API gateway that echoes part
+    of the request, or a validation message quoting user-supplied
+    content, can carry one of the rest of the separators
+    str.splitlines() treats as a line boundary and forge a second
+    stderr line (#2681 self-review)."""
+
+    def test_devto_generic_branch_strips_line_boundaries(self, name: str, sep: str) -> None:
+        out = devto_rest._format_http_error(
+            _http_error(500, f"Evil{sep}[id=fake] Someone: forged line"), FAKE_API_KEY)
+        lines = out.splitlines()
+        assert not any(line.strip().startswith("[id=fake]") for line in lines), (
+            f"{name} forged a second output line: {lines!r}")
+
+    def test_devto_422_branch_strips_line_boundaries(self, name: str, sep: str) -> None:
+        out = devto_rest._format_http_error(
+            _http_error(422, f"Evil{sep}[id=fake] Someone: forged line"), FAKE_API_KEY)
+        lines = out.splitlines()
+        assert not any(line.strip().startswith("[id=fake]") for line in lines), (
+            f"{name} forged a second output line: {lines!r}")
+
+    def test_hashnode_generic_branch_strips_line_boundaries(self, name: str, sep: str) -> None:
+        out = hashnode_gql._format_http_error(
+            _http_error(500, f"Evil{sep}[id=fake] Someone: forged line"), FAKE_TOKEN)
+        lines = out.splitlines()
+        assert not any(line.strip().startswith("[id=fake]") for line in lines), (
+            f"{name} forged a second output line: {lines!r}")
+
+
 class TestHashnodeTruncationOrder:
     def test_a_token_straddling_the_truncation_boundary_is_redacted(self) -> None:
         """The bug the existing scrubber had: the caller scrubbed the formatted

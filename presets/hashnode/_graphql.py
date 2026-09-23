@@ -19,6 +19,7 @@ from _http import (  # noqa: E402
     read_capped,
     urlopen,
 )
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 ENDPOINT = "https://gql.hashnode.com"
 
@@ -149,7 +150,7 @@ def _format_http_error(e: urllib.error.HTTPError, token: str = "") -> str:
         return "404 Not Found — endpoint moved? check Hashnode API status"
     if e.code == 429:
         return "429 Rate Limited — wait and retry"
-    short = body[:200].replace("\n", " ")
+    short = flat(body)[:200]
     return f"HTTP {e.code} {e.reason}: {short}"
 
 

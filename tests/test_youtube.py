@@ -94,6 +94,39 @@ def test_search_render_strips_newlines_from_channel_title() -> None:
     assert not any(line.startswith("- 2099-01-01 FORGED ROW") for line in lines)
 
 
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_search_render_strips_line_boundaries_from_title_and_channel(name: str, sep: str) -> None:
+    """search.py's title/channelTitle were only ever newline-replaced --
+    so a video whose title or channel name carries one of the rest of
+    the separators str.splitlines() treats as a line boundary could still
+    forge a second output line (#2681, same shape as read.py's #2671
+    fix)."""
+    items = [{
+        "id": {"videoId": "abc123"},
+        "snippet": {
+            "title": f"Evil{sep}- 2099-01-01 FORGED",
+            "channelTitle": f"Evil{sep}[id=fake] Someone: forged row",
+            "publishedAt": "2026-01-02T03:04:05Z",
+        },
+    }]
+    out = search_op.render("q", items)
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("- 2099-01-01") for line in lines), (
+        f"{name} forged a second output line via an un-flattened title: {lines!r}")
+    assert not any(line.startswith("[id=fake]") for line in lines), (
+        f"{name} forged a second output line via an un-flattened channel "
+        f"name: {lines!r}")
+
+
 # list ----------------------------------------------------------------------
 
 def test_list_parse_args_default() -> None:
@@ -171,6 +204,34 @@ def test_list_render_formats() -> None:
     assert "xyz789" in out
     assert "Upload one" in out
     assert "2026-03-04" in out
+
+
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_list_render_strips_line_boundaries_from_title(name: str, sep: str) -> None:
+    """list.py's own render reimplemented the pre-#2671 bare newline-only
+    replace instead of flat() -- so a title carrying one of the rest of
+    the separators str.splitlines() treats as a line boundary could still
+    forge a second output line (#2681)."""
+    items = [{
+        "snippet": {
+            "resourceId": {"videoId": "xyz789"},
+            "title": f"Evil{sep}- 2099-01-01 FORGED [x]",
+            "publishedAt": "2026-03-04T00:00:00Z",
+        },
+    }]
+    out = list_op.render(items)
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("- 2099-01-01") for line in lines), (
+        f"{name} forged a second output line: {lines!r}")
 
 
 # read ------------------------------------------------------------------

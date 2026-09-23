@@ -22,6 +22,7 @@ from _auth import get_publication_id, get_token
 from _graphql import gql
 from _me import get_username
 from _outbound import my_comment_ids, read as read_outbound, replied_parent_ids, unique_post_ids
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 STATE_FILE = Path(os.path.expanduser("~/.config/hashnode/last_check"))
 DEFAULT_LOOKBACK_HOURS = 24
@@ -147,7 +148,7 @@ def render(pub: dict, since: str, now: str, me: str = "",
             au = (r.get("author") or {}).get("username", "?")
             rdate = (r.get("dateAdded") or "").split("T")[0]
             rid = r.get("id", "?")
-            txt = ((r.get("content") or {}).get("markdown") or "").replace("\n", " ")[:200]
+            txt = flat((r.get("content") or {}).get("markdown") or "")[:200]
             out.append(f"  [reply {rid}] on {p.get('title','?')!r} ({p.get('url','')})")
             out.append(f"    {rdate} @{au}: {txt}")
             out.append(f"    NEXT: hashnode_reply:{rid}|MSG  — reply back")
@@ -156,7 +157,7 @@ def render(pub: dict, since: str, now: str, me: str = "",
         for p, c in new_comments:
             au = (c.get("author") or {}).get("username", "?")
             cdate = (c.get("dateAdded") or "").split("T")[0]
-            txt = ((c.get("content") or {}).get("markdown") or "").replace("\n", " ")[:160]
+            txt = flat((c.get("content") or {}).get("markdown") or "")[:160]
             replied_flag = " (already replied)" if str(c["id"]) in replied_to else ""
             out.append(f"  [comment {c['id']}] on {p['title']!r} ({p['url']}){replied_flag}")
             out.append(f"    {cdate} @{au}: {txt}")

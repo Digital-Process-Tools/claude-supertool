@@ -70,6 +70,7 @@ from _http import (  # noqa: E402
     read_capped,
     urlopen,
 )
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 # Five minutes. Replies and likes move faster than dev.to comments in
 # practice, but the real constraint per #526 is Bluesky's rate limit, not
@@ -339,7 +340,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             continue
         author = n.get("author") or {}
         record = n.get("record") or {}
-        text = str(record.get("text") or "").replace("\n", " ")[:160]
+        text = flat(str(record.get("text") or ""))[:160]
         payload = {
             "uri": uri,
             "reason": reason,

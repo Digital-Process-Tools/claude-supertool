@@ -585,6 +585,86 @@ def test_status_since_filter_recent() -> None:
     assert len(out) == 1 and out[0]["id"] == "1"
 
 
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_status_since_render_strips_line_boundaries_from_comment_markdown(name: str, sep: str) -> None:
+    """status_since.py's own comment/reply render reimplemented the
+    pre-#2671 bare newline-only replace instead of flat() -- so a comment
+    body carrying one of the rest of the separators str.splitlines()
+    treats as a line boundary could still forge a second output line
+    (#2681)."""
+    pub = {
+        "title": "max", "followersCount": 0,
+        "posts": {"edges": [
+            {"node": {
+                "id": "p1", "title": "Burn", "url": "https://x.io/burn",
+                "reactionCount": 0, "responseCount": 1,
+                "comments": {"edges": [
+                    {"node": {"id": "c1", "dateAdded": "2026-05-01T00:00:00Z",
+                              "author": {"username": "alice"},
+                              "content": {"markdown": f"Evil{sep}[id=fake] FORGED ROW"}}},
+                ]},
+            }},
+        ]},
+    }
+    out = status_since_op.render(pub, since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z")
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("[id=fake]") for line in lines), (
+        f"{name} forged a second output line: {lines!r}")
+
+
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_status_since_render_strips_line_boundaries_from_reply_markdown(name: str, sep: str) -> None:
+    """Same gap, the sibling reply-to-me render site (#2681)."""
+    pub = {
+        "title": "max", "followersCount": 0,
+        "posts": {"edges": [
+            {"node": {
+                "id": "p1", "title": "T", "url": "https://x.io/t",
+                "reactionCount": 0, "responseCount": 0,
+                "comments": {"edges": [
+                    {"node": {"id": "c-old", "dateAdded": "2026-04-01T00:00:00Z",
+                              "author": {"username": "bob"}, "content": {"markdown": "x"},
+                              "replies": {"edges": [
+                                  {"node": {"id": "r1", "dateAdded": "2026-05-01T00:00:00Z",
+                                            "author": {"username": "alice"},
+                                            "content": {"markdown": f"Evil{sep}[id=fake] FORGED ROW"}}},
+                              ]}}},
+                ]},
+            }},
+        ]},
+    }
+    replies_to_me = [
+        (p, r)
+        for e in pub["posts"]["edges"]
+        for p in [e["node"]]
+        for ce in p["comments"]["edges"]
+        for r in [re["node"] for re in (ce["node"].get("replies") or {}).get("edges", [])]
+    ]
+    out = status_since_op.render(pub, since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z",
+                                  replies_to_me=replies_to_me)
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("[id=fake]") for line in lines), (
+        f"{name} forged a second output line: {lines!r}")
+
+
 def test_status_since_render_with_new_comments() -> None:
     pub = {
         "title": "max",

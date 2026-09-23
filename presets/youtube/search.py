@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key  # noqa: E402
 from _sanitize import safe_short  # noqa: E402
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 from _yt import YouTubeAPIError, get  # noqa: E402
 
 
@@ -37,11 +38,11 @@ def render(query: str, items: list[dict]) -> str:
     for it in items:
         vid = (it.get("id") or {}).get("videoId") or "?"
         snip = it.get("snippet") or {}
-        title = (snip.get("title") or "?").replace("\n", " ")
+        title = flat(snip.get("title") or "?")
         # channelTitle is free text a channel owner chooses, same as title
-        # above -- an unstripped newline reaches column 0 of a new output
-        # line and can forge a fake row boundary (#227 self-review).
-        channel = (snip.get("channelTitle") or "?").replace("\n", " ")
+        # above -- an unstripped separator reaches column 0 of a new output
+        # line and can forge a fake row boundary (#227 self-review, #2681).
+        channel = flat(snip.get("channelTitle") or "?")
         date = (snip.get("publishedAt") or "").split("T")[0]
         url = f"https://www.youtube.com/watch?v={vid}"
         out.append(f"- {date} {title} — {channel} [{url}]")
