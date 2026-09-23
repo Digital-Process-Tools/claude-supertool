@@ -9,7 +9,7 @@ does not pretend otherwise.** `channel.ts` reaches the session through
 `mcp.notification()` — a JSON-RPC notification, so no id, no response and
 nothing to await — and it never writes back to the producer connection either.
 No ack exists to read. That is a finding, not a gap in this implementation, and
-it is why the answer here has five states rather than two:
+it is why the answer here has six states rather than two:
 
     NOT DELIVERING   a definite negative. Nothing is listening on the socket, so
                      every event a poller emits right now is lost at the source.
@@ -46,6 +46,13 @@ it is why the answer here has five states rather than two:
                      MCP server. Everything it could not ask is `CANNOT
                      DETERMINE` with the reason, never this and never the one
                      above it.
+    BOUND, UNPROVEN  a sixth state (#2658): a consumer is bound, verified,
+                     counting AND subscribed, but its own counters say
+                     `forwarded == 0` with no `last_forwarded` — nothing has
+                     ever moved through it. That renders identically to a dead
+                     channel under the word `FORWARDING`, which is reserved
+                     here for a channel that has demonstrated delivery at
+                     least once.
 
 `CANNOT DETERMINE` is the point of the op rather than its failure mode. It is
 the state today's tooling reports as green, and reporting it as green produced a
@@ -54,18 +61,18 @@ account) — first "transport is fine" off `sent ok`, then "the radar is dead" o
 a drop line, while it had already recovered.
 
 Exit codes are the states, on purpose: 0 forwarding, 1 not delivering, 3 cannot
-determine, 4 contradicted, 5 bound but not subscribed. A single non-zero would
-put answers this op exists to separate back into one bucket, and 4 and 5 are
-separate from 3 for the same reason — "I could not tell" and "I can tell, and it
-is wrong" call for different actions.
+determine, 4 contradicted, 5 bound but not subscribed, 8 bound but unproven
+(#2658). A single non-zero would put answers this op exists to separate back
+into one bucket, and 4/5/8 are separate from 3 for the same reason — "I could
+not tell" and "I can tell, and it is wrong" call for different actions.
 
 **Measured caveat, so nobody builds on a code that is not there.** The supertool
 wrapper reports any non-zero op as `FAIL` and exits 1, so 3 survives only when
 this file is run directly (`python3 presets/watch/channel.py health`). Through
 `supertool 'channel:health'` the states are carried by the *first line* of the
 report — `channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` /
-`CONTRADICTED` / `BOUND, NOT SUBSCRIBED` — which is what the tests key on and
-what a caller should key on too.
+`CONTRADICTED` / `BOUND, NOT SUBSCRIBED` / `BOUND, UNPROVEN` — which is what
+the tests key on and what a caller should key on too.
 
 **Measured cost, so nobody is surprised by it.** The subscription probe spawns
 `claude mcp get` once per `server:` tag — 1.1-2.0s each over six samples on
@@ -228,6 +235,13 @@ RC_PROBE_NOT_FORWARDED = 6
 #: key over the attribute cap, a handler that threw. Folding it into 6 would
 #: report "it went nowhere" for an event whose disposal is on the record.
 RC_PROBE_DISCARDED = 7
+#: A sixth for `health` (#2658), separate from `RC_FORWARDING`: a consumer
+#: that is bound, verified, counting AND subscribed, but has never forwarded
+#: an event — `forwarded == 0` and `last_forwarded` absent — renders exactly
+#: like a dead channel under the same headline word as a demonstrated one.
+#: Not `CANNOT DETERMINE`: everything needed to answer was established, and
+#: the answer is "nothing has moved through it yet", which is its own finding.
+RC_UNPROVEN = 8
 
 #: The subscription question, in the same three states as everything else here.
 SUB_SUBSCRIBED = "subscribed"
@@ -1355,15 +1369,25 @@ class Subscription(NamedTuple):
     `lines` is already indented for the report and already flattened — an argv
     is somebody else's text, read out of a process table anyone on this machine
     can write into (#1423).
+
+    `probe_residue` is #2658's addition: True only for the one census branch
+    below (`standing is False`) that already concludes — from the harness
+    itself, not from the marker file — that any `.refused.json` beside this
+    socket was written by this report's own `claude mcp get` lookup, not by a
+    rival session. `health()` uses it to stop printing that marker as a live
+    `refused:` finding once its own census has already explained it away.
     """
 
     state: str
     lines: list[str]
+    probe_residue: bool = False
 
 
-def _sub(state: str, head: str, rest: tuple[str, ...] = ()) -> Subscription:
+def _sub(state: str, head: str, rest: tuple[str, ...] = (),
+         *, probe_residue: bool = False) -> Subscription:
     return Subscription(
-        state, [f"  session  : {head}"] + [f"             {line}" for line in rest])
+        state, [f"  session  : {head}"] + [f"             {line}" for line in rest],
+        probe_residue)
 
 
 def _ps_fields(pid: int) -> tuple[int | None, str, str]:
@@ -1844,7 +1868,13 @@ def subscription(pid: Any, pid_note: str = "", path: str | None = None,
                          "NOT established: that the configured server is the one "
                          "holding this",
                          "socket. Two channel-capable servers would satisfy both "
-                         "halves apart"))
+                         "halves apart"),
+                        # `standing is False` is exactly the branch `census`
+                        # above was built for: no standing CONSUMER_SERVER is
+                        # configured, so a `.refused.json` beside this socket
+                        # cannot have been left by a rival session and is this
+                        # report's own probe residue instead (#2658).
+                        probe_residue=(standing is False))
         if answer is None:
             undecided.append(f"{TAG_PREFIX}{_untrusted.flat(name)}: {ask_why}")
     if undecided:
@@ -1909,6 +1939,40 @@ def _identity_lines(record: dict, holder: int | None, holder_why: str) -> list[s
         "             the health file names its own writer; pids are reusable, so",
         "             nothing here proves that process is the one holding the socket",
     ]
+
+
+def _drop_refusal_as_probe_residue(head: list[str]) -> list[str]:
+    """Swap a live-looking `refused:` finding for the explanation the session
+    census already gave, instead of letting the two disagree in one report.
+
+    Only called once `subscription()`'s own census has itself concluded
+    (`sub.probe_residue`) that no standing `CONSUMER_SERVER` is configured, so
+    any `.refused.json` beside this socket was written by this report's own
+    `claude mcp get` probe a moment ago — not by a rival session (#2182). The
+    reasoning already lands in the `session:` block below; this stops it from
+    being contradicted four lines above by a `refused:` line still framed as
+    a live #2133 collision (#2658).
+    """
+    out: list[str] = []
+    in_refusal = False
+    for line in head:
+        if line.startswith("  refused  :"):
+            in_refusal = True
+            out.extend([
+                "  refused  : a refusal marker exists for this socket, but "
+                "it is accounted for below —",
+                f"             the session census found no standing "
+                f"{CONSUMER_SERVER} server configured, so this report's own",
+                "             `claude mcp get` probe wrote it — not a rival "
+                "session (#2182).",
+                "             Not printed as a live collision finding",
+            ])
+            continue
+        if in_refusal and line.startswith("             "):
+            continue
+        in_refusal = False
+        out.append(line)
+    return out
 
 
 def health(path: str) -> tuple[int, str]:
@@ -1997,6 +2061,24 @@ def health(path: str) -> tuple[int, str]:
     sub = subscription(holder if holder is not None else claimed,
                        "" if holder is not None else "self-reported by the health file",
                        path)
+    # #2658: the census that decided `sub` already knows, from the harness
+    # itself, whether a refusal marker beside this socket is this report's
+    # own probe residue rather than a rival session's collision. Once it has
+    # said so, the `refused:` line built into `head` above must not go on
+    # disagreeing with it in the same report.
+    #
+    # Only when the marker was actually READ, though (self-review, #2658): an
+    # unreadable marker -- the same-uid-symlink shape #1184/#1187 already
+    # guard against -- is a different finding than "no standing server is
+    # configured", and relabelling it here would launder that warning into
+    # this report's reassuring text instead of leaving it live. `standing is
+    # False` never even looked at the marker (`subscription()`'s collision
+    # gates only run when `standing is not False`), so `sub.probe_residue`
+    # alone cannot tell the two apart -- this file has to ask again.
+    if sub.probe_residue:
+        refusal_record, _refusal_why = read_refusal(path)
+        if refusal_record is not None:
+            head = _drop_refusal_as_probe_residue(head)
     counters = [
         f"  counters : {_num(_counter(record, 'lines_read'))} lines read, "
         f"{_num(_counter(record, 'forwarded'))} forwarded, "
@@ -2016,6 +2098,30 @@ def health(path: str) -> tuple[int, str]:
         return RC_UNKNOWN, "\n".join([
             "channel: CANNOT DETERMINE", *head,
             _health_note(), *identity, *sub.lines, *counters, "", CEILING,
+        ])
+    # #2658: `sub.state == SUB_SUBSCRIBED` from here on. Everything above is
+    # true — bound socket, verified holder, a subscribed session — and none of
+    # it is evidence that anything has ever moved: `_health_objection` has
+    # already established `forwarded` is a readable number, so `== 0` here is
+    # a real zero, not a missing one. `FORWARDING` beside `last forwarded
+    # never` is the contradiction #2133's own body named one level down; this
+    # is the same gap one level up, at the verdict word itself.
+    if (_counter(record, 'forwarded') == 0
+            and record.get('last_forwarded') is None):
+        return RC_UNPROVEN, "\n".join([
+            "channel: BOUND, UNPROVEN", *head,
+            _health_note(),
+            *identity,
+            *sub.lines,
+            *counters,
+            "  delivery : never forwarded anything through this channel — a "
+            "bound, subscribed",
+            "             consumer that has not yet moved an event looks "
+            "identical to a dead",
+            "             one from here. Not FORWARDING: that word is "
+            "reserved for a channel",
+            "             that has demonstrated delivery (#2658)",
+            "", CEILING,
         ])
     return RC_FORWARDING, "\n".join([
         "channel: FORWARDING", *head,
@@ -2320,7 +2426,7 @@ def stranded_report(path: str) -> tuple[int, str]:
     if len(rows) > _ROW_CAP:
         lines.append(f">   ... and {len(rows) - _ROW_CAP} more")
     lines.append(
-        "> `channel:health` says which of its five states this is; "
+        "> `channel:health` says which of its six states this is; "
         "`channel:probe` writes one synthetic event and reports what took it. "
         "Nothing here is queued for replay -- an event emitted with no listener "
         "is gone (#2478).")
