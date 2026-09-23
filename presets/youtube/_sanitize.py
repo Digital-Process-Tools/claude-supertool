@@ -120,7 +120,7 @@ def safe_short(text: str, max_len: int = 200) -> str:
     """
     if not text:
         return ""
-    flat = text.replace("\n", " ")[:max_len]
-    if detect(flat):
-        return f"⚠ {flat}"
-    return flat
+    flattened = _untrusted.flat(text)[:max_len]
+    if detect(flattened):
+        return f"⚠ {flattened}"
+    return flattened
