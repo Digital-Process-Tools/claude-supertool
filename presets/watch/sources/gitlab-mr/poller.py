@@ -494,9 +494,21 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # `not_approved` costs nothing, and neither does the entire length of
     # a `not_approved` streak -- both were the actual regression an
     # earlier version of this gate had (#2645 review).
+    # #2670: the transition-out-of-`not_approved` tick is not the only tick
+    # worth confirming. A higher-priority blocker (`draft_status`, an open
+    # thread, a failing pipeline) can take the field on that same tick, so
+    # the confirmed answer is `False` and the check never sees `not_approved`
+    # again -- the approval rule can then be satisfied on a later tick, one
+    # that never exits `not_approved` a second time, and the old two-arm
+    # gate had no way back in. A stored `approved` that is confirmed `False`
+    # (not just unconfirmed `None`) is re-asked every tick until it turns
+    # `True`, the same "once per red streak, not once per tick" budget
+    # #509/#2645 already pin -- the cost is paid only while genuinely
+    # unresolved, never during a standing `not_approved` streak (answered
+    # free above) or once `True` is confirmed (the `else` arm below).
     if detailed_status == NOT_APPROVED_STATUS:
         approved, _approved_error = False, ""
-    elif prev_detailed_status == NOT_APPROVED_STATUS:
+    elif prev_detailed_status == NOT_APPROVED_STATUS or prev_approved is False:
         approved, _approved_error = _fetch_approvals(iid)
     else:
         approved, _approved_error = None, ""

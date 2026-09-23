@@ -300,6 +300,19 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
 
     prev_state = state.get("branch_state", "")
     prev_sha = str(state.get("sha") or "")
+    # #2676: the last *emitted* answer, kept separately from `prev_state`/
+    # `prev_sha` above (the raw last read, still what the direction guard and
+    # `no_run_streak` key off of, unchanged). `UNKNOWN` in any form -- an
+    # unreconciled tally, the #2436/#2537 grace window reaching its
+    # threshold -- is not an answer this poller settled on; it is exactly
+    # the class #2333's own argument already covers ("the read can fail, the
+    # history cannot"), one level up at the verdict word itself rather than
+    # at a raw-empty run list. Falls back to `prev_state`/`prev_sha` for a
+    # state file written before this field existed, so an upgrade mid-stream
+    # reads as "the last read was the last answer" rather than as a cold
+    # start.
+    prev_answer_state = state.get("answer_state", prev_state)
+    prev_answer_sha = str(state.get("answer_sha") or prev_sha)
     sha_repeated = bool(sha) and sha == prev_sha
     # A state this composition only reaches with `selected` non-empty
     # (`verdict()` routes to `no_run_verdict` before this module ever sees
@@ -448,7 +461,22 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # defaulted into. `sha` is only compared once `error` is empty (above),
     # where `_snapshot` guarantees it is non-empty, so this cannot mistake a
     # lookup failure for a same-state new-sha transition.
-    if branch_state != prev_state or sha != prev_sha:
+    # #2676: a raw reading that differs from the last raw reading is not by
+    # itself a transition worth telling a consumer about -- it can be a
+    # recovery back to the exact answer already reported, with a not-an-
+    # answer `UNKNOWN` reading sitting unannounced (to `went_*` consumers;
+    # `unknown` itself still fired below) in between. `is_recovered_answer`
+    # is false whenever `branch_state` is itself `UNKNOWN` (an `UNKNOWN`
+    # reading can never equal `prev_answer_state`, which is never `UNKNOWN`
+    # by construction below), so entering `UNKNOWN` always still fires --
+    # only a return TO a previously-announced state, on the same sha, is
+    # suppressed.
+    is_recovered_answer = (
+        branch_state != UNKNOWN
+        and branch_state == prev_answer_state
+        and sha == prev_answer_sha
+    )
+    if (branch_state != prev_state or sha != prev_sha) and not is_recovered_answer:
         key = _EVENT_FOR_STATE.get(branch_state, "unknown")
         ev = {
             "event": key,
@@ -467,12 +495,22 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             ev["repo"] = repo
         events.append(ev)
 
+    # `UNKNOWN` never becomes the new answer baseline -- the whole point of
+    # this field. Everything else (GREEN, either NOT_GREEN sub-state,
+    # NO_RUN/NO_RUN_STALE) is a real answer and advances it.
+    if branch_state == UNKNOWN:
+        answer_state, answer_sha = prev_answer_state, prev_answer_sha
+    else:
+        answer_state, answer_sha = branch_state, sha
+
     new_state = {
         "branch_state": branch_state,
         "sha": sha,
         "ref": ref,
         "lookup": LOOKUP_OK,
         "no_run_streak": no_run_streak,
+        "answer_state": answer_state,
+        "answer_sha": answer_sha,
     }
     return events, new_state
 
