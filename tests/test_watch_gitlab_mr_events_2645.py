@@ -195,6 +195,51 @@ def test_approved_flip_and_merged_still_fires() -> None:
 # to target before this source ever looked at it.
 # ---------------------------------------------------------------------------
 
+def test_approval_landing_behind_a_later_blocker_still_fires() -> None:
+    """#2670: the issue's own worked tick sequence -- not_approved -> draft_
+    status (approvals still False) -> draft_status (approvals now True) ->
+    mergeable -> mergeable. `detailed_merge_status` never returns to
+    `not_approved`, so the only re-ask this needed is one for a stored
+    `approved` still `False` while blocked on something else -- not another
+    exit from `not_approved`, which never happens again in this sequence."""
+    state: dict = {}
+    with mock.patch.object(poller, "_glab_api", side_effect=_no_call), \
+            mock.patch.object(poller, "_fetch",
+                              return_value=_ok(_body(detailed_merge_status="not_approved"))):
+        events, state = poller.poll(state, {"id": "21803"})
+    assert not any(e["event"] == "approved" for e in events)
+    assert state["approved"] is False
+
+    # Exits not_approved for draft_status -- the one tick the pre-#2670 code
+    # already re-asked -- and the confirm request answers False (still
+    # blocked on the approval rule itself, not just on draft status).
+    with mock.patch.object(poller, "_fetch",
+                           return_value=_ok(_body(detailed_merge_status="draft_status"))), \
+            mock.patch.object(poller, "_glab_api", return_value=_approvals(False)):
+        events, state = poller.poll(state, {"id": "21803"})
+    assert not any(e["event"] == "approved" for e in events)
+    assert state["approved"] is False
+
+    # Still draft_status -- no transition out of not_approved, so the
+    # pre-#2670 code fell to the `else` arm and carried `False` forward
+    # forever. The approval rule is satisfied now; this must fire.
+    with mock.patch.object(poller, "_fetch",
+                           return_value=_ok(_body(detailed_merge_status="draft_status"))), \
+            mock.patch.object(poller, "_glab_api", return_value=_approvals(True)):
+        events, state = poller.poll(state, {"id": "21803"})
+    assert sum(1 for e in events if e["event"] == "approved") == 1
+    assert state["approved"] is True
+
+    # Now mergeable, and mergeable again -- `approved` is already True, so no
+    # further request and no repeat event.
+    for _ in range(2):
+        with mock.patch.object(poller, "_fetch",
+                               return_value=_ok(_body(detailed_merge_status="mergeable"))), \
+                mock.patch.object(poller, "_glab_api", side_effect=_no_call):
+            events, state = poller.poll(state, {"id": "21803"})
+        assert not any(e["event"] == "approved" for e in events)
+
+
 def test_target_branch_change_emits_retargeted() -> None:
     state = {"mr_state": "opened", "pipeline_status": "running", "target_branch": "master"}
     with mock.patch.object(poller, "_fetch", return_value=_ok(_body(target_branch="release/1.0"))):
