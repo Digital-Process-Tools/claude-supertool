@@ -95,4 +95,4 @@ repeatedly, for a week" render identically on the channel. Compare the *primary*
 same file: `_fetch` failing emits an explicit `mr_unreachable` event with `notify_title: f"!{iid}
 -- cannot tell"` (`poller.py:410-429`) -- the new confirm-tick fetch has no equivalent. Adding a
 fetch call to a poller in this directory without checking it has a mirrored surfaced-failure path
-repeats this gap; `mr_unreachable` is the pattern to mirror, not a one-line `except: pass`. Bounded, not a standing outage: fires at most once per real transition, so a failure caps at one missed tick.
+repeats this gap; `mr_unreachable` is the pattern to mirror, not a one-line `except: pass`. No longer capped at one tick (#2670): fires once per exit from `not_approved`, and again on every later poll while stored `approved` is a confirmed `False`.

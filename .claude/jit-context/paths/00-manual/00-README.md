@@ -182,7 +182,7 @@ Curate pass over `trap.d/`, 2026-09-23 (second pass, worktree curate/20260923T16
 - **2645.approved-missed-behind-other-blocker** -- one-off code defect in
   `presets/watch/sources/gitlab-mr/poller.py` (the `approved` event never re-fires once the
   approvals endpoint has answered False on the one tick it is asked); a fixture/fix task for that
-  poller, not an agent-facing lesson.
+  poller, not an agent-facing lesson. Fixed by #2670.
 - **2649.youtube-linesep-unicode-not-flattened** -- one-off code defect: the `\r`/`\n` flattening
   #2649 added does not cover U+2028/U+2029 and other Unicode line separators, and `_untrusted.flat`
   already exists unused at all three call sites; a code fix (route through the existing helper),
@@ -207,6 +207,6 @@ Curate pass over `trap.d/`, 2026-09-23 (second pass, worktree curate/20260923T16
   #2658 fixed in `channel.py` (#2663); not investigated or fixed here, a different subsystem's own
   diff. An investigation task for whoever next touches that file, not an agent-facing lesson yet.
 - **2658.health-description-and-statusline-lack-unproven** -- `presets/watch.json`'s `channel:health`
-  description still names five states after #2658 added a sixth (`BOUND, UNPROVEN`, exit 8); a
-  one-line description fix. The vendored `.oss/statusline.py` half is not this repo's to fix --
-  scaffolded wholesale from the `claude-oss` plugin's own template.
+  description named only five states after #2658 added a sixth (`BOUND, UNPROVEN`, exit 8); fixed
+  by #2675. The vendored `.oss/statusline.py` half is not this repo's to fix --
+  scaffolded wholesale from the `claude-oss` plugin's own template, and remains open.
