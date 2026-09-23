@@ -188,6 +188,32 @@ def test_list_render_formats() -> None:
     assert "@alice.bsky.social" in out and "Hi" in out and "3 likes" in out
 
 
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_list_render_strips_line_boundaries_from_text(name: str, sep: str) -> None:
+    """list.py's own truncate-then-render reimplemented the pre-#2671 bare
+    newline-only replace instead of flat() -- so a post whose text carries
+    one of the rest of the separators str.splitlines() treats as a line
+    boundary could still forge a second output line (#2681)."""
+    out = list_op.render([
+        {"post": {"author": {"handle": "alice.bsky.social"},
+                   "record": {"text": f"Evil{sep}- 2099-01-01 @fake: FORGED",
+                              "createdAt": "2026-05-01T00:00:00Z"},
+                   "replyCount": 0, "likeCount": 0}},
+    ])
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("- 2099-01-01") for line in lines), (
+        f"{name} forged a second output line: {lines!r}")
+
+
 # search ----------------------------------------------------------------
 
 def test_search_parse_args_with_limit() -> None:
@@ -202,6 +228,53 @@ def test_search_parse_args_default() -> None:
 
 def test_search_render_empty() -> None:
     assert "no results" in search_op.render("xx", [])
+
+
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_search_render_strips_line_boundaries_from_text(name: str, sep: str) -> None:
+    """Same gap as list.py's render (#2681), same site shape reimplemented
+    independently in search.py."""
+    out = search_op.render("q", [
+        {"uri": "at://p/1", "author": {"handle": "alice.bsky.social"},
+         "record": {"text": f"Evil{sep}- 2099-01-01 @fake: FORGED",
+                    "createdAt": "2026-05-01T00:00:00Z"},
+         "likeCount": 0, "replyCount": 0},
+    ])
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("- 2099-01-01") for line in lines), (
+        f"{name} forged a second output line: {lines!r}")
+
+
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_status_since_render_strips_line_boundaries_from_text(name: str, sep: str) -> None:
+    """status_since.py's own notification render has the same gap as
+    list.py/search.py (#2681) -- #2680 fixed read.py's use of this idiom
+    but never touched this file."""
+    notif = {"reason": "mention", "indexedAt": "2026-05-02T00:00:00Z",
+              "uri": "at://n/1", "author": {"handle": "alice.bsky.social"},
+              "record": {"text": f"Evil{sep}[id=fake] Someone: forged row"}}
+    out = status_since_op.render([notif], since="2026-05-01T00:00:00Z", now="2026-05-02T01:00:00Z")
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("[id=fake]") for line in lines), (
+        f"{name} forged a second output line: {lines!r}")
 
 
 # read ------------------------------------------------------------------

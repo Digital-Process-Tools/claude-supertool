@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 
 def parse_args(arg: str) -> tuple[str | None, int]:
@@ -35,7 +36,7 @@ def render(posts: list[dict]) -> str:
         rec = post.get("record") or {}
         author = post.get("author") or {}
         date = (rec.get("createdAt") or "").split("T")[0]
-        text = (rec.get("text") or "").replace("\n", " ")[:160]
+        text = flat(rec.get("text") or "")[:160]
         out.append(
             f"- {date} @{author.get('handle','?')}: {text} "
             f"({post.get('replyCount', 0)} replies, {post.get('likeCount', 0)} likes)"

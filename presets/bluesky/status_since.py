@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 STATE_FILE = Path(os.path.expanduser("~/.config/bluesky/last_check"))
 DEFAULT_LOOKBACK_HOURS = 24
@@ -70,7 +71,7 @@ def render(notifications: list[dict], since: str, now: str) -> str:
             date = (n.get("indexedAt") or "").split("T")[0]
             uri = n.get("uri", "?")
             rec = n.get("record") or {}
-            text = (rec.get("text") or "").replace("\n", " ")[:160]
+            text = flat(rec.get("text") or "")[:160]
             out.append(f"  [{uri}] {date} @{author.get('handle','?')}: {text}")
             if kind in ("mention", "reply", "quote"):
                 out.append(f"    NEXT: bluesky_publish:\"MSG\"|{uri}  — reply")

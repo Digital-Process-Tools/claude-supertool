@@ -480,6 +480,63 @@ def test_status_since_filter_recent_includes_children() -> None:
     assert len(out) == 1 and out[0]["id_code"] == "c"
 
 
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_status_since_render_strips_line_boundaries_from_comment_body(name: str, sep: str) -> None:
+    """status_since.py's own comment/reply render reimplemented the
+    pre-#2671 bare newline-only replace instead of flat() -- so a
+    comment body carrying one of the rest of the separators
+    str.splitlines() treats as a line boundary could still forge a
+    second output line (#2681)."""
+    articles = [{
+        "id": 7, "title": "Burn", "url": "https://x.io/burn",
+        "public_reactions_count": 0, "comments_count": 1,
+    }]
+    comments_by = {7: [{"id_code": "c1", "created_at": "2026-05-01T00:00:00Z",
+                         "user": {"username": "alice"},
+                         "body_html": f"<p>Evil{sep}[id=fake] FORGED ROW</p>"}]}
+    out = status_since_op.render(
+        articles, comments_by, since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z",
+    )
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("[id=fake]") for line in lines), (
+        f"{name} forged a second output line: {lines!r}")
+
+
+@pytest.mark.parametrize("name,sep", [
+    ("U+2028 LINE SEPARATOR", " "),
+    ("U+2029 PARAGRAPH SEPARATOR", " "),
+    ("VT", "\x0b"),
+    ("FF", "\x0c"),
+    ("FS", "\x1c"),
+    ("GS", "\x1d"),
+    ("RS", "\x1e"),
+    ("NEL", "\x85"),
+])
+def test_status_since_render_strips_line_boundaries_from_reply_body(name: str, sep: str) -> None:
+    """Same gap, the sibling reply-to-me render site (#2681)."""
+    out = status_since_op.render(
+        articles=[], comments_by_article={},
+        since="2026-04-30T00:00:00Z", now="2026-05-01T12:00:00Z", my_recent=0,
+        replies_to_me=[(7, "Some Article", {
+            "id_code": "r1", "created_at": "2026-05-01T00:00:00Z",
+            "user": {"username": "alice"},
+            "body_html": f"<p>Evil{sep}[id=fake] FORGED ROW</p>",
+        })],
+    )
+    lines = out.splitlines()
+    assert not any(line.strip().startswith("[id=fake]") for line in lines), (
+        f"{name} forged a second output line: {lines!r}")
+
+
 def test_status_since_render_with_new() -> None:
     articles = [{
         "id": 7, "title": "Burn", "url": "https://x.io/burn",

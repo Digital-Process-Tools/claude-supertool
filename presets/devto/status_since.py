@@ -22,6 +22,7 @@ from _auth import get_api_key
 from _me import get_username
 from _outbound import my_comment_ids, read as read_outbound, replied_parent_ids, unique_article_ids
 from _rest import request
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 STATE_FILE = Path(os.path.expanduser("~/.config/devto/last_check"))
 DEFAULT_LOOKBACK_HOURS = 24
@@ -111,7 +112,7 @@ def render(articles: list[dict], comments_by_article: dict[int, list[dict]],
             au = (c.get("user") or {}).get("username", "?")
             cdate = (c.get("created_at") or "").split("T")[0]
             cid = c.get("id_code") or "?"
-            txt = (c.get("body_html") or "").replace("\n", " ").replace("<p>", "").replace("</p>", " ")[:200]
+            txt = flat(c.get("body_html") or "").replace("<p>", "").replace("</p>", " ")[:200]
             out.append(f"  [reply {cid}] on {atitle!r} (article {aid})")
             out.append(f"    {cdate} @{au}: {txt}")
             out.append(f"    NEXT: devto_comment:{aid}|MSG|{cid}  — reply back")
@@ -125,7 +126,7 @@ def render(articles: list[dict], comments_by_article: dict[int, list[dict]],
                 au = (c.get("user") or {}).get("username", "?")
                 cdate = (c.get("created_at") or "").split("T")[0]
                 cid = c.get("id_code") or "?"
-                txt = (c.get("body_html") or "").replace("\n", " ")[:160]
+                txt = flat(c.get("body_html") or "")[:160]
                 replied_flag = " (already replied)" if str(cid) in replied_to else ""
                 out.append(f"  [comment {cid}] on {a.get('title','?')!r} ({a.get('url','')}){replied_flag}")
                 out.append(f"    {cdate} @{au}: {txt}")

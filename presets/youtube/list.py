@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key  # noqa: E402
 from _sanitize import safe_short  # noqa: E402
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 from _yt import YouTubeAPIError, get  # noqa: E402
 
 
@@ -76,7 +77,7 @@ def render(items: list[dict]) -> str:
     for item in items:
         snip = item.get("snippet") or {}
         vid = (snip.get("resourceId") or {}).get("videoId") or "?"
-        title = (snip.get("title") or "?").replace("\n", " ")
+        title = flat(snip.get("title") or "?")
         date = (snip.get("publishedAt") or "").split("T")[0]
         url = f"https://www.youtube.com/watch?v={vid}"
         out.append(f"- {date} {title} [{url}]")
