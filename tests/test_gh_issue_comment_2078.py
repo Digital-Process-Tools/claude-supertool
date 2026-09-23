@@ -266,16 +266,23 @@ def test_main_edit_patches_the_existing_comment_not_the_create_endpoint(
     monkeypatch.setattr(
         sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
 
-    seen = {}
+    calls = []
 
     def fake_gh_json(args, stdin=None, timeout=30):
-        seen["args"] = args
+        calls.append(args)
+        if "-X" not in args:
+            # the ownership GET (#2665) -- comment 555 really is on #2078
+            return ({"id": 555,
+                      "issue_url": "https://api.github.com/repos/o/r/issues/2078"}, "")
         return ({"id": 555, "body": "corrected note", "html_url": "https://x/555"}, "")
     monkeypatch.setattr(m, "_gh_json", fake_gh_json)
 
     assert m.main() == 0
-    assert "-X" in seen["args"] and seen["args"][seen["args"].index("-X") + 1] == "PATCH"
-    assert "repos/o/r/issues/comments/555" in seen["args"]
+    assert len(calls) == 2
+    assert "repos/o/r/issues/comments/555" in calls[0]
+    patch_call = calls[1]
+    assert "-X" in patch_call and patch_call[patch_call.index("-X") + 1] == "PATCH"
+    assert "repos/o/r/issues/comments/555" in patch_call
     out = capsys.readouterr().out
     assert "edited" in out
     assert "byte-identical" in out
@@ -286,12 +293,125 @@ def test_main_edit_reports_not_edited_when_the_patch_itself_fails(
     payload_file = _payload(tmp_path, {"repo": "o/r", "body": "corrected note"})
     monkeypatch.setattr(
         sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
-    monkeypatch.setattr(
-        m, "_gh_json", lambda args, stdin=None, timeout=30: (None, "404 Not Found"))
+
+    def fake_gh_json(args, stdin=None, timeout=30):
+        if "-X" not in args:
+            return ({"id": 555,
+                      "issue_url": "https://api.github.com/repos/o/r/issues/2078"}, "")
+        return (None, "404 Not Found")
+    monkeypatch.setattr(m, "_gh_json", fake_gh_json)
 
     assert m.main() == 1
     out = capsys.readouterr().out
     assert "NOT edited" in out
+
+
+def test_main_edit_refuses_when_the_comment_belongs_to_a_different_issue(
+        monkeypatch, capsys, tmp_path):
+    # #2665: a mistyped or stale COMMENT_ID must never PATCH silently. The
+    # GET here returns a real comment, but one that belongs to #9999, not
+    # the #2078 the caller named -- must refuse before any PATCH runs.
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "corrected note"})
+    monkeypatch.setattr(
+        sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
+
+    calls = []
+
+    def fake_gh_json(args, stdin=None, timeout=30):
+        calls.append(args)
+        return ({"id": 555,
+                  "issue_url": "https://api.github.com/repos/o/r/issues/9999"}, "")
+    monkeypatch.setattr(m, "_gh_json", fake_gh_json)
+
+    assert m.main() == 1
+    assert len(calls) == 1, "the PATCH must not run once ownership fails"
+    out = capsys.readouterr().out
+    assert "NOT edited" in out
+    assert "9999" in out
+    assert "2078" in out
+
+
+def test_main_edit_refuses_when_the_ownership_check_itself_fails(
+        monkeypatch, capsys, tmp_path):
+    # The GET that should confirm ownership errors outright (404, network,
+    # bad JSON) -- refuse rather than proceeding to PATCH on no evidence.
+    #
+    # The PATCH branch is stubbed to SUCCEED (unlike the GET) so this test
+    # cannot pass by accident if the ownership GET were removed entirely:
+    # without the #2665 check, main() would go straight to a successful
+    # PATCH and report "edited", not "NOT edited".
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "corrected note"})
+    monkeypatch.setattr(
+        sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
+
+    calls = []
+
+    def fake_gh_json(args, stdin=None, timeout=30):
+        calls.append(args)
+        if "-X" not in args:
+            return (None, "404 Not Found")
+        return ({"id": 555, "body": "corrected note", "html_url": "https://x/555"}, "")
+    monkeypatch.setattr(m, "_gh_json", fake_gh_json)
+
+    assert m.main() == 1
+    assert len(calls) == 1, "the PATCH must not run once the ownership GET fails"
+    out = capsys.readouterr().out
+    assert "NOT edited" in out
+    assert "edited" not in out.replace("NOT edited", "")
+
+
+def test_main_edit_refuses_when_the_ownership_get_returns_a_non_dict(
+        monkeypatch, capsys, tmp_path):
+    # A malformed or unexpected gh response (e.g. a JSON array) is not a
+    # dict, and must be treated the same as a GET failure -- refuse rather
+    # than reading .get() off something that is not the comment object.
+    payload_file = _payload(tmp_path, {"repo": "o/r", "body": "corrected note"})
+    monkeypatch.setattr(
+        sys, "argv", ["issue_comment.py", "2078", payload_file, "edit=555"])
+
+    calls = []
+
+    def fake_gh_json(args, stdin=None, timeout=30):
+        calls.append(args)
+        return ([1, 2, 3], "")
+    monkeypatch.setattr(m, "_gh_json", fake_gh_json)
+
+    assert m.main() == 1
+    assert len(calls) == 1, "the PATCH must not run once the ownership GET is malformed"
+    out = capsys.readouterr().out
+    assert "NOT edited" in out
+
+
+# ---------------------------------------------------------------------------
+# edit_target_error -- unit-level, no gh call (#2665)
+# ---------------------------------------------------------------------------
+
+def test_edit_target_error_is_empty_when_issue_url_matches():
+    assert m.edit_target_error(
+        {"id": 555, "issue_url": "https://api.github.com/repos/o/r/issues/2078"},
+        "", "2078") == ""
+
+
+def test_edit_target_error_names_the_real_issue_on_mismatch():
+    err = m.edit_target_error(
+        {"id": 555, "issue_url": "https://api.github.com/repos/o/r/issues/9999"},
+        "", "2078")
+    assert err != ""
+    assert "9999" in err
+    assert "2078" in err
+
+
+def test_edit_target_error_fires_when_issue_url_is_missing_entirely():
+    # A malformed or unexpected response must not read as a match: an
+    # absent issue_url is not a positive-control silence for "same issue".
+    err = m.edit_target_error({"id": 555}, "", "2078")
+    assert err != ""
+
+
+def test_edit_target_error_reports_the_get_failure_when_the_get_itself_failed():
+    err = m.edit_target_error(None, "404 Not Found", "2078")
+    assert err != ""
+    assert "404" in err
 
 
 def test_main_edit_with_a_non_numeric_id_is_refused_before_any_gh_call(

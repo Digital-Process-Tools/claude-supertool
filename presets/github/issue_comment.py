@@ -19,6 +19,14 @@ disclosure step this op already gives a fresh comment. The id is already in
 this op own `[result]` line from when the comment was first posted
 (`comment id=5741496503`), so the caller has it without another lookup.
 
+A GET of the comment runs before the PATCH (#2665): the release auditor found
+that `edit=COMMENT_ID` sent the PATCH built from the id alone, with `NUMBER`
+never checked against the comment being edited -- a mistyped or stale id
+silently overwrote some other comment in the repo while the `[result]` line
+still reported success against the `NUMBER` the caller asked for. The GET's
+`issue_url` is compared against `/issues/{NUMBER}`; a mismatch, or a GET that
+fails outright, refuses before any PATCH is sent.
+
 `gh-pr-edit` (#1739) set the bar for a write in this family: publish, then
 read back what the server actually stored and compare it byte for byte
 against what was sent. `gh issue comment` gives no such proof -- a 0 exit
@@ -292,6 +300,29 @@ def refusal_line(number: str, why: str, edited: bool = False) -> str:
     return f"[result] issue #{number} {verb}; {why} — nothing was written"
 
 
+def edit_target_error(check_response: object, check_err: str, number: str) -> str:
+    """Empty string means `check_response` is the comment #number owns.
+
+    Anything else is the refusal reason: either the GET that should have
+    returned the comment failed outright, or it returned a comment whose own
+    `issue_url` does not end in `/issues/{number}` -- the ownership check
+    #2665 added ahead of the PATCH, so a mistyped or stale COMMENT_ID can no
+    longer silently overwrite a comment on some other issue or PR.
+    """
+    if not isinstance(check_response, dict):
+        return (f"could not verify the comment belongs to issue #{number} "
+                f"before editing it ({check_err or 'no detail'})")
+    # The GitHub API writes issue_url, same as html_url a few lines below in
+    # main() -- flatten it before it can reach column 0 of this op's own
+    # receipt (#1606, the reason _untrusted is imported here at all).
+    issue_url = _untrusted.flat(str(check_response.get("issue_url") or ""))
+    if not issue_url.endswith(f"/issues/{number}"):
+        return (f"that comment belongs to "
+                f"{issue_url or '(no issue_url in the response)'}, not "
+                f"issue #{number} — refusing to edit it")
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # gh plumbing
 # ---------------------------------------------------------------------------
@@ -387,7 +418,22 @@ def main() -> int:
     content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
 
     repo = str(payload["repo"])
+    repo_note = (f"  (repo from {repo_source})"
+                 if repo_source not in ("", "payload") else "")
+    header = f"# gh-issue-comment — {repo}#{number}{repo_note}"
     if edit_id:
+        header += f" (editing comment {edit_id})"
+    print(header)
+
+    if edit_id:
+        check_response, check_err = _gh_json(
+            ["api", f"repos/{repo}/issues/comments/{edit_id}"], timeout=30)
+        owner_err = edit_target_error(check_response, check_err, number)
+        if owner_err:
+            print()
+            print(f"ERROR: {owner_err}")
+            print(refusal_line(number, owner_err, True))
+            return 1
         endpoint = f"repos/{repo}/issues/comments/{edit_id}"
         method = "PATCH"
     else:
@@ -398,13 +444,6 @@ def main() -> int:
         ["api", "-X", method, "-H", "Accept: application/vnd.github+json",
          endpoint, "--input", "-"],
         stdin=json.dumps({"body": content}), timeout=30)
-
-    repo_note = (f"  (repo from {repo_source})"
-                 if repo_source not in ("", "payload") else "")
-    header = f"# gh-issue-comment — {repo}#{number}{repo_note}"
-    if edit_id:
-        header += f" (editing comment {edit_id})"
-    print(header)
 
     if not isinstance(response, dict):
         why = write_err or "no detail"
