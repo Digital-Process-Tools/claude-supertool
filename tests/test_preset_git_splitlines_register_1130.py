@@ -129,7 +129,7 @@ GROUNDS = ("QUOTED PATH - ", "NOT QUOTED, harmless - ", "NOT QUOTED, open - ")
 #: How many entries rest on each, published so a drift is one visible line in a
 #: diff rather than a re-derivation. Asserted exact in both directions.
 GROUND_TALLY = {"QUOTED PATH - ": 5,
-                "NOT QUOTED, harmless - ": 18,
+                "NOT QUOTED, harmless - ": 19,
                 "NOT QUOTED, open - ": 0}
 
 #: Phrases that state the argument #1652 retired. An entry may describe it in
@@ -188,6 +188,15 @@ REGISTER: dict[str, str] = {
         "on `_untrusted.split_lines` + `visible()` since #1681.",
 
     # -- commit.py ----------------------------------------------------------
+    "presets/git/commit.py::_trailing_paths_hazard":
+        "NOT QUOTED, harmless - not git output at all: the commit message the "
+        "CALLER typed (#2667), scanned for a trailing line shaped like a "
+        "swallowed `paths = [...]` payload field. Same ground as "
+        "_with_coauthor just below - a forged line break only changes which "
+        "of the caller's own lines this function looks at, and the worst "
+        "case is a refusal that names the wrong line in a message its own "
+        "author wrote, never a decision made on the strength of forged git "
+        "output.",
     "presets/git/commit.py::_with_coauthor":
         "NOT QUOTED, harmless - not git output at all: the commit message the "
         "CALLER typed, scanned for an existing Co-Authored-By trailer. A "

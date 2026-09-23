@@ -1119,9 +1119,23 @@ def _probe_open_request(argv: list, parse) -> tuple:
         return None, "failed", f"`{tool}` answered with JSON that is not a list"
     if not rows:
         return None, "answered", ""
-    if not isinstance(rows[0], dict):
-        return None, "failed", f"`{tool}` answered with an entry that is not an object"
-    return parse(rows[0]), "answered", ""
+    # #2672 -- `--head BRANCH` matches the head branch name in ANY
+    # repository, so a stranger's fork PR with a same-named branch is a
+    # row here too. gh's own `isCrossRepository` (requested by both gh
+    # probes above) is the only signal that distinguishes it; glab's rows
+    # carry no such key, so `.get` is simply falsy there and every glab
+    # row is treated as same-repo, unchanged from before this fix. The
+    # first SAME-repo row wins, not the first row outright -- skipping a
+    # fork match to find one behind it is why both gh probes now ask for
+    # more than one row.
+    for row in rows:
+        if not isinstance(row, dict):
+            return None, "failed", f"`{tool}` answered with an entry that is not an object"
+        if row.get("isCrossRepository"):
+            continue
+        return parse(row), "answered", ""
+    # every row was a fork's PR -- the same fact as no match at all.
+    return None, "answered", ""
 
 
 def _glab_fields(row: dict) -> dict:
@@ -1271,9 +1285,13 @@ def query_open_mr_result(branch: str) -> MrLookup:
              "--output", "json"], _glab_fields))
     gh_bin = which_excluding_cwd("gh")
     if gh_bin:
+        # #2672 -- `isCrossRepository` and a `--limit` above 1: a fork PR
+        # with the same branch name is a row here too, and `_probe_open_request`
+        # now skips those rows to find a same-repo match behind them.
         probes.append((
             [gh_bin, "pr", "list", "--head", branch, "--state", "open",
-             "--json", "number,baseRefName,mergeable", "--limit", "1"],
+             "--json", "number,baseRefName,mergeable,isCrossRepository",
+             "--limit", "5"],
             _gh_fields))
     if not probes:
         why = ("neither `glab` nor `gh` is installed, so no tracker can be "
@@ -1387,10 +1405,14 @@ def query_last_mr_result(branch: str) -> MrLookup:
              "--output", "json"], _glab_last_fields))
     gh_bin = which_excluding_cwd("gh")
     if gh_bin:
+        # #2672 -- same cross-repository exposure and fix as the open-MR
+        # probe above: `isCrossRepository` requested, `--limit` raised so a
+        # same-repo match is not lost behind a fork match ahead of it.
         probes.append((
             [gh_bin, "pr", "list", "--head", branch, "--state", "all",
-             "--json", "number,baseRefName,state,mergedAt,closedAt",
-             "--limit", "1"], _gh_last_fields))
+             "--json",
+             "number,baseRefName,state,mergedAt,closedAt,isCrossRepository",
+             "--limit", "5"], _gh_last_fields))
     if not probes:
         why = ("neither `glab` nor `gh` is installed, so no tracker can be "
                "read from here")

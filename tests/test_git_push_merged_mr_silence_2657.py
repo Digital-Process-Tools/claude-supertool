@@ -97,6 +97,27 @@ _CLOSED_UNMERGED_PR_JSON = (
     '"mergedAt": null, "closedAt": "2026-09-20T09:00:00Z"}]'
 )
 
+# #2672 -- a stranger's fork PR with the same head branch name. gh's own
+# `isCrossRepository` field is what distinguishes it; a same-repo row never
+# carries it as true.
+_FORK_ONLY_PR_JSON = (
+    '[{"number": 99, "baseRefName": "master", "state": "CLOSED", '
+    '"mergedAt": null, "closedAt": "2026-09-18T00:00:00Z", '
+    '"isCrossRepository": true}]'
+)
+_FORK_THEN_SAME_REPO_PR_JSON = (
+    '[{"number": 99, "baseRefName": "master", "state": "CLOSED", '
+    '"mergedAt": null, "closedAt": "2026-09-18T00:00:00Z", '
+    '"isCrossRepository": true}, '
+    '{"number": 40, "baseRefName": "master", "state": "MERGED", '
+    '"mergedAt": "2026-09-21T10:00:00Z", "closedAt": "2026-09-21T10:00:00Z", '
+    '"isCrossRepository": false}]'
+)
+_FORK_OPEN_PR_JSON = (
+    '[{"number": 101, "baseRefName": "main", "mergeable": "MERGEABLE", '
+    '"isCrossRepository": true}]'
+)
+
 
 # --- unit level: query_last_mr_result ---------------------------------------
 
@@ -168,6 +189,80 @@ def test_query_last_mr_result_glab_sends_all_not_state() -> None:
     argv = seen[0]
     assert "--state" not in argv, argv
     assert "--all" in argv, argv
+
+
+# --- unit level: cross-repository filtering (#2672) -------------------------
+
+
+def test_query_last_mr_result_skips_a_cross_repository_match() -> None:
+    """A fork's PR with the same head branch name must never be reported
+    as THIS branch's own dead MR -- the shape the issue names."""
+    with mock.patch.object(common, "which_excluding_cwd",
+                            lambda n: "/usr/bin/gh" if n == "gh" else None), \
+         mock.patch.object(common.subprocess, "run",
+                           lambda *a, **k: _proc(0, stdout=_FORK_ONLY_PR_JSON)), \
+         mock.patch.object(common, "_remotes_could_host_a_request",
+                           return_value=(True, "")):
+        res = common.query_last_mr_result("trunk")
+
+    assert res.answered is True
+    assert res.mr is None, res.mr
+
+
+def test_query_last_mr_result_finds_a_same_repo_match_behind_a_fork_match() -> None:
+    """A same-repo match ordered BEHIND a fork match must still be found --
+    the issue's own concern about a bare `--limit 1` dropping it entirely."""
+    with mock.patch.object(common, "which_excluding_cwd",
+                            lambda n: "/usr/bin/gh" if n == "gh" else None), \
+         mock.patch.object(
+             common.subprocess, "run",
+             lambda *a, **k: _proc(0, stdout=_FORK_THEN_SAME_REPO_PR_JSON)), \
+         mock.patch.object(common, "_remotes_could_host_a_request",
+                           return_value=(True, "")):
+        res = common.query_last_mr_result("trunk")
+
+    assert res.answered is True
+    assert res.mr is not None
+    assert res.mr["iid"] == 40, res.mr
+
+
+def test_query_open_mr_result_skips_a_cross_repository_match() -> None:
+    """Same exposure, the hot-path OPEN lookup run on every push -- the
+    sibling instance to the dead-MR probe, found while fixing it."""
+    with mock.patch.object(common, "which_excluding_cwd",
+                            lambda n: "/usr/bin/gh" if n == "gh" else None), \
+         mock.patch.object(common.subprocess, "run",
+                           lambda *a, **k: _proc(0, stdout=_FORK_OPEN_PR_JSON)), \
+         mock.patch.object(common, "_remotes_could_host_a_request",
+                           return_value=(True, "")):
+        res = common.query_open_mr_result("trunk")
+
+    assert res.answered is True
+    assert res.mr is None, res.mr
+
+
+def test_the_gh_probes_request_isCrossRepository() -> None:
+    """Both gh argvs must ask for the field the filter above reads --
+    otherwise every row's `.get("isCrossRepository")` is silently None and
+    the filter is a no-op."""
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(cmd)
+        return _proc(0, stdout="[]")
+
+    with mock.patch.object(common, "which_excluding_cwd",
+                            lambda n: "/usr/bin/gh" if n == "gh" else None), \
+         mock.patch.object(common.subprocess, "run", run), \
+         mock.patch.object(common, "_remotes_could_host_a_request",
+                           return_value=(True, "")):
+        common.query_open_mr_result("trunk")
+        common.query_last_mr_result("trunk")
+
+    assert len(seen) == 2, seen
+    for argv in seen:
+        json_idx = argv.index("--json")
+        assert "isCrossRepository" in argv[json_idx + 1], argv
 
 
 # --- push.py's rendering of the third branch --------------------------------
