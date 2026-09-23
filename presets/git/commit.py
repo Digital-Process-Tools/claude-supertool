@@ -312,7 +312,7 @@ def _leaked_key_refusal(msg: str, marker: str):
         "whole)" % (msg,),
         "  Re-send the payload with the key on its own line, outside the "
         "message value:",
-        "    ./supertool 'git-commit:@-' <<'EOF'",
+        "    " + st_hint("git-commit:@-") + " <<'EOF'",
         "    message = " + _TRIPLE + "<subject>" + _TRIPLE,
         "    paths = [\"path/to/file\"]",
         "    EOF",
