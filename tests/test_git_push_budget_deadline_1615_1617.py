@@ -177,6 +177,9 @@ def _no_tracker(monkeypatch: pytest.MonkeyPatch):
     passes on a disclosure line it did not mean to assert about.
     """
     monkeypatch.setattr(push, "_mr_lookup", lambda branch: push.MrLookup(None))
+    # #2657: the second lookup this fires when the first answers none.
+    monkeypatch.setattr(push, "query_last_mr_result",
+                        lambda branch: push.MrLookup(None))
 
 
 _BUDGET_FIGURES = (

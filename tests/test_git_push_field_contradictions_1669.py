@@ -171,7 +171,9 @@ def test_a_push_that_never_reached_the_remote_is_not_REJECTED(capsys) -> None:
     per-ref line at all."""
     with mock.patch.object(push, "_git", side_effect=_drive(HOOK_STDOUT, TRANSPORT)), \
          mock.patch.object(push, "_live_remote_sha", return_value=("", "no")), \
-         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+         mock.patch.object(push, "query_last_mr_result",
+                           return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc != 0
@@ -193,7 +195,9 @@ def test_a_real_remote_rejection_keeps_the_word_REJECTED(capsys) -> None:
             + "Done" + LF)
     with mock.patch.object(push, "_git", side_effect=_drive(porc, "")), \
          mock.patch.object(push, "_live_remote_sha", return_value=("", "no")), \
-         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+         mock.patch.object(push, "query_last_mr_result",
+                           return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc != 0
@@ -231,7 +235,9 @@ def test_a_no_op_push_does_not_say_it_pushed(capsys) -> None:
     reconciles them outside the window."""
     with mock.patch.object(push, "_git", side_effect=_drive_noop()), \
          mock.patch.object(push, "_live_remote_sha", return_value=("", "no")), \
-         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+         mock.patch.object(push, "query_last_mr_result",
+                           return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0
@@ -283,7 +289,9 @@ def test_the_rebase_recovery_prints_exactly_one_Status_line(capsys) -> None:
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
          mock.patch.object(push, "_live_remote_sha", return_value=("", "no")), \
-         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+         mock.patch.object(push, "query_last_mr_result",
+                           return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0, out
@@ -317,7 +325,9 @@ def test_a_push_that_moved_the_remote_still_says_pushed(capsys) -> None:
 
     with mock.patch.object(push, "_git", side_effect=fake_git), \
          mock.patch.object(push, "_live_remote_sha", return_value=("", "no")), \
-         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)), \
+         mock.patch.object(push, "query_last_mr_result",
+                           return_value=push.MrLookup(None)):
         rc = push.main()
     out = capsys.readouterr().out
     assert rc == 0

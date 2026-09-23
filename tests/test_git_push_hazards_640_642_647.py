@@ -277,7 +277,14 @@ def fork_box():
 
 
 def _no_mr():
-    return mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None))
+    # #2657: _post_push_advisories now reaches a SECOND lookup
+    # (query_last_mr_result) whenever the open one answers none -- mocked
+    # here too so this stays a fixture-driven test, not a live CLI call.
+    return mock.patch.multiple(
+        push,
+        _mr_lookup=lambda branch: push.MrLookup(None),
+        query_last_mr_result=lambda branch: push.MrLookup(None),
+    )
 
 
 def _mr(target: str = "master", iid: int = 7):
@@ -664,7 +671,7 @@ def test_watch_spawn_failure_is_reported_not_swallowed(tmp_path,
                            return_value=mock.Mock(stdout="", stderr="", returncode=1)):
         push._post_push_advisories(
             push.MrLookup({"source": "gitlab", "iid": 42, "target": "master"}),
-            {"watch"}, "origin")
+            {"watch"}, "origin", "feat")
     out = capsys.readouterr().out
 
     assert "watch" in out.lower()
@@ -673,10 +680,16 @@ def test_watch_spawn_failure_is_reported_not_swallowed(tmp_path,
 
 
 def test_watch_requested_with_no_open_mr_still_says_so(capsys, monkeypatch) -> None:
-    """Nothing to watch is a state; silence is not a way to report it."""
+    """Nothing to watch is a state; silence is not a way to report it.
+
+    #2657: the OPEN lookup answering none now ALSO reaches a second, merged/
+    closed lookup (query_last_mr_result) -- mocked here to a genuine absence
+    so this stays about the watch advisory, not a live CLI call.
+    """
     with mock.patch.object(push, "_git",
-                           return_value=mock.Mock(stdout="", stderr="", returncode=1)):
-        push._post_push_advisories(push.MrLookup(None), {"watch"}, "origin")
+                           return_value=mock.Mock(stdout="", stderr="", returncode=1)),          mock.patch.object(push, "query_last_mr_result",
+                           return_value=push.MrLookup(None)):
+        push._post_push_advisories(push.MrLookup(None), {"watch"}, "origin", "feat")
     out = capsys.readouterr().out
     assert "watch" in out.lower(), out
     assert "no open" in out.lower() or "no mr" in out.lower(), out

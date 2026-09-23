@@ -167,6 +167,9 @@ def box():
 @pytest.fixture(autouse=True)
 def _no_tracker(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(push, "_mr_lookup", lambda branch: push.MrLookup(None))
+    # #2657: the second lookup this fires when the first answers none.
+    monkeypatch.setattr(push, "query_last_mr_result",
+                        lambda branch: push.MrLookup(None))
 
 
 @pytest.fixture(autouse=True)

@@ -95,6 +95,7 @@ from _git_common import (  # noqa: E402
     bounded_lines,
     probe_repo,
     install_dir,
+    query_last_mr_result,
     query_open_mr_result,
     reject_fetch_option,
     relayed_block,
@@ -1264,6 +1265,43 @@ def _mr_unknown_line(lookup: MrLookup) -> str:
             + _st_hint("git-status"))
 
 
+def _dead_mr_lines(lookup: MrLookup, branch: str) -> list[str]:
+    """The #2657 disclosure -- say something when there is no OPEN request,
+    instead of nothing.
+
+    Only reached from _post_push_advisories when lookup.mr is falsy AND
+    lookup.answered is True: an open MR is _open_mr_line's to render, and an
+    unanswered lookup is _mr_unknown_line's -- this is the third case, where
+    the OPEN lookup genuinely found nothing and this receipt is about to say
+    so for the first time. Before #2657 it said nothing at all, which reads
+    identically whether the branch never had a request or its request was
+    merged out from under it -- the exact confusion the issue was filed on.
+
+    Issues a SECOND CLI call (query_last_mr_result), only here -- the common
+    case (an open MR exists) never reaches this function and never pays for
+    it. A CLI that cannot answer THIS query degrades to a stated unknown,
+    same posture as the open lookup, never a block on the push that already
+    landed.
+    """
+    last = query_last_mr_result(branch)
+    if not last.answered:
+        return [f"MR: none open for this branch -- whether it ever had one "
+                f"is UNKNOWN ({last.reason})"]
+    mr = last.mr
+    if not mr:
+        return ["MR: none -- new branch, nothing tracking it"]
+    target = _untrusted.flat(str(mr.get("target", "?")))
+    state = (mr.get("state") or "closed").lower()
+    when = mr.get("merged_at") or mr.get("closed_at")
+    when_clause = f"{state} {when.split('T')[0]}" if when else state
+    sigil = "!" if mr["source"] == "gitlab" else "#"
+    return [
+        "MR: none open for this branch",
+        f"  {sigil}{mr['iid']} ({when_clause}, target {target}) was its MR "
+        f"-- these commits are NOT on {target}",
+    ]
+
+
 def _watch_target(mr: Optional[dict]) -> Optional[tuple[str, str]]:
     """(watch-source, id) for the open MR/PR, or None."""
     if not mr or mr.get("iid") in (None, "?"):
@@ -1835,7 +1873,7 @@ def _watch_advisory(lookup: MrLookup, flags: set[str]) -> None:
 
 
 def _post_push_advisories(lookup: MrLookup, flags: set[str],
-                          remote: str) -> None:
+                          remote: str, branch: str) -> None:
     """Surface the next-decision signals: mergeability, stale base, leftovers, watch.
 
     `remote` is the branch's upstream remote — required, not defaulted, so a
@@ -1853,6 +1891,13 @@ def _post_push_advisories(lookup: MrLookup, flags: set[str],
         # would silently skip both.
         print(unknown)
     mr = lookup.mr
+    if not mr and lookup.answered:
+        # #2657 -- the lookup genuinely answered "no open request", which
+        # used to mean this receipt printed nothing at all here. A merged MR
+        # and a branch that never had one are different facts and read
+        # identically under silence; only this branch tells them apart.
+        for ln in _dead_mr_lines(lookup, branch):
+            print(ln)
     conflict = _mr_conflict_line(mr)
     if conflict:
         print(conflict)
@@ -2074,7 +2119,7 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     mr_line = _open_mr_line(lookup.mr)
     if mr_line:
         print(mr_line)
-    _post_push_advisories(lookup, flags, remote_name)
+    _post_push_advisories(lookup, flags, remote_name, branch)
     _push_verdict(moved, branch, remote_name, remote_ref, remote_after,
                   ncommits, force_note + unknown_note)
 
@@ -2097,7 +2142,7 @@ def _report_hook_pushed(head_before: str, head_after: str,
     mr_line = _open_mr_line(lookup.mr)
     if mr_line:
         print(mr_line)
-    _post_push_advisories(lookup, flags, remote)
+    _post_push_advisories(lookup, flags, remote, branch)
     _result(f"PUSHED  {branch} -> {remote}/{ref} @ {remote_sha[:7]}  "
             "(verified - pre-push hook pushed it, remote matches HEAD)")
 
@@ -2190,7 +2235,7 @@ def _report_push_timeout(branch: str, head_before: str,
         mr_line = _open_mr_line(lookup.mr)
         if mr_line:
             print(mr_line)
-        _post_push_advisories(lookup, flags, remote)
+        _post_push_advisories(lookup, flags, remote, branch)
         _result(f"PUSHED  {branch} -> {remote}/{ref} @ {live[:7]}  "
                 "(verified - push timed out locally, remote matches HEAD)")
         return 0
