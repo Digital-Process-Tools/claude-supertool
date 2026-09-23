@@ -95,3 +95,15 @@ those silently and permanently drops the event filter on every per-PR poller thi
 configured no exclusions) rather than "could not tell" -- same `[]`, no diagnostic either way.
 Narrow the `except` to what radar actually validates, or give it a distinct could-not-resolve
 state `terminal_coverage` can read as unknown.
+
+# `gitlab-mr/poller.py:_fetch_approvals()` -- a confirm-tick fetch failure has no surfaced state (#2645)
+
+`_fetch_approvals(iid)` returns `(None, error)` on any failure -- `_glab_api` erroring, a
+non-dict payload, or a missing `approved` key. `poll()` binds that to `_approved_error` and never
+reads it again: no line, no event, `approved` carries its last known value forward unchanged.
+"Still not approved" and "the approvals endpoint has been failing on the one confirming tick,
+repeatedly, for a week" render identically on the channel. Compare the *primary* MR fetch in the
+same file: `_fetch` failing emits an explicit `mr_unreachable` event with `notify_title: f"!{iid}
+-- cannot tell"` (`poller.py:410-429`) -- the new confirm-tick fetch has no equivalent. Adding a
+fetch call to a poller in this directory without checking it has a mirrored surfaced-failure path
+repeats this gap; `mr_unreachable` is the pattern to mirror, not a one-line `except: pass`.
