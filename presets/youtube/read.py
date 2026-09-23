@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _auth import get_api_key  # noqa: E402
 from _sanitize import detect, safe_short, wrap as wrap_untrusted  # noqa: E402
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 from _yt import YouTubeAPIError, get  # noqa: E402
 
 
@@ -47,11 +48,12 @@ def render(video: dict, comments: list[dict], comments_note: str, inline_n: int)
     snip = video.get("snippet") or {}
     stats = video.get("statistics") or {}
     # channelTitle/title/authorDisplayName are all free text chosen by a
-    # channel owner or commenter -- an unstripped newline reaches column 0
-    # of a new output line and can forge a fake row/section boundary (#227
-    # self-review).
-    title = (snip.get("title") or "?").replace("\n", " ")
-    channel = (snip.get("channelTitle") or "?").replace("\n", " ")
+    # channel owner or commenter -- an unstripped line-boundary character
+    # reaches column 0 of a new output line and can forge a fake row/section
+    # boundary (#227 self-review, widened past bare "\n" by #2671: VT, FF,
+    # U+2028/U+2029 and NEL all split a line just as well).
+    title = flat(snip.get("title") or "?")
+    channel = flat(snip.get("channelTitle") or "?")
     date = (snip.get("publishedAt") or "").split("T")[0]
     description = snip.get("description") or ""
     head = (
@@ -69,8 +71,8 @@ def render(video: dict, comments: list[dict], comments_note: str, inline_n: int)
         for c in comments[:inline_n]:
             top = (c.get("snippet") or {}).get("topLevelComment") or {}
             csnip = top.get("snippet") or {}
-            text = (csnip.get("textDisplay") or "").replace("\n", " ")[:200]
-            author = (csnip.get("authorDisplayName") or "?").replace("\n", " ")
+            text = flat(csnip.get("textDisplay") or "")[:200]
+            author = flat(csnip.get("authorDisplayName") or "?")
             cid = top.get("id") or "?"
             cblock.append(f"  [id={cid}] {author}: {text}")
         comments_section = "\n".join(cblock)
@@ -88,7 +90,7 @@ def render(video: dict, comments: list[dict], comments_note: str, inline_n: int)
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
-        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
+        flat_hits = [flat(h) for h in inj_hits[:3]]
         warning = f"⚠ POSSIBLE INJECTION in this video's text — {', '.join(flat_hits)}\n"
     desc_wrapped = wrap_untrusted(description, source="youtube-video")
     return f"{warning}{head}\n--- description ---\n{desc_wrapped}\n{comments_section}\n{nxt}"

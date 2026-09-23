@@ -29,6 +29,11 @@ from __future__ import annotations
 
 import re
 import secrets
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import _untrusted  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 # What a clean scan says. Printing nothing made "the scanner found nothing" and
 # "there was nothing scanning" one output — the house defect (#693), on the
@@ -99,7 +104,7 @@ def wrap(text: str, source: str = "external") -> str:
     header = f"<<UNTRUSTED {source.upper()} CONTENT — START {nonce}>>"
     footer = f"<<END UNTRUSTED CONTENT {nonce}>>"
     if hits:
-        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in hits[:3]]
+        flat_hits = [_untrusted.flat(h) for h in hits[:3]]
         lead = f"⚠ POSSIBLE INJECTION — review carefully ({', '.join(flat_hits)})\n"
     else:
         lead = f"{SCAN_CLEAN_NOTE}\n"
@@ -115,7 +120,7 @@ def safe_short(text: str, max_len: int = 200) -> str:
     """
     if not text:
         return ""
-    flat = text.replace("\n", " ")[:max_len]
-    if detect(flat):
-        return f"⚠ {flat}"
-    return flat
+    flattened = _untrusted.flat(text)[:max_len]
+    if detect(flattened):
+        return f"⚠ {flattened}"
+    return flattened
