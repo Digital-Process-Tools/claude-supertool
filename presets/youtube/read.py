@@ -48,11 +48,12 @@ def render(video: dict, comments: list[dict], comments_note: str, inline_n: int)
     snip = video.get("snippet") or {}
     stats = video.get("statistics") or {}
     # channelTitle/title/authorDisplayName are all free text chosen by a
-    # channel owner or commenter -- an unstripped newline reaches column 0
-    # of a new output line and can forge a fake row/section boundary (#227
-    # self-review).
-    title = (snip.get("title") or "?").replace("\n", " ")
-    channel = (snip.get("channelTitle") or "?").replace("\n", " ")
+    # channel owner or commenter -- an unstripped line-boundary character
+    # reaches column 0 of a new output line and can forge a fake row/section
+    # boundary (#227 self-review, widened past bare "\n" by #2671: VT, FF,
+    # U+2028/U+2029 and NEL all split a line just as well).
+    title = flat(snip.get("title") or "?")
+    channel = flat(snip.get("channelTitle") or "?")
     date = (snip.get("publishedAt") or "").split("T")[0]
     description = snip.get("description") or ""
     head = (

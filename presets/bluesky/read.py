@@ -16,6 +16,7 @@ from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
 from _sanitize import detect, wrap as wrap_untrusted
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 
 def parse_arg(arg: str, session: dict) -> str:
@@ -59,7 +60,7 @@ def render(thread: dict, inline_n: int) -> str:
             rp = r.get("post") or {}
             rrec = rp.get("record") or {}
             rauth = rp.get("author") or {}
-            rtext = (rrec.get("text") or "").replace("\n", " ")[:200]
+            rtext = flat(rrec.get("text") or "")[:200]
             rblock.append(f"  [uri={rp.get('uri','?')}] @{rauth.get('handle','?')}: {rtext}")
         replies_section = "\n".join(rblock)
     else:
@@ -77,7 +78,7 @@ def render(thread: dict, inline_n: int) -> str:
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
-        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
+        flat_hits = [flat(h) for h in inj_hits[:3]]
         warning = f"⚠ POSSIBLE INJECTION in this thread — {', '.join(flat_hits)}\n"
     body_wrapped = wrap_untrusted(body, source="bluesky-post")
     return f"{warning}{head}\n--- body ---\n{body_wrapped}\n{replies_section}\n{nxt}"

@@ -19,6 +19,7 @@ from _auth import get_api_key
 from _me import get_username
 from _rest import request
 from _sanitize import detect, wrap as wrap_untrusted
+from _untrusted import flat as _flat_hit  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671; local `flat` list below already owns the name)
 
 
 def parse_arg(arg: str) -> tuple[str, dict[str, str]]:
@@ -75,7 +76,7 @@ def render(a: dict, comments: list[dict], inline_n: int, me: str = "") -> str:
             user_c = (c.get("user") or {}).get("username", "?")
             cdate = (c.get("created_at") or "").split("T")[0]
             cid = c.get("id_code") or c.get("id") or "?"
-            txt = (c.get("body_html") or "").replace("\n", " ").replace("<p>", "").replace("</p>", " ")[:200]
+            txt = _flat_hit(c.get("body_html") or "").replace("<p>", "").replace("</p>", " ")[:200]
             flat.append(f"  [id={cid}] {cdate} @{user_c}: {txt}")
         cblock = "\n".join([f"--- top {len(flat)} comments ---"] + flat)
     else:
@@ -93,7 +94,7 @@ def render(a: dict, comments: list[dict], inline_n: int, me: str = "") -> str:
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
-        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
+        flat_hits = [_flat_hit(h) for h in inj_hits[:3]]
         warning = f"⚠ POSSIBLE INJECTION in this article/comments — {', '.join(flat_hits)}\n"
     body_wrapped = wrap_untrusted(body, source="devto-article")
     return f"{warning}{head}\n{cblock}\n--- body ---\n{body_wrapped}\n{nxt}"

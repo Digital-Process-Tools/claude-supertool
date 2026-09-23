@@ -18,6 +18,7 @@ from _auth import get_publication_id, get_token
 from _graphql import gql
 from _me import get_username
 from _sanitize import detect, wrap as wrap_untrusted
+from _untrusted import flat  # noqa: E402  (an injection-scan hit is text a stranger chose -- #2671)
 
 POST_FIELDS = """
   id title url publishedAt reactionCount responseCount
@@ -115,7 +116,7 @@ def render(post: dict, inline_n: int, me: str = "") -> str:
             au = (c.get("author") or {}).get("username", "?")
             cdate = (c.get("dateAdded") or "").split("T")[0]
             cid = c.get("id", "?")
-            txt = ((c.get("content") or {}).get("markdown") or "").replace("\n", " ")[:200]
+            txt = flat((c.get("content") or {}).get("markdown") or "")[:200]
             cblock.append(f"  [id={cid}] {cdate} @{au}: {txt}")
         comments_section = "\n".join(cblock)
     else:
@@ -135,7 +136,7 @@ def render(post: dict, inline_n: int, me: str = "") -> str:
     inj_hits = detect(all_text)
     warning = ""
     if inj_hits:
-        flat_hits = [h.replace("\r", " ").replace("\n", " ") for h in inj_hits[:3]]
+        flat_hits = [flat(h) for h in inj_hits[:3]]
         warning = f"⚠ POSSIBLE INJECTION in this post/comments — {', '.join(flat_hits)}\n"
     body_wrapped = wrap_untrusted(body, source="hashnode-post")
     return f"{warning}{head}\n{comments_section}\n--- body ---\n{body_wrapped}\n{nxt}"
