@@ -238,6 +238,7 @@ def test_an_unreadable_refusal_marker_is_not_laundered_into_probe_residue(
     warning live rather than being swapped for the reassuring probe-residue
     text; folding the two together would let that attack hide behind a report
     that reads as harmless."""
+    _symlink.require_symlink()
     _process_table(monkeypatch)
 
     def answer(name, _budget=None):

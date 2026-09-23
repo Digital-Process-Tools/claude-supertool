@@ -325,6 +325,7 @@ REGISTER = {
     'tests/test_watch_channel_stranded_hostile_state_1191.py::test_an_unreadable_state_file_is_never_rendered_as_no_watchers': B,
     'tests/test_watch_channel_stranded_hostile_state_1191.py::test_one_hostile_file_does_not_hide_the_other_rows': B,
     'tests/test_watch_channel_stranded_hostile_state_1191.py::test_the_symlink_refusal_is_its_own_state_and_is_reported': B,
+    'tests/test_watch_channel_verdict_2658.py::test_an_unreadable_refusal_marker_is_not_laundered_into_probe_residue': B,
     'tests/test_watch_pid_read_hostile_1200.py::_hostile_symlink': B,
     'tests/test_watch_state_dir_containment_1518.py::test_a_symlinked_state_directory_gets_no_pid_file_written_through_it': B,
     'tests/test_watch_state_dir_containment_1518.py::test_a_symlinked_state_directory_is_refused_rather_than_adopted': B,
