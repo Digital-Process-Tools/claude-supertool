@@ -32,10 +32,15 @@ someone other than this repo's own operator -- `bluesky`, `devto`, `hashnode`,
 name reply text as stranger-authored -- see `presets/slack/publish.py`),
 `watch` (poller-sourced notification/engagement text), `github`, `gitlab`,
 `git` (the existing #965 scanner's own trees) and `notifiers`.
-`presets/xml/_common.py` and `presets/claude-log/_common.py` are deliberately
-NOT scanned: #2681's own commit message excludes both as rendering *local*
-files, not remote/tracker text, and neither sits under any of the trees named
-here (both are direct siblings of `presets/`'s per-service subdirectories).
+`presets/xml/_common.py` is deliberately NOT scanned: #2681's own commit
+message excludes it as rendering *local* files, not remote/tracker text, and
+it does not sit under any of the trees named here (a direct sibling of
+`presets/`'s per-service subdirectories). `presets/claude-log` WAS excluded
+the same way by #2681, but #2685 found the rationale did not hold for it --
+`tail.py` renders `tool_result` parts, which can carry WebFetch/bash output
+a stranger's text reached indirectly even though the `.jsonl` transcript
+itself is a local file -- so it is scanned like any other tree below, not
+excluded by tree.
 `presets/_repo_target.py`'s `_one_line()` -- which does `.replace("\r\n",
 "\n")` once, deliberately, ahead of an `isprintable()` sweep documented in its
 own docstring as covering the rest of the separator set -- is excluded the
@@ -60,16 +65,18 @@ _ROOT = Path(__file__).parent.parent
 BARE_SEPARATOR_LITERALS = frozenset({"\r", "\n", "\r\n"})
 
 #: The trees that render text chosen by someone other than this repo's own
-#: operator: a post, a comment, a PR/MR field, a poller's own payload. Not
-#: "every preset" -- `presets/xml` and `presets/claude-log` render local
-#: files (#2681's own commit message), and are excluded by simply not being
-#: named here, the same way `_untrusted.py` and `_repo_target.py` (both
-#: direct `presets/*.py` siblings, not inside any of these subdirectories)
-#: are excluded by not being reached by `rglob` at all.
+#: operator: a post, a comment, a PR/MR field, a poller's own payload, or (for
+#: `presets/claude-log`, added by #2685) a tool_result part that can carry
+#: remote content even though the transcript it sits in is a local file. Not
+#: "every preset" -- `presets/xml` still renders only local files (#2681's own
+#: commit message) and is excluded by simply not being named here, the same
+#: way `_untrusted.py` and `_repo_target.py` (both direct `presets/*.py`
+#: siblings, not inside any of these subdirectories) are excluded by not
+#: being reached by `rglob` at all.
 _SCANNED = (
     "presets/bluesky", "presets/devto", "presets/hashnode", "presets/youtube",
     "presets/slack", "presets/watch", "presets/github", "presets/gitlab",
-    "presets/git", "notifiers",
+    "presets/git", "presets/claude-log", "notifiers",
 )
 
 

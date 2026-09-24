@@ -9,6 +9,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for _secrets (#760)
 import _secrets  # noqa: E402
+import _untrusted  # noqa: E402
 
 
 def encode_cwd(cwd: str) -> str:
@@ -260,7 +261,7 @@ def trunc(s: str, n: int) -> str:
     """
     if s is None:
         return ""
-    s = str(s).replace("\n", " ").replace("\r", " ")
+    s = _untrusted.flat(str(s))
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
