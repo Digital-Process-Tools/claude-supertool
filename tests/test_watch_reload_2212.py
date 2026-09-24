@@ -4,9 +4,11 @@ state (#2212).
 `dispatcher._load_source` imports a source's `poller.py` once and
 `_run_poll_loop` reuses that module object for the process's life; `INTERVAL`
 is read once at spawn too. So a merged fix does nothing until the operator
-runs `unwatch` then `watch` -- which spawns a fresh process with an empty
-`state`, so the very first tick re-announces everything the old process
-already knew about as new.
+runs `unwatch` then `watch` -- which spawns a fresh process. That process
+resumes the prior `source_state` from disk rather than starting empty
+(`unwatch` never clears the state file, #2697), so nothing is re-announced on
+its first tick unless the world actually changed while the old process was
+down.
 
 The fix here is a signal, not a config knob and not an automatic per-tick
 reimport (the issue names three shapes and states a preference for this one,

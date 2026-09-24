@@ -195,11 +195,12 @@ def cmd_reload(source: str, watcher_id: str) -> int:
     own `poller.py` in place, keeping its baseline (#2212).
 
     `unwatch` + `watch` is the alternative and it works, but it forks a fresh
-    process with an empty `state`: the first tick after that re-announces
-    everything the old process already knew about as new. For a fleet with
-    many watched entities that is minutes of baseline noise to deploy a
-    one-line fix, and the announcements are not merely slow, they are wrong
-    -- nothing actually changed on the box.
+    process that resumes the prior `source_state` from disk instead of
+    starting from an empty one -- `unwatch` never clears the state file
+    (#2697), so nothing is re-announced on the new process's first tick
+    unless something actually changed while the old one was down. What it
+    does cost, unlike this signal, is a full re-import of both `poller.py`
+    and `dispatcher.py`/`transport.py`.
 
     A multi-signal, on the same evidence `cmd_unwatch` requires before it
     multi-kills: every PID here comes from a process whose own argv names
@@ -224,8 +225,10 @@ def cmd_reload(source: str, watcher_id: str) -> int:
               "signalled to reload in place. "
               f"{_st_hint.st_hint(f'unwatch:{source}:{watcher_id}')} then "
               f"{_st_hint.st_hint(f'watch:{source}:{watcher_id}')} is the only "
-              f"path here, and it loses the baseline -- the whole reason this "
-              f"op exists.")
+              f"path here, and it costs a full re-import of both poller.py "
+              f"and dispatcher.py/transport.py -- the whole reason this op "
+              f"exists -- even though state itself is resumed from disk, "
+              f"not lost.")
         return 1
     census = transport.poller_census()
     info = transport.watcher_pids(
@@ -287,7 +290,8 @@ def cmd_reload(source: str, watcher_id: str) -> int:
               f"{source}'s own poller.py, this reload will not pick it up -- "
               f"{_st_hint.st_hint(f'unwatch:{source}:{watcher_id}')} then "
               f"{_st_hint.st_hint(f'watch:{source}:{watcher_id}')} instead, "
-              f"which forks a fresh process and re-imports both.")
+              f"which forks a fresh process and re-imports both -- state "
+              f"itself is resumed from disk, not lost.")
     if not info["scan_ok"]:
         print("Process scan unavailable -- only the tracked PID was "
               "considered, so an untracked poller for this id would not "
@@ -932,8 +936,8 @@ def cmd_list() -> int:
               f"changed, so it is running code a later fix may have replaced. "
               f"`watch:SOURCE:ID:reload` picks it up in place, state intact "
               f"(#2212); `unwatch:SOURCE:ID` then `watch:SOURCE:ID` also works "
-              f"but forks a fresh poller with an empty state, re-announcing "
-              f"everything as new on its first tick. Nothing here restarts it "
+              f"and resumes the same state from disk (#2697) -- it is a fresh "
+              f"process, not a fresh baseline. Nothing here restarts it "
               f"automatically.")
         for r in stale:
             print(f"  {r['_source']}:{r['_id']} — {r['_version_why']}")
@@ -952,8 +956,8 @@ def cmd_list() -> int:
               f"`watch:SOURCE:ID:reload` again will not "
               f"change that. `unwatch:SOURCE:ID` then `watch:SOURCE:ID` is "
               f"the only way to a fully current process for that row (it "
-              f"forks a fresh one with empty state, re-announcing everything "
-              f"as new on its first tick).")
+              f"forks a fresh one that resumes the prior state from disk, so "
+              f"nothing is re-announced unless something actually changed).")
         for r in reloaded:
             print(f"  {r['_source']}:{r['_id']} — {r['_version_why']}")
     version_unknown = [r for r in rows if r["_version_state"] == transport.VERSION_UNKNOWN]
@@ -1244,11 +1248,13 @@ MAX_CONSECUTIVE_POLL_FAILURES = 120
 GAVE_UP_EVENT = "watcher_gave_up"
 
 #: `unwatch` + `watch` picks up a merged `poller.py` change, but it forks a
-#: fresh process with empty `state` -- `seen` is false again, so the very
-#: first tick re-announces everything the old process already knew about as
-#: new (#2212). A signal reloads the SAME process's module in place instead,
-#: so `state`, which lives in that process's own memory and nowhere this
-#: dispatcher can reach or touch, is never replaced.
+#: fresh process -- that new process reads `state` back from the state file
+#: on its first tick (`unwatch` never clears it, #2697), so nothing is
+#: re-announced as new unless the world actually changed while the old
+#: process was down. A signal reloads the SAME process's module in place
+#: instead, so `state`, which lives in that process's own memory and nowhere
+#: this dispatcher can reach or touch, is never replaced -- either way state
+#: is not lost.
 #:
 #: `None` on a platform with no SIGHUP (there is no fork/setsid poller model
 #: on such a platform either, so this never needs a second story). Not an
