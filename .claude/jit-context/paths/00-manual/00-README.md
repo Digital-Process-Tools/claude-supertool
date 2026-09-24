@@ -210,3 +210,24 @@ Curate pass over `trap.d/`, 2026-09-23 (second pass, worktree curate/20260923T16
   description named only five states after #2658 added a sixth (`BOUND, UNPROVEN`, exit 8); fixed
   by #2675. The vendored `.oss/statusline.py` half is not this repo's to fix --
   scaffolded wholesale from the `claude-oss` plugin's own template, and remains open.
+
+Curate pass over `trap.d/`, 2026-09-24 (worktree curate/20260924T004159Z).
+
+- **2672.limit-still-loses-a-buried-samerepo-match** -- one-off code defect in
+  `_probe_open_request` (`presets/git/_git_common.py`): a genuine same-repo MR match buried behind
+  more than 4 fork rows sharing the branch name is silently lost at `--limit 5`, folding into the
+  same `None, "answered", ""` return a branch with no MR at all produces. Confirmed still live at
+  HEAD (594ed817) -- `--limit 5` unchanged on both gh probes, no widening when every row seen is a
+  fork. Not a jit rule (no path/tool/vocabulary trigger changes what an agent does differently); a
+  code fix (page past the limit, or add a fourth `MrLookup` state for "looked, but every candidate
+  was a fork"). Filed as #2691 so this decline is not the only record of it.
+- **2685.stale-trap-2686-fragment** -- a meta-fragment observing that `2686.claude-log-trunc-unflattened`
+  was resolved by #2685's own fix, and asking curate to decide the resolved fragment's fate. Consumed
+  by this pass: see the `2686.claude-log-trunc-unflattened` entry immediately below. Not a rule itself
+  -- an observation about one fragment's staleness, not a recurring lesson.
+- **2686.claude-log-trunc-unflattened** -- confirmed fixed at HEAD: `presets/claude-log/_common.py:264`'s
+  `trunc()` now routes through `_untrusted.flat(str(s))` instead of the bare CR/LF-only replace, and
+  `tests/test_bare_separator_replace_2686.py`'s `_SCANNED` tuple now includes `presets/claude-log`
+  (both landed in 594ed817, "Flatten every line-boundary separator in claude-log's trunc() (#2685)
+  (#2690)"). Both of the fragment's own open questions are answered; no rule needed, the code itself
+  is now correct.
