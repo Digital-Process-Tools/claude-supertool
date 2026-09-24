@@ -1084,6 +1084,25 @@ def _cli_verdict(res: subprocess.CompletedProcess) -> tuple:
     return "failed", _first_error_line(blob) or f"exited {res.returncode}"
 
 
+def _argv_limit(argv: list) -> Optional[int]:
+    """The integer value following a `--limit` flag in argv, or None.
+
+    Used only to tell "the CLI answered with fewer rows than it was allowed
+    to" from "the CLI answered with exactly as many rows as we asked for,
+    and may have more" (#2691) -- glab's argv never carries `--limit` (its
+    row cap is `--per-page`, and its rows are never treated as forks in the
+    first place, so the exhaustion check this feeds never fires for it).
+    """
+    try:
+        idx = argv.index("--limit")
+    except ValueError:
+        return None
+    try:
+        return int(argv[idx + 1])
+    except (IndexError, ValueError):
+        return None
+
+
 def _probe_open_request(argv: list, parse) -> tuple:
     """One CLI list call. Returns (mr, state, why) — never raises.
 
@@ -1134,7 +1153,21 @@ def _probe_open_request(argv: list, parse) -> tuple:
         if row.get("isCrossRepository"):
             continue
         return parse(row), "answered", ""
-    # every row was a fork's PR -- the same fact as no match at all.
+    # #2691 -- every row fetched was a fork's PR. If the fetch came back
+    # SHORT of the limit we asked for, `{tool}` has told us everything it
+    # has and there genuinely is no same-repo match: "answered" stands.
+    # If the fetch came back AT the limit, the window may have been full of
+    # forks with a same-repo match sitting behind it, unseen -- the exact
+    # shape #2672's own fix (skip one fork, keep looking) still misses once
+    # there are more forks than the window. That is not the same fact as no
+    # match at all, so it is reported as unanswered/unknown rather than as
+    # a stated absence this call never earned.
+    limit = _argv_limit(argv)
+    if limit is not None and len(rows) >= limit:
+        return None, "failed", (
+            f"`{tool}` returned {len(rows)} rows, all forks, at its own "
+            f"fetch limit ({limit}) -- a same-repo match may exist beyond "
+            "the window")
     return None, "answered", ""
 
 
