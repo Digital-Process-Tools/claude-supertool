@@ -197,11 +197,18 @@ DELIVERY_LABELS = {
 # defect this repo keeps filing under a new name.
 VERSION_CURRENT = "current"
 VERSION_STALE = "stale"
+#: `:reload` re-imports only the source's own `poller.py` in place --
+#: `dispatcher.py` and `transport.py` in that running process stay the
+#: fork-time copies, and nothing can swap those without a fresh process
+#: (#2694). A reloaded poller can therefore never read as VERSION_CURRENT
+#: again; RELOADED is the honest ceiling `:reload` alone can reach.
+VERSION_RELOADED = "reloaded"
 VERSION_UNKNOWN = "unknown"
 
 VERSION_LABELS = {
     VERSION_CURRENT: "current",
     VERSION_STALE: "STALE",
+    VERSION_RELOADED: "RELOADED",
     VERSION_UNKNOWN: "unknown",
 }
 
@@ -1456,6 +1463,13 @@ def list_active_pids() -> list[dict[str, Any]]:
             # trusting `started` to mean anything about the code running.
             "forked_fingerprint": state.get("forked_fingerprint"),
             "forked_fingerprint_error": state.get("forked_fingerprint_error"),
+            # #2694: when `_reload_poller` last confirmed a swap, and what
+            # poller.py looked like at that moment -- carried the same way
+            # the fork-time fields above are, so `version_state_of` can tell
+            # a reloaded process from one that never ran `:reload` at all.
+            "reloaded_at": state.get("reloaded_at"),
+            "reloaded_fingerprint": state.get("reloaded_fingerprint"),
+            "reloaded_fingerprint_error": state.get("reloaded_fingerprint_error"),
         })
     return rows
 
@@ -2180,13 +2194,20 @@ def source_fingerprint() -> tuple[str | None, str]:
     return f"{newest:.6f}", ""
 
 
-def version_state_of(forked_fingerprint: Any, forked_fingerprint_error: Any) -> tuple[str, str]:
+def version_state_of(
+    forked_fingerprint: Any,
+    forked_fingerprint_error: Any,
+    reloaded_at: Any = None,
+    reloaded_fingerprint: Any = None,
+    reloaded_fingerprint_error: Any = None,
+) -> tuple[str, str]:
     """Compare a poller's fork-time fingerprint against the source on disk now.
 
-    Three states (#2179), and `VERSION_UNKNOWN` is load-bearing: it must never
-    render as `VERSION_CURRENT`, because "nobody can tell" and "proven
-    current" send an operator to opposite conclusions about a poller that has
-    been running for days.
+    Four states now (#2694 added the fourth to the three #2179 filed), and
+    `VERSION_UNKNOWN` is load-bearing: it must never render as
+    `VERSION_CURRENT`, because "nobody can tell" and "proven current" send an
+    operator to opposite conclusions about a poller that has been running for
+    days.
 
     `VERSION_UNKNOWN` covers every way the comparison could not be made: this
     process could not read its own source (`source_fingerprint` failed — a
@@ -2194,10 +2215,41 @@ def version_state_of(forked_fingerprint: Any, forked_fingerprint_error: Any) -> 
     error taking its own fingerprint at fork, or the poller predates #2179 and
     never recorded one at all. All three are the same answer to an operator:
     staleness was not established either way.
+
+    `reloaded_at`/`reloaded_fingerprint` (recorded by `_reload_poller` on a
+    successful `:reload`, #2694) take priority over the fork-time fields when
+    present. `:reload` re-imports only the source's own `poller.py` in the
+    running process — `dispatcher.py` and `transport.py` stay the fork-time
+    copies regardless of what the source tree looks like now, so once a
+    reload has happened this poller can never read as `VERSION_CURRENT`
+    again; `VERSION_RELOADED` is the ceiling, whether or not the source has
+    drifted further since. Falling back to plain `VERSION_STALE` here would
+    recommend another `:reload` as the fix, which is exactly the loop #2694
+    reports.
     """
     current, why = source_fingerprint()
     if current is None:
         return VERSION_UNKNOWN, f"this render could not read its own source ({why})"
+    if reloaded_at:
+        if reloaded_fingerprint_error:
+            return VERSION_UNKNOWN, str(reloaded_fingerprint_error)
+        if not reloaded_fingerprint:
+            return (VERSION_UNKNOWN,
+                    f"reloaded at {reloaded_at} but no fingerprint was recorded for "
+                    f"that reload — whether poller.py itself is now stale cannot be "
+                    f"established")
+        if reloaded_fingerprint == current:
+            return (VERSION_RELOADED,
+                    f"reloaded at {reloaded_at}: poller.py is current as of that "
+                    f"reload, but dispatcher.py and transport.py in this running "
+                    f"process are still the fork-time copies — unwatch + watch is "
+                    f"the only way to a fully current process")
+        return (VERSION_RELOADED,
+                f"reloaded at {reloaded_at} with fingerprint {reloaded_fingerprint}, "
+                f"source is now {current} — presets/watch/ changed again since that "
+                f"reload, and dispatcher.py/transport.py in this running process are "
+                f"still the fork-time copies regardless — unwatch + watch is the "
+                f"only way to a fully current process")
     if forked_fingerprint_error:
         return VERSION_UNKNOWN, str(forked_fingerprint_error)
     if not forked_fingerprint:
