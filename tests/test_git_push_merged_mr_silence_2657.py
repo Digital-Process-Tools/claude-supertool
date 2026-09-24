@@ -117,6 +117,17 @@ _FORK_OPEN_PR_JSON = (
     '[{"number": 101, "baseRefName": "main", "mergeable": "MERGEABLE", '
     '"isCrossRepository": true}]'
 )
+# #2691 -- five fork rows, exactly at the `--limit 5` both gh probes send.
+# A same-repo match could exist behind row 5; this fetch never saw far
+# enough to know either way.
+_FORK_ROWS_AT_LIMIT_PR_JSON = (
+    "[" + ", ".join(
+        '{"number": %d, "baseRefName": "master", "state": "CLOSED", '
+        '"mergedAt": null, "closedAt": "2026-09-18T00:00:00Z", '
+        '"isCrossRepository": true}' % n
+        for n in range(90, 95)
+    ) + "]"
+)
 
 
 # --- unit level: query_last_mr_result ---------------------------------------
@@ -224,6 +235,58 @@ def test_query_last_mr_result_finds_a_same_repo_match_behind_a_fork_match() -> N
     assert res.answered is True
     assert res.mr is not None
     assert res.mr["iid"] == 40, res.mr
+
+
+def test_query_last_mr_result_reports_unknown_when_the_fork_window_is_full() -> None:
+    """#2691 -- five fork rows, exactly at `--limit 5`: a same-repo match
+    could exist behind row 5, and this fetch never saw far enough to say
+    either way. Must NOT collapse into the same `mr is None, answered=True`
+    a branch with zero rows produces -- that is the bug the issue names."""
+    with mock.patch.object(common, "which_excluding_cwd",
+                            lambda n: "/usr/bin/gh" if n == "gh" else None), \
+         mock.patch.object(
+             common.subprocess, "run",
+             lambda *a, **k: _proc(0, stdout=_FORK_ROWS_AT_LIMIT_PR_JSON)), \
+         mock.patch.object(common, "_remotes_could_host_a_request",
+                           return_value=(True, "")):
+        res = common.query_last_mr_result("trunk")
+
+    assert res.answered is False, (
+        "a fetch that came back exactly at the limit, all forks, must be "
+        "reported as unknown, not as a stated absence -- got answered=True, "
+        f"mr={res.mr!r}")
+    assert "5" in res.reason, res.reason
+
+
+def test_query_last_mr_result_skips_a_cross_repository_match_below_limit_still_answers() -> None:
+    """Positive control for the fix above: ONE fork row, well under the
+    limit, is still a genuine answered absence -- the fix must not turn
+    EVERY all-fork result into unknown, only the ones that hit the window."""
+    with mock.patch.object(common, "which_excluding_cwd",
+                            lambda n: "/usr/bin/gh" if n == "gh" else None), \
+         mock.patch.object(common.subprocess, "run",
+                           lambda *a, **k: _proc(0, stdout=_FORK_ONLY_PR_JSON)), \
+         mock.patch.object(common, "_remotes_could_host_a_request",
+                           return_value=(True, "")):
+        res = common.query_last_mr_result("trunk")
+
+    assert res.answered is True, res.reason
+    assert res.mr is None, res.mr
+
+
+def test_query_open_mr_result_reports_unknown_when_the_fork_window_is_full() -> None:
+    """Sibling to the dead-MR case above, on the hot-path OPEN lookup."""
+    with mock.patch.object(common, "which_excluding_cwd",
+                            lambda n: "/usr/bin/gh" if n == "gh" else None), \
+         mock.patch.object(
+             common.subprocess, "run",
+             lambda *a, **k: _proc(0, stdout=_FORK_ROWS_AT_LIMIT_PR_JSON)), \
+         mock.patch.object(common, "_remotes_could_host_a_request",
+                           return_value=(True, "")):
+        res = common.query_open_mr_result("trunk")
+
+    assert res.answered is False, (
+        f"got answered=True, mr={res.mr!r}")
 
 
 def test_query_open_mr_result_skips_a_cross_repository_match() -> None:
