@@ -225,8 +225,10 @@ def cmd_reload(source: str, watcher_id: str) -> int:
               "signalled to reload in place. "
               f"{_st_hint.st_hint(f'unwatch:{source}:{watcher_id}')} then "
               f"{_st_hint.st_hint(f'watch:{source}:{watcher_id}')} is the only "
-              f"path here, and it loses the baseline -- the whole reason this "
-              f"op exists.")
+              f"path here, and it costs a full re-import of both poller.py "
+              f"and dispatcher.py/transport.py -- the whole reason this op "
+              f"exists -- even though state itself is resumed from disk, "
+              f"not lost.")
         return 1
     census = transport.poller_census()
     info = transport.watcher_pids(
