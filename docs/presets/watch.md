@@ -2185,10 +2185,13 @@ stale or reloaded poller automatically.
 
 Two ways to pick up the current source, and they cost different things
 ([#2212](https://github.com/Digital-Process-Tools/claude-supertool/issues/2212)):
-`unwatch:SOURCE:ID` then `watch:SOURCE:ID` works, but it forks a fresh poller
-with an empty `state`, so its first tick re-announces everything the old
-process already knew about as new — costly for a fleet with many watched
-entities, and not merely slow: nothing on the box actually changed.
+`unwatch:SOURCE:ID` then `watch:SOURCE:ID` works, and it forks a fresh poller
+that resumes the prior `state` from disk rather than starting from an empty
+one — `unwatch` never clears the state file
+([#2697](https://github.com/Digital-Process-Tools/claude-supertool/issues/2697)),
+so nothing is re-announced on the new process's first tick unless something
+actually changed while the old one was down. What it does cost, for a fleet
+with many watched entities, is a full re-import of both files.
 `watch:SOURCE:ID:reload` signals the running poller instead, which re-imports
 its own `poller.py` in place: `state` lives in that process's own memory and
 is never touched, only which module its poll loop calls. A reload the poller
