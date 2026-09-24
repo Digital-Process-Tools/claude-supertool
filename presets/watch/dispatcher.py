@@ -836,7 +836,9 @@ def cmd_list() -> int:
         # way `_delivery_state` does above — a row this board could not read
         # must not borrow another row's verdict.
         r["_version_state"], r["_version_why"] = transport.version_state_of(
-            r.get("forked_fingerprint"), r.get("forked_fingerprint_error"))
+            r.get("forked_fingerprint"), r.get("forked_fingerprint_error"),
+            r.get("reloaded_at"), r.get("reloaded_fingerprint"),
+            r.get("reloaded_fingerprint_error"))
         r["_version"] = transport.VERSION_LABELS[r["_version_state"]]
     noted = any(r["_note"] for r in rows)
     widths = {
@@ -934,6 +936,24 @@ def cmd_list() -> int:
               f"everything as new on its first tick. Nothing here restarts it "
               f"automatically.")
         for r in stale:
+            print(f"  {r['_source']}:{r['_id']} — {r['_version_why']}")
+    # #2694: a poller that already ran `:reload` and confirmed the swap must
+    # not fall back into the STALE block above and be told to run the same
+    # `:reload` again -- that is the exact loop the issue reports. Its own
+    # block names the remedy that can actually reach VERSION_CURRENT.
+    reloaded = [r for r in rows if r["_version_state"] == transport.VERSION_RELOADED]
+    if reloaded:
+        print()
+        print(f"{len(reloaded)} row(s) above are marked RELOADED in VERSION: "
+              f"`:reload` already ran and confirmed the swap, but it only "
+              f"re-imports poller.py in place -- dispatcher.py and "
+              f"transport.py in that running process are still the fork-time "
+              f"copies and cannot be. `watch:SOURCE:ID:reload` again will not "
+              f"change that. `unwatch:SOURCE:ID` then `watch:SOURCE:ID` is "
+              f"the only way to a fully current process for that row (it "
+              f"forks a fresh one with empty state, re-announcing everything "
+              f"as new on its first tick).")
+        for r in reloaded:
             print(f"  {r['_source']}:{r['_id']} — {r['_version_why']}")
     version_unknown = [r for r in rows if r["_version_state"] == transport.VERSION_UNKNOWN]
     if version_unknown:
@@ -1287,6 +1307,18 @@ def _reload_poller(source: str, watcher_id: str, current: Any) -> Any:
                                        f"where this searched"})
         return current
     transport.emit_event(source, watcher_id, RELOAD_EVENT, {})
+    # #2694: the event alone left the state file untouched, so `watches`
+    # kept comparing the fork-time fingerprint forever and stayed STALE no
+    # matter how many times this ran. Record the reload itself, read-modify-
+    # write like the fork-time write above (dispatcher.py ~1437) -- after
+    # `emit_event`, which does its own read/write of `last_event`/`last_emit`
+    # and would otherwise clobber this if written first.
+    published = transport.read_state(source, watcher_id)
+    reload_fingerprint, reload_fp_why = transport.source_fingerprint()
+    published["reloaded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    published["reloaded_fingerprint"] = reload_fingerprint
+    published["reloaded_fingerprint_error"] = reload_fp_why
+    transport.write_state(source, watcher_id, published)
     return reloaded
 
 
