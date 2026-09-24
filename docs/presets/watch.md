@@ -2158,19 +2158,30 @@ SOURCE  ID          PID    STARTED               LAST_EVENT     DELIVERY  VERSIO
 slack   G017S75R2BV  92092  2026-08-28T12:58:17Z  slack_message  accepted  STALE
 ```
 
-Three values, and the third is load-bearing:
+Four values now ([#2694](https://github.com/Digital-Process-Tools/claude-supertool/issues/2694)
+added the fourth), and the third and fourth are both load-bearing:
 
 | Value | What is known |
 |---|---|
 | `current` | this poller's own recorded fork-time fingerprint (the newest mtime across `presets/watch/`'s `.py` files, taken once at fork) matches the source on disk right now |
 | `STALE` | it does not — something under `presets/watch/` changed since this poller forked. A row is printed naming the fingerprints |
+| `RELOADED` | `watch:SOURCE:ID:reload` ran and confirmed the swap — `poller.py` is current as of that reload, but `dispatcher.py`/`transport.py` in this running process are still the fork-time copies and cannot be swapped that way. A row is printed naming the reload time and fingerprints |
 | `unknown` | the comparison could not be made at all: no fingerprint was recorded (a poller from before #2179), a recorded fingerprint could not be read, or this render could not read its own source |
 
 `unknown` must never be read as `current` — "nobody can tell" and "proven
 current" send an operator to opposite conclusions about a poller that has
-been running for days. **Report-only, the same requirement `DELIVERY` carries
-above and for the same reason**: nothing here restarts a stale poller
-automatically.
+been running for days. `RELOADED` must never be read as `current` either,
+and never falls back to plain `STALE` or `current` once a reload has
+happened, no matter how the source tree drifts afterward — a reload cannot
+touch `dispatcher.py`/`transport.py` in a live process, so `current` is
+never reachable again without a fresh fork
+([#2694](https://github.com/Digital-Process-Tools/claude-supertool/issues/2694)).
+The footer for a `RELOADED` row names `unwatch:SOURCE:ID` then
+`watch:SOURCE:ID` as the only remedy, never `:reload` again — running
+`:reload` a second time on an already-`RELOADED` row confirms the swap again
+and changes nothing about the state. **Report-only, the same requirement
+`DELIVERY` carries above and for the same reason**: nothing here restarts a
+stale or reloaded poller automatically.
 
 Two ways to pick up the current source, and they cost different things
 ([#2212](https://github.com/Digital-Process-Tools/claude-supertool/issues/2212)):

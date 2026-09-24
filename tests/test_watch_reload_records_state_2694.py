@@ -108,6 +108,82 @@ def test_a_reload_whose_source_no_longer_resolves_never_records_reloaded_at(
 
 
 # ---------------------------------------------------------------------------
+# A fresh fork must clear an EARLIER lifetime's reload -- self-review finding
+# (#2694): `unwatch` never deletes the state file (only a poller reaching a
+# terminal state does), so without this a fresh, genuinely current fork
+# would read back an old process's `reloaded_at` and render as RELOADED
+# forever, with a stale timestamp, even though it was never reloaded itself.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def quiet(monkeypatch):
+    monkeypatch.setattr(dispatcher, "_silence_stdio", lambda: None)
+    monkeypatch.setattr(transport, "_pid_alive", lambda pid: pid == os.getpid())
+    monkeypatch.setattr(dispatcher.time, "sleep", lambda _s: None)
+
+
+class _ImmediatelyTerminal:
+    """Reaches a terminal state on its very first tick -- the loop returns
+    without ever calling `clear_state`'s trigger a second time, which would
+    otherwise erase the very state this test is inspecting."""
+
+    INTERVAL = 0
+
+    def poll(self, state, ctx):
+        return [], {"done": True}
+
+    def is_terminal(self, state):
+        return state.get("done") is True
+
+
+def test_a_fresh_fork_clears_an_earlier_lifetimes_reload(
+        monkeypatch, quiet) -> None:
+    # An earlier process on this same slot reloaded and recorded it.
+    stale_state = transport.read_state(SOURCE, WATCHER)
+    stale_state["reloaded_at"] = "2020-01-01T00:00:00Z"
+    stale_state["reloaded_fingerprint"] = "0.000000"
+    transport.write_state(SOURCE, WATCHER, stale_state)
+
+    writes: list[dict] = []
+    real_write_state = transport.write_state
+
+    def _capture(source, watcher_id, state):
+        writes.append(dict(state))
+        return real_write_state(source, watcher_id, state)
+
+    monkeypatch.setattr(dispatcher.transport, "write_state", _capture)
+    monkeypatch.setattr(dispatcher, "_load_source", lambda _n: _ImmediatelyTerminal())
+    dispatcher._run_poll_loop(SOURCE, WATCHER, [])
+
+    assert writes, "the fork-time write never ran"
+    fork_write = writes[0]
+    assert "reloaded_at" not in fork_write, (
+        "a fresh fork must clear an earlier lifetime's reloaded_at -- "
+        "otherwise a brand-new, current process reads as RELOADED forever")
+    assert "reloaded_fingerprint" not in fork_write
+    assert "reloaded_fingerprint_error" not in fork_write
+
+
+def test_a_fresh_fork_with_no_prior_reload_is_unaffected(monkeypatch, quiet) -> None:
+    """Must-fire control: a slot that was never reloaded still gets its
+    normal fork-time forked_fingerprint write, untouched by the new pop()s."""
+    writes: list[dict] = []
+    real_write_state = transport.write_state
+
+    def _capture(source, watcher_id, state):
+        writes.append(dict(state))
+        return real_write_state(source, watcher_id, state)
+
+    monkeypatch.setattr(dispatcher.transport, "write_state", _capture)
+    monkeypatch.setattr(dispatcher, "_load_source", lambda _n: _ImmediatelyTerminal())
+    dispatcher._run_poll_loop(SOURCE, WATCHER, [])
+
+    assert writes
+    assert writes[0].get("forked_fingerprint"), (
+        "the ordinary fork-time fingerprint write must still happen")
+
+
+# ---------------------------------------------------------------------------
 # `version_state_of` -- the fourth state
 # ---------------------------------------------------------------------------
 

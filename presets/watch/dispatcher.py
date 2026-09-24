@@ -948,7 +948,8 @@ def cmd_list() -> int:
               f"`:reload` already ran and confirmed the swap, but it only "
               f"re-imports poller.py in place -- dispatcher.py and "
               f"transport.py in that running process are still the fork-time "
-              f"copies and cannot be. `watch:SOURCE:ID:reload` again will not "
+              f"copies and cannot be swapped that way. "
+              f"`watch:SOURCE:ID:reload` again will not "
               f"change that. `unwatch:SOURCE:ID` then `watch:SOURCE:ID` is "
               f"the only way to a fully current process for that row (it "
               f"forks a fresh one with empty state, re-announcing everything "
@@ -1469,6 +1470,18 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     fingerprint, fp_why = transport.source_fingerprint()
     published["forked_fingerprint"] = fingerprint
     published["forked_fingerprint_error"] = fp_why
+    # #2694 self-review: `unwatch` never deletes the state file -- only a
+    # poller reaching a terminal state does (see the `finally` block below).
+    # A fresh fork therefore reads back whatever `reloaded_at`/
+    # `reloaded_fingerprint` an EARLIER process on this same slot recorded,
+    # and without this, `version_state_of` would read a brand-new, genuinely
+    # current process as still RELOADED -- quoting a stale timestamp and
+    # recommending `unwatch` + `watch` for a row that was just unwatched and
+    # watched. A fork is exactly the event that makes any earlier reload
+    # moot, so it is also the one place that must clear it.
+    published.pop("reloaded_at", None)
+    published.pop("reloaded_fingerprint", None)
+    published.pop("reloaded_fingerprint_error", None)
     transport.write_state(source, watcher_id, published)
 
     # Read once per process, not once per poll (#1952): the cwd's own remote
