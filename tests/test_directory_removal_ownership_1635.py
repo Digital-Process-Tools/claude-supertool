@@ -638,6 +638,13 @@ REGISTER = {
     'tests/test_vim_kevin_fixes.py::_cleanup_persist': OWNED,
     'tests/test_vim_kevin_fixes.py::test_undo_cross_call': OWNED,
     'validators/gitleaks/gitleaks.py::main': OWNED,
+    # #2705's release-branch smoke test. `_run_smoke_body` is a separate
+    # function from `run_smoke` specifically so the two call sites in
+    # `run_smoke` (the `keep_dir` branch and the `tempfile.mkdtemp()` branch)
+    # never share one name: only the latter's `work` is ever passed to
+    # `shutil.rmtree`, and it has exactly one binding in `run_smoke`'s own
+    # scope, to `tempfile.mkdtemp(...)`.
+    '.github/scripts/smoke_release_tree.py::run_smoke': OWNED,
 }
 
 
@@ -721,7 +728,8 @@ def test_the_walk_still_reaches_every_subsystem_that_holds_a_site() -> None:
         "those sites are in no verdict above: " + repr(missing))
 
     subsystems = sorted(set(rel.split("/")[0] for rel in named))
-    assert subsystems == ["presets", "tests", "validators"], subsystems
+    # ".github" joined the set at #2705: the release-branch smoke test.
+    assert subsystems == [".github", "presets", "tests", "validators"], subsystems
 
 
 def test_the_core_removes_no_directory_at_all() -> None:

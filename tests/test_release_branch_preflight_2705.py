@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import requires_symlink
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "check_release_tree.py"
 
@@ -199,7 +201,7 @@ def test_a_nested_git_file_marks_a_submodule_and_fails(tmp_path):
     _fails(_tree(tmp_path, {"vendor/lib/.git": b"gitdir: ../../.git/modules/lib\n"}), ".git")
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+@requires_symlink
 def test_a_symlink_fails(tmp_path):
     root = _tree(tmp_path, {})
     os.symlink("LICENSE", root / "LICENSE.link")

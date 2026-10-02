@@ -230,74 +230,88 @@ def run_validate(tree: Path, mode: str, claude_bin: str | None, home: Path,
         result.errors.append(f"validate: claude plugin validate --strict exited {r.returncode}")
 
 
+def _run_smoke_body(tree: Path, work: Path, validate: str, claude_bin: str | None,
+                    linger_seconds: float, result: SmokeResult) -> SmokeResult:
+    """The whole smoke run against an already-prepared `work` directory.
+
+    Split out of `run_smoke` so each of its two callers below owns its own
+    single binding of `work`: #1635's directory-removal register proves
+    ownership by tracing a name back through every assignment EVER made to
+    it in its enclosing scope, so a `work` bound in one branch to a fresh
+    `tempfile.mkdtemp()` and in the other to the caller-supplied `keep_dir`
+    is unprovable even though only the first branch is ever removed -- the
+    register reads the whole function, not just the live branch.
+    """
+    home, project, fakebin = work / "home", work / "project", work / "bin"
+    for d in (home, project, fakebin):
+        d.mkdir(parents=True, exist_ok=True)
+    run_validate(tree, validate, claude_bin, home, result)
+
+    if not (tree / "hooks" / "hooks.json").is_file():
+        result.notes.append("hooks: no hooks/hooks.json in the tree, nothing to run")
+        return result
+
+    plugin = work / "plugin"
+    shutil.copytree(tree, plugin, symlinks=True)
+    for name in ("claude", "codex"):
+        p = fakebin / name
+        p.write_text(FAKE_BIN, encoding="utf-8")
+        p.chmod(0o755)
+    subprocess.run(["git", "init", "-q", str(project)], check=False,
+                   capture_output=True)
+    session_id = str(uuid.uuid4())
+    transcript = _transcript(home, project, session_id)
+    env = _env(work, plugin, project, home, fakebin)
+
+    pgids: set = set()
+    for event, command, timeout in hook_commands(plugin):
+        payload = json.dumps(payload_for(event, session_id, transcript, project))
+        start = time.monotonic()
+        proc = subprocess.Popen(["/bin/sh", "-c", command], cwd=str(project), env=env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
+        pgids.add(proc.pid)
+        try:
+            out, err = proc.communicate(payload, timeout=timeout or 60)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            out, err = proc.communicate()
+            rc = -9
+            err += f"\nsmoke: killed after the hook's {timeout or 60}s timeout"
+        result.hooks.append(HookRun(event, command, rc, time.monotonic() - start, out, err))
+
+    _reap(pgids, str(work), linger_seconds, result)
+
+    calls = work / "fake-calls.log"
+    if calls.exists():
+        n = len(calls.read_text(encoding="utf-8").splitlines())
+        result.after.append(f"hooks: the fake claude/codex was called {n} time(s) "
+                            "(and refused each one)")
+    written = sum(1 for p in project.rglob("*") if p.is_file() and ".git" not in p.parts)
+    result.after.append(f"hooks: {written} file(s) written under the temp project "
+                        "(HOME, TMPDIR and the project all sat inside the temp directory)")
+    # This plugin's hooks (hooks/pre-bash-guard.sh, hooks/session-start.sh) write no
+    # log file of their own -- unlike claude-remember's hook-errors.log, there is no
+    # known-named log to surface here. Any error a hook hits is already visible in
+    # its own stdout/stderr, captured above in `result.hooks`.
+    return result
+
+
 def run_smoke(tree: Path, validate: str = "auto", claude_bin: str | None = None,
               linger_seconds: float = 30, keep_dir: Path | None = None) -> SmokeResult:
     tree = Path(tree).resolve()
     result = SmokeResult()
     if keep_dir:
-        work = Path(keep_dir).resolve()
-        work.mkdir(parents=True, exist_ok=True)
-    else:
-        work = Path(tempfile.mkdtemp(prefix="release-smoke-")).resolve()
+        kept = Path(keep_dir).resolve()
+        kept.mkdir(parents=True, exist_ok=True)
+        return _run_smoke_body(tree, kept, validate, claude_bin, linger_seconds, result)
+    work = Path(tempfile.mkdtemp(prefix="release-smoke-")).resolve()
     try:
-        home, project, fakebin = work / "home", work / "project", work / "bin"
-        for d in (home, project, fakebin):
-            d.mkdir(parents=True, exist_ok=True)
-        run_validate(tree, validate, claude_bin, home, result)
-
-        if not (tree / "hooks" / "hooks.json").is_file():
-            result.notes.append("hooks: no hooks/hooks.json in the tree, nothing to run")
-            return result
-
-        plugin = work / "plugin"
-        shutil.copytree(tree, plugin, symlinks=True)
-        for name in ("claude", "codex"):
-            p = fakebin / name
-            p.write_text(FAKE_BIN, encoding="utf-8")
-            p.chmod(0o755)
-        subprocess.run(["git", "init", "-q", str(project)], check=False,
-                       capture_output=True)
-        session_id = str(uuid.uuid4())
-        transcript = _transcript(home, project, session_id)
-        env = _env(work, plugin, project, home, fakebin)
-
-        pgids: set = set()
-        for event, command, timeout in hook_commands(plugin):
-            payload = json.dumps(payload_for(event, session_id, transcript, project))
-            start = time.monotonic()
-            proc = subprocess.Popen(["/bin/sh", "-c", command], cwd=str(project), env=env,
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True,
-                                    start_new_session=True)
-            pgids.add(proc.pid)
-            try:
-                out, err = proc.communicate(payload, timeout=timeout or 60)
-                rc = proc.returncode
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                out, err = proc.communicate()
-                rc = -9
-                err += f"\nsmoke: killed after the hook's {timeout or 60}s timeout"
-            result.hooks.append(HookRun(event, command, rc, time.monotonic() - start, out, err))
-
-        _reap(pgids, str(work), linger_seconds, result)
-
-        calls = work / "fake-calls.log"
-        if calls.exists():
-            n = len(calls.read_text(encoding="utf-8").splitlines())
-            result.after.append(f"hooks: the fake claude/codex was called {n} time(s) "
-                                "(and refused each one)")
-        written = sum(1 for p in project.rglob("*") if p.is_file() and ".git" not in p.parts)
-        result.after.append(f"hooks: {written} file(s) written under the temp project "
-                            "(HOME, TMPDIR and the project all sat inside the temp directory)")
-        # This plugin's hooks (hooks/pre-bash-guard.sh, hooks/session-start.sh) write no
-        # log file of their own -- unlike claude-remember's hook-errors.log, there is no
-        # known-named log to surface here. Any error a hook hits is already visible in
-        # its own stdout/stderr, captured above in `result.hooks`.
-        return result
+        return _run_smoke_body(tree, work, validate, claude_bin, linger_seconds, result)
     finally:
-        if not keep_dir:
-            shutil.rmtree(work, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def main(argv: list | None = None) -> int:

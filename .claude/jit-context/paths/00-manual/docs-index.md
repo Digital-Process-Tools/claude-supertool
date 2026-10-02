@@ -60,7 +60,7 @@ supertool 'read:docs/contributing.md:::grep=^#'
 | `docs/mcp-integration.md`, `docs/mcp-warm-process-servers.md` | MCP server usage/config, warm-process pattern |
 | `docs/operations/{index,edits,map,meta,reads,search}.md` | per-op-family reference for the builtin file ops |
 | `docs/presets/{git,github,gitlab,watch}.md` (largest: `watch.md` 165KB) | per-integration op reference; plus `bluesky.md`, `claude-log.md`, `dashboard.md`, `devto.md`, `hashnode.md`, `index.md`, `xml.md` |
-| `docs/releasing.md` | the `release` branch the Anthropic plugin directory follows (#2705) -- `.github/scripts/{build,check,smoke}_release_tree.py`, `.github/release-branch.json`'s deny-list and exceptions |
+| `docs/releasing.md` | the `release` branch for the Anthropic plugin directory (#2705) |
 
 **These two rows were swapped until 2026-08-09**, and the swap was load-bearing: two agents in one evening went looking for `docs/operations/watch.md`, found `docs/operations/` holding a different six files, and concluded *"the index points at a directory layout that is gone"* — so one of them documented `radar` by guessing at a file and the other reported the whole index as rotten. Neither read the 165KB doc that actually existed one directory over.
 

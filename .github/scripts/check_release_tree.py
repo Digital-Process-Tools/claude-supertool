@@ -227,7 +227,7 @@ def front_matter(text: str):
         # tell a present text description from a missing or list-valued one.
         data = {}
         for line in block.splitlines():
-            m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", line)
+            m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", line)  # anchored-ok: one line out of block.splitlines(), newline already stripped
             if m:
                 v = m.group(2).strip()
                 data[m.group(1)] = [v] if v.startswith("[") else v.strip("'\"")

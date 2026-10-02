@@ -26,11 +26,21 @@ on:
         required: true
         type: string
 
-# Two runs racing a force-push to the same branch: the loser's tree would silently
-# replace the winner's. One at a time, never cancelled half-way through a push.
+# Keyed on github.ref (the tag), not a fixed string: two different tags building
+# at once is fine -- `publish` already refuses unless its rebuilt tree is
+# byte-identical to the one `verify` passed, and the final `git push origin
+# <commit>:refs/heads/release` is a plain (non-force) push, so a second tag whose
+# commit is not a fast-forward of the first is rejected by git itself, not by this
+# key. What this key serialises, and cancels, is two runs for the SAME tag --
+# a manual re-dispatch of a ref that is already running. Cancelling mid-publish is
+# safe rather than risky: a git ref update is atomic, so a killed job either lands
+# the push or does not -- it can never leave `release` half-written. #2223 requires
+# this on every push/pull_request-triggered workflow; this one keeps it rather than
+# claiming an exemption, because the atomicity argument above makes cancel-in-progress
+# correct here too, not merely tolerated.
 concurrency:
-  group: release-branch
-  cancel-in-progress: false
+  group: release-branch-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
