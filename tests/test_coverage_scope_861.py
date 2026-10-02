@@ -189,7 +189,8 @@ def test_the_measured_paths_are_absolute() -> None:
     module_names = ("supertool", "_supertool", "_supertool_vim",
                      "_supertool_guard", "_supertool_doctor", "_supertool_gc",
                      "_supertool_presets", "_supertool_edit", "_supertool_parse",
-                     "_supertool_payload", "_supertool_config")
+                     "_supertool_payload", "_supertool_config", "_supertool_read",
+                     "_supertool_grep")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "
@@ -203,7 +204,10 @@ def test_the_measured_paths_are_absolute() -> None:
         "`_supertool_parse` since the same issue's parse lane split op "
         "names/synonyms/safety-classes/arg-parsing out the same way, "
         "`_supertool_payload` since #2706 wave 1 split the TOML mini-parser "
-        "and @file/payload routing out the same way")
+        "and @file/payload routing out the same way, `_supertool_config` "
+        "since the config/presets-merge/env-knobs/exclude/gitignore/rtk/"
+        "display lane split out the same way, `_supertool_read`/"
+        "`_supertool_grep` since the read/grep-ops lane of the same split")
     paths = [line for line in lines if line not in module_names]
     assert paths, "no directory sources at all — the scope collapsed"
     for line in paths:
