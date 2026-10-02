@@ -237,9 +237,11 @@ ENFORCED: "dict[str, float]" = {
     # test_mcp_restart_note_flattens_names_1489.py,
     # test_mcp_stop_outcome_547.py, test_mcp_stop_crash_574.py,
     # test_validators_stop_on_new_file.py, test_custom_ops.py), not the full
-    # suite this gate itself runs: 67%. Floored 3 points under that, same
-    # slack as every other entry here.
-    "_supertool_mcp.py": 64.0,
+    # suite this gate itself runs: 67%. Floored 6 points under that, not the
+    # usual 3: CI's coverage job measured _supertool_doctor.py 3.5 points
+    # under its local narrowed number (#2714), and this entry has never been
+    # measured on CI.
+    "_supertool_mcp.py": 61.0,
     "_supertool_doctor.py": 80.0,
     "_supertool_gc.py": 80.0,
     "presets/": 83.0,
