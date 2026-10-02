@@ -344,9 +344,16 @@ def test_the_committed_config_parses_and_names_the_brief_deny_list():
     assert ".mcp.json" not in cfg["deny"]
     assert cfg["budget"]["max_files"] == 512
     assert cfg["budget"]["max_file_bytes"] == 262144
-    exceptions = {e["path"]: e for e in cfg.get("exceptions", [])}
-    assert "_supertool.py" in exceptions, exceptions
-    assert exceptions["_supertool.py"]["issue"] == 2706
+    # #2706 used to hold _supertool.py's size exception here while its split
+    # was in progress; all ten part lanes have since landed and _supertool.py
+    # itself is well under max_file_bytes, so the exception list is empty
+    # again -- not restored, and not replaced with a different one.
+    assert cfg.get("exceptions", []) == [], cfg.get("exceptions")
+    supertool_bytes = (REPO_ROOT / "_supertool.py").stat().st_size
+    assert supertool_bytes < cfg["budget"]["max_file_bytes"], (
+        f"_supertool.py is {supertool_bytes} bytes, over the "
+        f"{cfg['budget']['max_file_bytes']}-byte budget the removed "
+        "exception used to cover -- #2706's split regressed")
 
 
 def test_building_this_repository_head_ships_every_hook_script(tmp_path):

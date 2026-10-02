@@ -35,8 +35,16 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 SUPERTOOL = ROOT / "supertool.py"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _core_sources import core_source_paths  # noqa: E402
+
 # Shipped code — what a user runs. Held to both halves of the rule, reads and
-# writes.
+# writes. "_supertool.py" here used to be the whole core; #2706 has since
+# split ten `_supertool_<x>.py` parts out of it, each a sibling top-level file
+# that is not inside any directory this tuple names, so `_shipped_files()`
+# below folds them in explicitly via `core_source_paths()` rather than
+# leaving them in the exact same repo-root blind spot a bare directory walk
+# would miss.
 SHIPPED = ("supertool.py", "_supertool.py", "presets", "hooks", "validators",
            "formatters", "notifiers")
 
@@ -156,6 +164,9 @@ def _shipped_files() -> List[Path]:
             files.extend(sorted(target.rglob("*.py")))
         elif target.is_file():
             files.append(target)
+    for part_path in core_source_paths():
+        if part_path not in files:
+            files.append(part_path)
     return files
 
 
