@@ -191,7 +191,7 @@ def test_the_measured_paths_are_absolute() -> None:
                      "_supertool_gc", "_supertool_presets", "_supertool_edit",
                      "_supertool_parse", "_supertool_payload", "_supertool_config",
                      "_supertool_read", "_supertool_grep", "_supertool_catalog",
-                     "_supertool_validate")
+                     "_supertool_validate", "_supertool_dispatch")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "
@@ -214,7 +214,9 @@ def test_the_measured_paths_are_absolute() -> None:
         "`_supertool_catalog` since the same issue split "
         "introduction/output-format/version/help/ops*/registry out of it, "
         "`_supertool_validate` since the same issue split validators, "
-        "formatters, advice and _run_with_validators out of it")
+        "formatters, advice and _run_with_validators out of it, "
+        "`_supertool_dispatch` since the same issue split dispatch/log_call "
+        "out of it too")
     paths = [line for line in lines if line not in module_names]
     assert paths, "no directory sources at all — the scope collapsed"
     for line in paths:

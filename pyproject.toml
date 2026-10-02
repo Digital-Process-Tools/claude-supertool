@@ -56,7 +56,7 @@ testpaths = ["tests"]
 # the `coverage` job in `tests.yml`, which sets that environment up and reports
 # what it measured *and what it did not*. One number, one owner. Run it locally
 # with `python3 .github/scripts/coverage_gate.py`.
-addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_doctor --cov=_supertool_gc --cov=_supertool_presets --cov=_supertool_edit --cov=_supertool_parse --cov=_supertool_payload --cov=_supertool_config --cov=_supertool_read --cov=_supertool_grep --cov=_supertool_mcp --cov=_supertool_catalog --cov=_supertool_validate --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
+addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_doctor --cov=_supertool_gc --cov=_supertool_presets --cov=_supertool_edit --cov=_supertool_parse --cov=_supertool_payload --cov=_supertool_config --cov=_supertool_read --cov=_supertool_grep --cov=_supertool_mcp --cov=_supertool_catalog --cov=_supertool_validate --cov=_supertool_dispatch --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
 # #1889: there was no supported way to get a stack out of a stuck run, in a
 # suite this repo's own notes call slow and non-hermetic -- a hang anywhere
 # in the twelve-leg matrix or the `coverage`/`slow` jobs previously ran
@@ -321,6 +321,14 @@ ignore = [
 # _supertool_guard.py above. test_part_loader_concatenated_ruff_2706.py is
 # the real check, against the concatenated load-order source.
 "_supertool_validate.py" = ["F821"]
+# F821 on _supertool.py itself is already covered above (the central
+# decision comment on "_supertool.py" = ["B023", "F821"]) -- dispatch,
+# log_call, dispatch_verdict, _bump_counter, _DISPATCH_STATE and the
+# accumulator helpers now live in _supertool_dispatch.py, loaded into this
+# same globals() dict by _load_part(), so the reverse-direction call is
+# genuinely bound at runtime even though ruff lints _supertool.py
+# standalone and has no way to see it.
+"_supertool_dispatch.py" = ["F821"]
 
 [tool.setuptools]
 # Four top-level modules, declared explicitly so setuptools doesn't try to
@@ -368,4 +376,4 @@ ignore = [
 # covering config load/merge, env knobs, exclude/gitignore/rtk and the
 # display region. `_supertool_read`/`_supertool_grep` are the same shape
 # too, covering the read-family ops and the grep/around/between family.
-py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep", "_supertool_mcp", "_supertool_catalog", "_supertool_validate", "_shipped_reference"]
+py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep", "_supertool_mcp", "_supertool_catalog", "_supertool_validate", "_supertool_dispatch", "_shipped_reference"]

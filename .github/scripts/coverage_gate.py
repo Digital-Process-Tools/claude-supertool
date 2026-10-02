@@ -370,6 +370,15 @@ ENFORCED: "dict[str, float]" = {
     # deliberate headroom for that same local-vs-CI gap, not carried
     # forward as if the narrowed figure were the real one either way.
     "_supertool_validate.py": 83.0,
+    # Moved out of _supertool.py by #2706 (dispatch, the accumulators and
+    # log_call). Measured 2026-10-02 on macOS/py3.13 over
+    # `-k "dispatch or log_call"` only, with COVERAGE_PROCESS_START set: 76%.
+    # Floored 6 points under that, more slack than this file's usual 3
+    # because `dispatch` is the universal op entry point and a huge share of
+    # the suite reaches it without "dispatch" or "log_call" in the test
+    # name -- the narrowed figure almost certainly understates the real one
+    # by more than the usual margin.
+    "_supertool_dispatch.py": 70.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -517,7 +526,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_mcp", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep", "_supertool_catalog", "_supertool_validate"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_mcp", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep", "_supertool_catalog", "_supertool_validate", "_supertool_dispatch"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
