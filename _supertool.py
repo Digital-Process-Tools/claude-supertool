@@ -127,10 +127,10 @@ import bisect  # noqa: F401 -- used only by _supertool_edit.py (#2706), which
                 # shares this module's globals() rather than importing it
 import json
 import difflib
-import hashlib
+import hashlib  # noqa: F401 -- used by _supertool_edit.py and _supertool_read.py (#2706), sharing this module's globals() rather than importing it
 import importlib.machinery
 import os
-import stat
+import stat  # noqa: F401 -- used by _supertool_config.py and _supertool_edit.py (#2706), sharing this module's globals() rather than importing it
 import re
 import shlex
 import shutil
@@ -3009,7 +3009,6 @@ def _validator_fingerprint(spec: Dict[str, Any], cmd: str,
         if sig is not None:
             parts.append(sig)
 
-    import hashlib
     fingerprint = hashlib.sha256("\x00".join(sorted(parts)).encode("utf-8")).hexdigest()
     _VALIDATOR_FINGERPRINT_CACHE[cache_key] = fingerprint
     return fingerprint
@@ -3083,7 +3082,6 @@ def _validator_meaning_version() -> str:
     if (_VALIDATOR_MEANING_VERSION is not None
             and current_stat == _VALIDATOR_MEANING_VERSION_STAT):
         return _VALIDATOR_MEANING_VERSION
-    import hashlib
     h = hashlib.sha256()
     try:
         with open(schema_path, "rb") as f:
@@ -3099,7 +3097,6 @@ def _validator_meaning_version() -> str:
 
 def _validator_cache_key(file_path: str, name: str, cmd: str,
                          spec: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    import hashlib
     try:
         with open(file_path, "rb") as f:
             content = f.read()
@@ -3162,7 +3159,6 @@ def _validator_cache_read(key: str) -> Optional[Dict[str, Any]]:
     Legacy unwrapped entries (pre-HMAC) treated as miss — they get rewritten
     in wrapped form next time the validator runs.
     """
-    import hashlib
     import hmac
     import json
     import time
@@ -3201,7 +3197,6 @@ def _validator_cache_read(key: str) -> Optional[Dict[str, Any]]:
 
 def _validator_cache_write(key: str, data: Dict[str, Any]) -> None:
     """Write a cache entry wrapped with HMAC over its JSON body."""
-    import hashlib
     import hmac
     import json
     p = _validator_cache_path(key)
