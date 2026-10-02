@@ -229,7 +229,21 @@ ignore = [
 # introduced in supertool.py will not be caught. That is the trade — 34
 # standing false positives against prospective coverage in one file — and it
 # is reversible the day those closures are lifted out of the loop.
-"_supertool.py" = ["B023"]
+#
+# F821 joined this entry once the #2706 split grew past lane 0: every
+# dispatch-table reference from _supertool.py into a name now defined in a
+# part (`op_grep`, `op_read`, `_pattern_gate`, `op_guard`, ...) reads as
+# undefined to a checker that lints this file standalone and cannot see a
+# part's own exec-time binding. The real check for an undefined name across
+# the split IS run, against the concatenated core+parts source in load
+# order, by tests/test_part_loader_concatenated_ruff_2706.py -- this entry
+# only silences the false positive ruff raises on every single cross-part
+# name _supertool.py does not define for itself. The honest cost is the same
+# shape as B023's above: a genuinely undefined name newly introduced INSIDE
+# _supertool.py's own body (not a reference into a part) would also go
+# uncaught by ruff now, though the concatenated-ruff test still catches it
+# since it parses the real, assembled namespace.
+"_supertool.py" = ["B023", "F821"]
 # Same false positive, same reason, now that the closures live here after
 # the #2706 split: the `:s` action loop closures (`_run_sub`, `_resolve_d`)
 # moved out of _supertool.py into _supertool_vim.py along with the rest of
