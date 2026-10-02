@@ -186,13 +186,15 @@ def test_the_measured_paths_are_absolute() -> None:
     the issue itself.
     """
     lines = gate._source_lines()
-    module_names = ("supertool", "_supertool", "_supertool_vim", "_supertool_guard")
+    module_names = ("supertool", "_supertool", "_supertool_vim",
+                    "_supertool_guard", "_supertool_payload")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "
         "`_supertool_vim` since #2706 split the vim implementation out of it, "
         "`_supertool_guard` since #2706 lane 0 split the raw-command guard "
-        "out the same way")
+        "out the same way, `_supertool_payload` since #2706 wave 1 split the "
+        "TOML mini-parser and @file/payload routing out the same way")
     paths = [line for line in lines if line not in module_names]
     assert paths, "no directory sources at all — the scope collapsed"
     for line in paths:

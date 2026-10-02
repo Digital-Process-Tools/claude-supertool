@@ -217,6 +217,20 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 wave 1 (the TOML mini-parser and
+    # @file/payload routing). Measured 2026-10-02 on macOS/py3.13 with
+    # `coverage run --source=. -m pytest -k "payload or toml or at_file"`,
+    # then `coverage report --include="*_supertool_payload.py"` (pytest-cov's
+    # own `--cov=_supertool_payload` resolves the argument by importing it,
+    # which this part's own standalone-import guard refuses -- #2714's lane
+    # hit the same wall and reported 0%/no-data-collected for exactly that
+    # reason; `--include` on a plain `coverage run` matches by file path
+    # instead and does not need the import to succeed): 94%. Floored 6
+    # points under the measured number rather than the usual 3 -- this is a
+    # local macOS/py3.13 number pending the CI matrix, not the figure CI
+    # itself will measure (#2714's own lane measured 86.3% locally against
+    # a CI-measured 82.75%, a gap of ~3.5 points on the real matrix).
+    "_supertool_payload.py": 88.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -364,7 +378,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_payload"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
