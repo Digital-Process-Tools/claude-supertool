@@ -56,7 +56,7 @@ testpaths = ["tests"]
 # the `coverage` job in `tests.yml`, which sets that environment up and reports
 # what it measured *and what it did not*. One number, one owner. Run it locally
 # with `python3 .github/scripts/coverage_gate.py`.
-addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
+addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_payload --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
 # #1889: there was no supported way to get a stack out of a stuck run, in a
 # suite this repo's own notes call slow and non-hermetic -- a hang anywhere
 # in the twelve-leg matrix or the `coverage`/`slow` jobs previously ran
@@ -247,6 +247,13 @@ ignore = [
 # module-level scope ruff still DOES see correctly -- only cross-FILE names
 # are the false positive).
 "_supertool_guard.py" = ["F821"]
+# Same reason as _supertool_guard.py above: _supertool_payload.py (#2706,
+# wave 1) is the TOML mini-parser and @file/payload routing, exec'd into
+# _supertool.py's own namespace by _load_part(), so ruff lints it standalone
+# with no view of the core names it uses. The real undefined-name check runs
+# against the concatenated source in load order --
+# tests/test_part_loader_concatenated_ruff_2706.py.
+"_supertool_payload.py" = ["F821"]
 
 [tool.setuptools]
 # Four top-level modules, declared explicitly so setuptools doesn't try to
@@ -283,4 +290,8 @@ ignore = [
 # every top-level `*.py` file as a module that must ship, regardless of how
 # it is loaded at runtime, and a `pip install .` that omitted it would ship a
 # core that raises ImportError on its very first guarded command.
-py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_shipped_reference"]
+# `_supertool_payload` is the same shape as `_supertool_guard` above: a
+# `_load_part()`-loaded part (#2706, wave 1), not a real import, and its
+# absence from a wheel would raise ImportError on the first guarded command
+# rather than on import.
+py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_payload", "_shipped_reference"]
