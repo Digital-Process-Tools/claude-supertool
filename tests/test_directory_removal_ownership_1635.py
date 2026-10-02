@@ -81,10 +81,14 @@ which is exactly how #1246 walked out of its intended tree.
 """
 
 import ast
+import sys
 from pathlib import Path
 
 from _repo_walk import REPO_ROOT as ROOT
 from _repo_walk import repo_python_files
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _core_sources import core_source_paths  # noqa: E402
 
 TESTS = Path(__file__).resolve().parent
 
@@ -736,9 +740,15 @@ def test_the_core_removes_no_directory_at_all() -> None:
     """`_supertool.py` is the file every op runs through, and it must stay
     incapable of removing a directory. It unlinks cache entries and its own
     write-temp files; it has never had a `shutil.rmtree`, and a checker that
-    only counted test-side sites would not notice one arriving."""
-    sites = _sites_in_source(
-        "_supertool.py", (ROOT / "_supertool.py").read_text(encoding="utf-8"))
+    only counted test-side sites would not notice one arriving.
+
+    "The core" is `_supertool.py` plus every `_supertool_<x>.py` part #2706
+    has split out of it -- scanning `_supertool.py` alone would stop seeing a
+    directory-removal call the moment the code around it moved into a part,
+    silently."""
+    sites: dict = {}
+    for path in core_source_paths():
+        _sites_in_source(path.name, path.read_text(encoding="utf-8"), sites)
     assert not sites, "the core gained a directory removal: " + repr(sites)
 
 

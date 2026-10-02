@@ -36,6 +36,8 @@ import pytest
 
 import supertool
 
+import _core_sources
+
 CORE = Path(supertool.__file__)
 
 #: `_CONFIG` is also a `None`-sentinel, and is also exempt -- legitimately. The
@@ -55,8 +57,14 @@ def _declared_none_sentinels() -> set[str]:
     the check asked "is it unbuilt right now" when the question is "is `None`
     its declared initial state". A guard that answers a different question than
     the one it is named for is the defect this file is about, one level up.
+
+    Scans core + every `_load_part`-loaded part (#2706), not `_supertool.py`
+    alone -- `_REPO_TARGET_MODES` moved into `_supertool_config.py` during the
+    wave-1 split, and a scan still anchored on `CORE.read_text()` would have
+    reported zero offenders for it forever, which reads exactly like a clean
+    build.
     """
-    tree = ast.parse(CORE.read_text(encoding="utf-8"))
+    tree = ast.parse(_core_sources.core_source_text())
     names: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.AnnAssign):
