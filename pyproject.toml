@@ -229,7 +229,7 @@ ignore = [
 # introduced in supertool.py will not be caught. That is the trade — 34
 # standing false positives against prospective coverage in one file — and it
 # is reversible the day those closures are lifted out of the loop.
-"_supertool.py" = ["B023"]
+"_supertool.py" = ["B023", "F821"]
 # Same false positive, same reason, now that the closures live here after
 # the #2706 split: the `:s` action loop closures (`_run_sub`, `_resolve_d`)
 # moved out of _supertool.py into _supertool_vim.py along with the rest of
@@ -245,7 +245,16 @@ ignore = [
 # name this file does not import for itself (Dict, Any, os, re, shlex, every
 # _guard_* helper it calls that is defined elsewhere in this same file's own
 # module-level scope ruff still DOES see correctly -- only cross-FILE names
-# are the false positive).
+# are the false positive). The same false positive runs in reverse too,
+# folded into the "_supertool.py" entry above (B023, F821): _supertool.py
+# itself calls forward into names a later-loaded part defines (e.g.
+# op_guard(), called from _supertool.py, defined in _supertool_guard.py) --
+# genuinely bound by the time that call executes, since _load_part() has
+# already exec'd the part into these same globals() by then, but invisible
+# to ruff linting this file standalone. Silenced here rather than fixed
+# name by name: tests/test_part_loader_concatenated_ruff_2706.py is the
+# check that actually verifies every name resolves, against the real
+# concatenated load order.
 "_supertool_guard.py" = ["F821"]
 "_supertool_presets.py" = ["F821"]
 
