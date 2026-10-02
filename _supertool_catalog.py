@@ -382,9 +382,9 @@ def op_help(op_name: str) -> str:
         return (f"ERROR: op '{op_name}' has no documented help in this "
                 f"project's config.\n"
                 + shipped
-                + f"  It is a valid operation — `ops:roster` lists every name "
-                f"loaded here, and the op's own error teaches its "
-                f"signature.\n")
+                + "  It is a valid operation — `ops:roster` lists every name "
+                "loaded here, and the op's own error teaches its "
+                "signature.\n")
     return (f"ERROR: no help for op: {op_name}\n"
             f"Run 'ops' for the full list of operations.\n")
 
@@ -649,7 +649,6 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
         lines.append("## Aliases (multi-op batches)\n")
         for name, info in active_aliases.items():
             desc = _emit_desc(info)
-            ops_list = info.get("ops", [])
             syntax = info.get("syntax", f"{name}:PATH")
             lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
             if _emit_example(info):
