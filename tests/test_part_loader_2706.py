@@ -214,7 +214,14 @@ def test_no_top_level_name_is_defined_in_two_places():
 #: either be named by a `_load_part(...)` call, or be declared here as a real
 #: module -- so a new root file that is neither gets caught rather than
 #: silently shipping unreferenced or, worse, unshipped.
-DECLARED_REAL_MODULES = frozenset({"_supertool_vim"})
+#:
+#: `_supertool_doctor.py`/`_supertool_gc.py` are the same shape as
+#: `_supertool_vim.py`: real, separately-importable modules (#2706), each
+#: loaded lazily via a plain `import` inside the op_doctor/op_init/op_gc
+#: stubs still in `_supertool.py` -- not through `_load_part`.
+DECLARED_REAL_MODULES = frozenset({
+    "_supertool_vim", "_supertool_doctor", "_supertool_gc",
+})
 
 
 def test_every_root_supertool_underscore_file_is_accounted_for():
