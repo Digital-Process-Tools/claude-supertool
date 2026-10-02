@@ -56,7 +56,7 @@ testpaths = ["tests"]
 # the `coverage` job in `tests.yml`, which sets that environment up and reports
 # what it measured *and what it did not*. One number, one owner. Run it locally
 # with `python3 .github/scripts/coverage_gate.py`.
-addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
+addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
 # #1889: there was no supported way to get a stack out of a stuck run, in a
 # suite this repo's own notes call slow and non-hermetic -- a hang anywhere
 # in the twelve-leg matrix or the `coverage`/`slow` jobs previously ran
@@ -237,9 +237,16 @@ ignore = [
 "_supertool_vim.py" = ["B023"]
 
 [tool.setuptools]
-# Three top-level modules, declared explicitly so setuptools doesn't try to
+# Four top-level modules, declared explicitly so setuptools doesn't try to
 # flat-layout-autodiscover (hooks/, presets/, notifiers/, etc. are tool dirs,
 # not Python packages).
+#
+# `_supertool_vim` is not optional either, for the same reason `_supertool`
+# below is not: `_supertool.py`'s op_vim() stub does `import _supertool_vim`
+# lazily on the first `vim` call (#2706), so a wheel missing it installs
+# cleanly and dies on that first call rather than on import.
+# test_entry_point_shim_931.py's test_pyproject_declares_every_top_level_module
+# derives the required set from the tree and fails if this list drifts from it.
 #
 # `_supertool` is not optional here and its absence would not be loud: the
 # console script imports `supertool`, which imports `_supertool`, so a wheel
