@@ -217,6 +217,18 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 (the custom-op / preset resolution
+    # region -- _safe_path, containment, _expand_env, _resolve_custom_op,
+    # alias resolution). Measured 2026-10-02 on macOS/py3.13 over the
+    # targeted selection named in this part's own lane report (a narrowed,
+    # local-only run, not the full suite this gate itself runs -- see
+    # CLAUDE.md on why the full suite is not run locally, and not the CI
+    # number either): 83%. Floored 6 points under that rather than the usual
+    # 3 -- PR #2714 measured a sibling part's CI coverage 3.5 points below
+    # its own local narrowed number (82.75% vs. 86.3%), so this number is
+    # pending CI and the wider margin absorbs that gap until CI's own figure
+    # is known.
+    "_supertool_presets.py": 77.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -364,7 +376,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_presets"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
