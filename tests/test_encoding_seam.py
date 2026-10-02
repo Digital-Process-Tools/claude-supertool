@@ -34,19 +34,54 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPERTOOL = ROOT / "supertool.py"
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _core_sources import core_source_paths  # noqa: E402
+_CORE_IMPL = ROOT / "_supertool.py"
 
 # Shipped code — what a user runs. Held to both halves of the rule, reads and
 # writes. "_supertool.py" here used to be the whole core; #2706 has since
 # split ten `_supertool_<x>.py` parts out of it, each a sibling top-level file
 # that is not inside any directory this tuple names, so `_shipped_files()`
-# below folds them in explicitly via `core_source_paths()` rather than
-# leaving them in the exact same repo-root blind spot a bare directory walk
-# would miss.
+# below folds them in explicitly via `_part_paths()` rather than leaving them
+# in the exact same repo-root blind spot a bare directory walk would miss.
+#
+# `_part_paths()` is a standalone copy of `tests/_core_sources.py`'s own
+# `_load_part(...)` AST scan, not an import of that module (#2287 review,
+# third CI red): `.github/scripts/check_encoding_seam.py` imports this file
+# alone, by path, into a temp copy of the changed files only -- a sibling
+# `tests/_core_sources.py` is never copied alongside it there, so an import
+# of it raises `ModuleNotFoundError` in that one caller and the script
+# declines the whole scan rather than running it. This file has to stay
+# importable standalone; the duplication is one indirect `# noqa: F401 (not
+# actually unused, scanned at runtime)`-free copy of ~15 lines, not a new
+# dependency.
 SHIPPED = ("supertool.py", "_supertool.py", "presets", "hooks", "validators",
            "formatters", "notifiers")
+
+
+def _part_paths() -> List[Path]:
+    """`_supertool.py` plus every `_load_part("name")` target, in file order.
+
+    Only a literal string first argument is recognised, matching
+    `tests/_core_sources.py::part_names_in_load_order` exactly -- see that
+    module's own docstring for why a future indirect call should report a
+    miss rather than resolve incorrectly.
+    """
+    try:
+        source = _CORE_IMPL.read_text(encoding="utf-8")
+    except OSError:
+        return [_CORE_IMPL]
+    names = []
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_load_part"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            names.append((node.lineno, node.args[0].value))
+    names.sort(key=lambda pair: pair[0])
+    return [_CORE_IMPL] + [ROOT / (name + ".py") for _, name in names]
 
 # `tests/` is scanned too, but for **reads only** (#461). The ~1670 `write_text()`
 # fixture calls are the noise that made #418's blanket exclusion correct; the
@@ -164,7 +199,7 @@ def _shipped_files() -> List[Path]:
             files.extend(sorted(target.rglob("*.py")))
         elif target.is_file():
             files.append(target)
-    for part_path in core_source_paths():
+    for part_path in _part_paths():
         if part_path not in files:
             files.append(part_path)
     return files
