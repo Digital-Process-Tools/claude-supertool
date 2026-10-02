@@ -25,6 +25,15 @@ if "_load_part" not in globals():
         "supertool.py, or `import _supertool` instead."
     )
 
+# `Union` is imported here, not assumed from _supertool.py's own `from typing
+# import ...` line, because this is its only user left in the core+parts
+# tree -- the core's own import would otherwise be a dead F401 the moment
+# this part moved out with the one function that used it
+# (_payload_literal_backslashes_scope). A real import at the top of an
+# exec'd part still binds into the shared globals(), the same as every name
+# this file defines.
+from typing import Union
+
 
 def _detect_payload_format(raw: str) -> str:
     """Return 'json' if first non-whitespace char is { or [, else 'toml'.
