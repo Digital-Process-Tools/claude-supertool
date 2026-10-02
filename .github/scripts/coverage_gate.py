@@ -337,6 +337,25 @@ ENFORCED: "dict[str, float]" = {
     # the same run as _supertool_read.py above: 90%, a LOCAL number pending
     # CI -- floored 6 points under for the same reason.
     "_supertool_grep.py": 84.0,
+    # Moved out of _supertool.py by #2706 (introduction/output-format/
+    # version/help/ops*/registry). Measured locally 2026-10-02 on
+    # macOS/py3.13 over `-n0 --cov=_supertool_catalog` (a plain `pytest
+    # -n auto` collection reports `module-not-imported` / 0% for a part
+    # loaded via `exec(code, globals())` rather than a real `import` --
+    # same reason `_supertool_guard.py`/`_supertool_doctor.py` above carry
+    # the same note; `-n0` runs in-process so coverage sees the exec), over
+    # a narrowed selection (not the full suite -- see CLAUDE.md on why the
+    # full suite is not run locally) of the tests that exercise these ops
+    # directly: 92%. Floored 6 points under that rather than this file's own
+    # 3-point _SLACK convention (wider margin asked for explicitly for this
+    # part): a narrowed local selection can overestimate when unrelated
+    # co-selected tests incidentally exercise the same module. The local
+    # `coverage_gate.py` run will print a "floor is stale" advisory for this
+    # entry because of the wider margin -- advisory only (see _SLACK's use
+    # below: it never appends to `failures`) -- not carried forward as the
+    # real figure either way; CI's dedicated `coverage` job over the full
+    # suite is the authoritative number.
+    "_supertool_catalog.py": 86.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -484,7 +503,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_mcp", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_mcp", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep", "_supertool_catalog"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
