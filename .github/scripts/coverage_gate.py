@@ -217,6 +217,22 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 wave 1 (the write-op region:
+    # op_replace/op_edit/op_json_set/op_paste/op_append/op_replace_lines and
+    # the atomic-write/rollback/near-miss-diagnostic helpers they share).
+    # Measured 2026-10-02 on macOS/py3.13 with `pytest -n0 -k "edit or
+    # replace or paste or append or json_set or rollback or atomic" --cov=
+    # _supertool_edit` (a narrowed, non-xdist run, not the full suite -- see
+    # CLAUDE.md on why the full suite is not run locally; xdist disabled
+    # because the out-of-process measurement this gate normally relies on,
+    # COVERAGE_PROCESS_START, measured 0% against a narrowed -k selection
+    # under -n auto in this same investigation): 87%. Floored 6 points under
+    # that, not the usual 3 (_SLACK below): CI has measured as much as 3.5
+    # points lower than a local macOS/py3.13 run elsewhere in this split
+    # (#2706 lane 0's own review), and this entry has only ever been
+    # measured locally, never on CI, so the usual slack is doubled rather
+    # than carried forward as if the local figure were the CI figure.
+    "_supertool_edit.py": 81.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -364,7 +380,8 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard",
+           "_supertool_edit"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
