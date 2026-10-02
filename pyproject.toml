@@ -229,7 +229,20 @@ ignore = [
 # introduced in supertool.py will not be caught. That is the trade — 34
 # standing false positives against prospective coverage in one file — and it
 # is reversible the day those closures are lifted out of the loop.
-"_supertool.py" = ["B023"]
+#
+# F821 — the mirror image of every part's own F821 ignore above/below: the
+# CORE calls into names that now live in a _supertool_<x>.py part (op_guard,
+# _split_arg, _valid_op_names, _op_safety_class, ... -- one call site per
+# moved name, growing with every further #2706 lane), by bare name, relying
+# on `_load_part`'s shared globals() to resolve them at runtime. Ruff lints
+# this file standalone and has no way to see a name defined in a sibling
+# file that is merely `exec`'d into this one's namespace. Discovered by
+# `lint_new_files.py --base 542d76d7 --head eb4b1820` showing exactly one
+# such finding (`op_guard`) for lane 0's own commit, unaddressed until this
+# lane's own diff multiplied it to ~60 by moving far more names out. The real
+# check, as for every part, is tests/test_part_loader_concatenated_ruff_2706.py
+# over core+parts joined in load order.
+"_supertool.py" = ["B023", "F821"]
 # Same false positive, same reason, now that the closures live here after
 # the #2706 split: the `:s` action loop closures (`_run_sub`, `_resolve_d`)
 # moved out of _supertool.py into _supertool_vim.py along with the rest of

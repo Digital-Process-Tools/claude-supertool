@@ -502,7 +502,7 @@ def _unknown_op_message(op: str) -> str:
                 f"this call's first op 'cwd:<project-path>' pointing at a project "
                 f"that already enables it.\n"
                 + _cwd_retargets_note(op)
-                + f"       'ops' lists what is loaded here.\n"
+                + "       'ops' lists what is loaded here.\n"
             )
         skipped = _skipped_config()
         if skipped:
@@ -528,7 +528,7 @@ def _unknown_op_message(op: str) -> str:
                 f"loaded — only the built-ins.\n"
                 + fix
                 + ("" if conflicted else _cwd_retargets_note(op))
-                + f"       'ops' lists what is loaded here.\n"
+                + "       'ops' lists what is loaded here.\n"
             )
         return (
             f"ERROR: op '{op}' is unavailable here, not unknown — it is provided by "
@@ -538,7 +538,7 @@ def _unknown_op_message(op: str) -> str:
             f"       Fix: run it from a project that enables the '{preset}' preset, "
             f"or make this call's first op 'cwd:<project-path>'.\n"
             + _cwd_retargets_note(op)
-            + f"       'ops' lists what is loaded here.\n"
+            + "       'ops' lists what is loaded here.\n"
         )
     msg = f"ERROR: unknown operation: {op}\n"
     # Above the roster, not instead of it (#1222). The suggestion can still be
