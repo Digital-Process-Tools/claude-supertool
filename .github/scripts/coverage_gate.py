@@ -217,6 +217,19 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 (the read-family ops: render_file,
+    # op_read, op_glob, op_ls, op_head, op_tail, op_wc, op_stat, op_tree,
+    # op_map and the tree-sitter/ctags symbol-map internals). Measured
+    # 2026-10-02 on macOS/py3.13 over a narrowed read/grep/around/between/
+    # map/tree/glob selection, not the full suite this gate itself runs (see
+    # CLAUDE.md on why the full suite is not run locally): 80%. Floored 3
+    # points under that, the same slack this file already gives every other
+    # entry (_SLACK below).
+    "_supertool_read.py": 77.0,
+    # Moved out of _supertool.py by #2706 (op_grep, op_around,
+    # op_between_symbol, op_between_pattern and the pattern gate). Measured
+    # the same run as _supertool_read.py above: 90%. Floored 3 points under.
+    "_supertool_grep.py": 87.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -364,7 +377,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_read", "_supertool_grep"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
