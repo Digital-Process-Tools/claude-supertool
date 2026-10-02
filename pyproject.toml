@@ -56,7 +56,7 @@ testpaths = ["tests"]
 # the `coverage` job in `tests.yml`, which sets that environment up and reports
 # what it measured *and what it did not*. One number, one owner. Run it locally
 # with `python3 .github/scripts/coverage_gate.py`.
-addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_doctor --cov=_supertool_gc --cov=_supertool_presets --cov=_supertool_edit --cov=_supertool_parse --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
+addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_doctor --cov=_supertool_gc --cov=_supertool_presets --cov=_supertool_edit --cov=_supertool_parse --cov=_supertool_payload --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
 # #1889: there was no supported way to get a stack out of a stuck run, in a
 # suite this repo's own notes call slow and non-hermetic -- a hang anywhere
 # in the twelve-leg matrix or the `coverage`/`slow` jobs previously ran
@@ -279,6 +279,13 @@ ignore = [
 # the op-names/synonyms/safety-classes span and the arg-splitting/colon- and
 # extra-token-refusal span alike.
 "_supertool_parse.py" = ["F821"]
+# Same reason as _supertool_guard.py above: _supertool_payload.py (#2706,
+# wave 1) is the TOML mini-parser and @file/payload routing, exec'd into
+# _supertool.py's own namespace by _load_part(), so ruff lints it standalone
+# with no view of the core names it uses. The real undefined-name check runs
+# against the concatenated source in load order --
+# tests/test_part_loader_concatenated_ruff_2706.py.
+"_supertool_payload.py" = ["F821"]
 
 [tool.setuptools]
 # Four top-level modules, declared explicitly so setuptools doesn't try to
@@ -319,5 +326,8 @@ ignore = [
 # `_supertool_edit` is the same shape, carrying the write-op region (#2706
 # wave 1): op_replace/op_edit/op_json_set/op_paste/op_append/
 # op_replace_lines and the atomic-write/rollback/diagnostic helpers they
-# share.
-py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_shipped_reference"]
+# share. `_supertool_payload` is the same shape too: a `_load_part()`-loaded
+# part (#2706, wave 1), not a real import, and its absence from a wheel
+# would raise ImportError on the first guarded command rather than on
+# import.
+py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_shipped_reference"]
