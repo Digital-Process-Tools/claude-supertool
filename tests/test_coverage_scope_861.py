@@ -188,7 +188,8 @@ def test_the_measured_paths_are_absolute() -> None:
     lines = gate._source_lines()
     module_names = ("supertool", "_supertool", "_supertool_vim",
                      "_supertool_guard", "_supertool_doctor", "_supertool_gc",
-                     "_supertool_presets", "_supertool_edit", "_supertool_parse")
+                     "_supertool_presets", "_supertool_edit", "_supertool_parse",
+                     "_supertool_payload")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "
@@ -200,7 +201,9 @@ def test_the_measured_paths_are_absolute() -> None:
         "resolution region out the same way, `_supertool_edit` since #2706 "
         "wave 1 split the write-op region out the same way, "
         "`_supertool_parse` since the same issue's parse lane split op "
-        "names/synonyms/safety-classes/arg-parsing out the same way")
+        "names/synonyms/safety-classes/arg-parsing out the same way, "
+        "`_supertool_payload` since #2706 wave 1 split the TOML mini-parser "
+        "and @file/payload routing out the same way")
     paths = [line for line in lines if line not in module_names]
     assert paths, "no directory sources at all — the scope collapsed"
     for line in paths:
