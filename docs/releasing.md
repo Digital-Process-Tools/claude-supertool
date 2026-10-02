@@ -25,15 +25,28 @@ came from.
 
 ## The sequence
 
+This repository's own release step is not a human running the sequence below by hand:
+`.oss.json`'s `release.authority` is `"loop"`, so the oss plugin's `releaser` agent
+(`agents/releaser.md` in that plugin) is the one with tag-and-publish authority, and
+`.oss.json` also pins `merge_method: squash` and `tag_pattern: v{version}`. Confirmed
+from this repository's own history (`git log --oneline -- pyproject.toml`): a release
+is a single-parent `chore(release): x.y.z` commit directly on `master` (not a merged
+pull request), immediately tagged `vx.y.z` -- the same shape claude-remember's own
+docs describe as "a direct commit on `main`, not a pull request", here performed by
+the releaser agent rather than typed by a person.
+
 1. **Fold `changelog.d/` into a `## [x.y.z]` section of `CHANGELOG.md` and bump every
-   version site** (`.oss.json`'s `version_sites`: `.claude-plugin/plugin.json`,
-   `_supertool.py`, `pyproject.toml`, `CHANGELOG.md`, `README.md`).
-2. **Run the test suite and commit the release on `master`.**
-3. **Tag that commit `vx.y.z` and push the tag with your own credentials**:
-   `git tag vx.y.z <release-commit-sha> && git push origin vx.y.z`. A tag pushed by
-   another workflow with `GITHUB_TOKEN` does not start workflows (GitHub suppresses
-   them to prevent loops), so this has to be a person's (or the release flow's own)
-   push.
+   version site.** `.oss.json`'s `version_sites` names exactly five:
+   `.claude-plugin/plugin.json`, `_supertool.py`, `pyproject.toml`, `CHANGELOG.md`,
+   `README.md`. `tests/test_version_sites_agree_1854.py` reads that same list and
+   fails if any site disagrees with `_supertool.VERSION`.
+2. **Run the test suite and commit the release on `master`** as `chore(release):
+   x.y.z`.
+3. **Tag that commit `vx.y.z` and push the tag.** The releaser agent does this with
+   the maintainer's own credentials (never `GITHUB_TOKEN`): a tag pushed by another
+   workflow with `GITHUB_TOKEN` does not start workflows at all (GitHub suppresses
+   them to prevent loops), so a `GITHUB_TOKEN`-authored tag would silently never
+   trigger `release-branch.yml`.
 4. **Watch the `release branch` run** (`gh run list --workflow release-branch.yml`).
    Two jobs:
    - `verify`, read-only: installs PyYAML, builds the tree from the tag, runs
@@ -58,6 +71,20 @@ came from.
    branch is pointed at it, through the push webhook or a periodic scan. A version
    with a policy hold waits for an Anthropic reviewer.
 
+**Not yet done, and out of scope for #2705 (named in the issue itself):** pointing
+the developer portal's "Tracked branch or tag" at `release`, and setting up the
+GitHub push webhook. Both are human steps in claude.ai's portal, and the portal
+cannot accept them while a listing is with a reviewer -- which this one is. Until
+that switch happens, `release` can exist and be checked locally, but the directory
+keeps scanning whatever branch it is still tracking.
+
+**No scan of the slim `release` tree exists yet.** Everything below about file
+counts and sizes is measured locally (`check_release_tree.py` / `smoke_release_tree.py`
+against a tree built from the latest tag); there is no portal "Versions" tab entry
+for a `release`-branch commit of this plugin to compare it against, unlike
+claude-remember's own `docs/releasing.md`, which could show a before/after table
+from two real scans. That table is deliberately not reproduced here.
+
 ## What the release tree contains
 
 [`build_release_tree.py`](../.github/scripts/build_release_tree.py) reads the tag
@@ -65,21 +92,31 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
 `git archive`, which would need `export-ignore`). Then:
 
 - **It drops the deny-list** in
-  [`.github/release-branch.json`](../.github/release-branch.json): `tests/`, `docs/`,
-  `.github/`, `.githooks/`, `.claude/`, `.oss/`, `changelog.d/`, `outbound/`,
-  `trap.d/`, `.editorconfig`, `.markdownlint.json`, `.oss.json`, `.supertool.json`,
-  `.supertool.example.json`, `CLAUDE.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`,
-  `SECURITY.md`, `pyproject.toml`. It is a deny-list on purpose: a path nobody listed
-  still ships, and the check catches it loudly if it is too big. With an allow-list, a
-  forgotten runtime file would vanish from every user's install with no error
-  anywhere. A new dev-only top-level file or directory needs adding here.
+  [`.github/release-branch.json`](../.github/release-branch.json). It is a deny-list
+  on purpose: a path nobody listed still ships, and the check catches it loudly if it
+  is too big. With an allow-list, a forgotten runtime file would vanish from every
+  user's install with no error anywhere. A new dev-only top-level file or directory
+  needs adding here.
 
-  **Not denied, on purpose, even though they look like dev config:**
+  | Entry | Why denied |
+  | --- | --- |
+  | `tests/`, `docs/` | not read by the running plugin |
+  | `.github/`, `.githooks/` | CI and local git-hook tooling |
+  | `.claude/`, `.oss/` | this checkout's own jit-context rules and maintainer-loop state, not shipped plugin code |
+  | `changelog.d/`, `trap.d/`, `outbound/` | pending-fragment / lesson / draft directories the maintainer loop writes to, not runtime inputs |
+  | `.editorconfig`, `.markdownlint.json` | editor/linter config for this checkout, read by no op |
+  | `.oss.json`, `.supertool.json` | this repository's own dev config -- a user's install reads *their* `.supertool.json`, never this repo's |
+  | `.supertool.example.json` | a copy-paste template referenced only from denied docs |
+  | `CLAUDE.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md` | governance prose for contributors to this repository, not loaded by the plugin |
+  | `pyproject.toml` | packaging metadata for the pip route, not read at runtime |
+
+  **Kept, on purpose, even though they look like dev config:**
   `_shipped_reference.py` is the fallback `_shipped_config()` reads once
   `.supertool.json` is absent beside `_supertool.py` (the pip-install route, #1783) --
   and this release tree denies `.supertool.json`, so the fallback is load-bearing
   here. `.mcp.json` registers the `claude-channel` notifier the plugin manifest
-  declares.
+  declares, and `hooks/`, `presets/`, `validators/`, `formatters/`, `notifiers/`,
+  `.claude-plugin/`, `_supertool.py` and `supertool.py` are the plugin itself.
 - **It cuts `CHANGELOG.md`** to the latest released `## [x.y.z]` section, skipping
   `[Unreleased]` even when it has entries, plus that section's link and a link to the
   full file on `master`.
