@@ -56,7 +56,7 @@ testpaths = ["tests"]
 # the `coverage` job in `tests.yml`, which sets that environment up and reports
 # what it measured *and what it did not*. One number, one owner. Run it locally
 # with `python3 .github/scripts/coverage_gate.py`.
-addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_doctor --cov=_supertool_gc --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
+addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_doctor --cov=_supertool_gc --cov=_supertool_mcp --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
 # #1889: there was no supported way to get a stack out of a stuck run, in a
 # suite this repo's own notes call slow and non-hermetic -- a hang anywhere
 # in the twelve-leg matrix or the `coverage`/`slow` jobs previously ran
@@ -229,7 +229,17 @@ ignore = [
 # introduced in supertool.py will not be caught. That is the trade — 34
 # standing false positives against prospective coverage in one file — and it
 # is reversible the day those closures are lifted out of the loop.
-"_supertool.py" = ["B023"]
+#
+# F821 — added alongside B023 by #2706's mcp/lsp/workspace part: core code
+# that stayed behind (the validator-env helpers, `_maybe_restart_mcp`, the
+# dispatch ladder) calls names (`op_resolve`, `_mcp_stop_server`,
+# `_MCP_AUTOSPAWN_ENV`, ...) that now live only in `_supertool_mcp.py`,
+# loaded into this module's own globals() by `_load_part` at runtime. Ruff
+# lints this file standalone and cannot see across that exec boundary, so it
+# reports every one of those names as undefined -- the same false positive
+# `_supertool_mcp.py`'s own entry below exists to silence, mirrored here for
+# the reverse direction.
+"_supertool.py" = ["B023", "F821"]
 # Same false positive, same reason, now that the closures live here after
 # the #2706 split: the `:s` action loop closures (`_run_sub`, `_resolve_d`)
 # moved out of _supertool.py into _supertool_vim.py along with the rest of
@@ -247,6 +257,14 @@ ignore = [
 # module-level scope ruff still DOES see correctly -- only cross-FILE names
 # are the false positive).
 "_supertool_guard.py" = ["F821"]
+# Same reason (#2706): a part is exec(code, globals())'d into _supertool.py's
+# own namespace at runtime, not imported, so every name this file uses that
+# _supertool.py (or an earlier-loaded part) defines is genuinely bound by the
+# time it runs -- but ruff lints it standalone. The real check is
+# tests/test_part_loader_concatenated_ruff_2706.py, against the concatenated
+# source in load order; this entry only silences the single-file false
+# positive on names like Dict, Any, os, re, _mcp_specs, _load_config, op_map.
+"_supertool_mcp.py" = ["F821"]
 
 [tool.setuptools]
 # Four top-level modules, declared explicitly so setuptools doesn't try to
@@ -283,4 +301,4 @@ ignore = [
 # every top-level `*.py` file as a module that must ship, regardless of how
 # it is loaded at runtime, and a `pip install .` that omitted it would ship a
 # core that raises ImportError on its very first guarded command.
-py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_shipped_reference"]
+py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_mcp", "_supertool_doctor", "_supertool_gc", "_shipped_reference"]
