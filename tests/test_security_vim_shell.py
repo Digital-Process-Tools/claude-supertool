@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+import _supertool_vim
 
 
 @pytest.fixture
@@ -77,7 +78,7 @@ class TestVimShellGate:
         # rejects the FIRST `:!` already. So the only way to reach the dot-repeat
         # gate is via a pre-existing last_change from a previous call — we can't
         # set that up cleanly here. Instead just verify the gate function:
-        gate_msg = supertool._check_vim_shell_allowed()
+        gate_msg = _supertool_vim._check_vim_shell_allowed()
         assert gate_msg is not None and "SUPERTOOL_ALLOW_VIM_SHELL" in gate_msg
 
 
@@ -134,24 +135,24 @@ class TestVimShellJsonOptIn:
     def test_json_allow_vim_shell_true_opens(self, vim_shell_off, monkeypatch):
         monkeypatch.setattr(supertool, "_CONFIG", {"allow_vim_shell": True})
         monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-        assert supertool._check_vim_shell_allowed() is None
+        assert _supertool_vim._check_vim_shell_allowed() is None
 
     def test_json_allow_vim_shell_false_stays_strict(self, vim_shell_off, monkeypatch):
         monkeypatch.setattr(supertool, "_CONFIG", {"allow_vim_shell": False})
         monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-        msg = supertool._check_vim_shell_allowed()
+        msg = _supertool_vim._check_vim_shell_allowed()
         assert msg is not None
         assert "SUPERTOOL_ALLOW_VIM_SHELL" in msg
 
     def test_json_missing_key_stays_strict(self, vim_shell_off, monkeypatch):
         monkeypatch.setattr(supertool, "_CONFIG", {"compact": True})
         monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-        assert supertool._check_vim_shell_allowed() is not None
+        assert _supertool_vim._check_vim_shell_allowed() is not None
 
     def test_error_message_mentions_both_knobs(self, vim_shell_off, monkeypatch):
         monkeypatch.setattr(supertool, "_CONFIG", {})
         monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-        msg = supertool._check_vim_shell_allowed()
+        msg = _supertool_vim._check_vim_shell_allowed()
         assert "SUPERTOOL_ALLOW_VIM_SHELL" in msg
         assert "allow_vim_shell" in msg
         assert ".supertool.json" in msg

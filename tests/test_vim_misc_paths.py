@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import supertool
+import _supertool_vim
 
 
 def _run(tmp_path: Path, initial: str, script: str) -> str:
@@ -18,7 +19,7 @@ def _run(tmp_path: Path, initial: str, script: str) -> str:
 
 
 def _write_state(file_path: str, content: str) -> Path:
-    state_path = Path(supertool._vim_cursor_state_path(file_path))
+    state_path = Path(_supertool_vim._vim_cursor_state_path(file_path))
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(content)
     return state_path
@@ -31,7 +32,7 @@ def test_vim_load_state_with_invalid_json_falls_back_to_legacy(tmp_path: Path, m
     f.write_text("hello\n")
     sp = _write_state(str(f), "5")  # bare int — legacy form
     try:
-        state = supertool._vim_load_state(str(f), 100)
+        state = _supertool_vim._vim_load_state(str(f), 100)
         assert state["cursor"] == 5
         assert state["marks"] == {}
         assert state["last_edit"] is None
@@ -44,7 +45,7 @@ def test_vim_load_state_with_dict_containing_corrupt_cursor(tmp_path: Path) -> N
     f.write_text("hello\n")
     sp = _write_state(str(f), '{"cursor": "nope"}')
     try:
-        state = supertool._vim_load_state(str(f), 100)
+        state = _supertool_vim._vim_load_state(str(f), 100)
         # ValueError on int() → falls to legacy try, which also fails → default.
         assert state["cursor"] == 0
     finally:
@@ -56,7 +57,7 @@ def test_vim_load_state_with_complete_garbage_returns_default(tmp_path: Path) ->
     f.write_text("hello\n")
     sp = _write_state(str(f), "not-json-not-int-just-garbage")
     try:
-        state = supertool._vim_load_state(str(f), 100)
+        state = _supertool_vim._vim_load_state(str(f), 100)
         assert state["cursor"] == 0
         assert state["marks"] == {}
     finally:
@@ -68,7 +69,7 @@ def test_vim_load_state_with_negative_cursor_clamped(tmp_path: Path) -> None:
     f.write_text("hello\n")
     sp = _write_state(str(f), '{"cursor": -50}')
     try:
-        state = supertool._vim_load_state(str(f), 100)
+        state = _supertool_vim._vim_load_state(str(f), 100)
         assert state["cursor"] == 0  # clamped to 0
     finally:
         sp.unlink(missing_ok=True)
@@ -81,7 +82,7 @@ def test_vim_load_state_with_oversize_cursor_clamped(tmp_path: Path, monkeypatch
     f.write_text("hi\n")
     sp = _write_state(str(f), '{"cursor": 9999}')
     try:
-        state = supertool._vim_load_state(str(f), 3)
+        state = _supertool_vim._vim_load_state(str(f), 3)
         assert state["cursor"] == 3  # clamped to content_len
     finally:
         sp.unlink(missing_ok=True)

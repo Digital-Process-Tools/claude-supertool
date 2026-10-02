@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import supertool
+import _supertool_vim
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +25,7 @@ def test_lint_timeout_is_reported_not_swallowed(tmp_path: Path, monkeypatch) -> 
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     monkeypatch.setattr(subprocess, "run", _timeout_run)
-    out = supertool._vim_render_lint(str(f))
+    out = _supertool_vim._vim_render_lint(str(f))
     assert "TIMED OUT" in out
     assert out != ""
 
@@ -36,7 +37,7 @@ def test_lint_timeout_is_not_reported_as_a_lint_failure(
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
     monkeypatch.setattr(subprocess, "run", _timeout_run)
-    assert "POST-EDIT LINT FAILED" not in supertool._vim_render_lint(str(f))
+    assert "POST-EDIT LINT FAILED" not in _supertool_vim._vim_render_lint(str(f))
 
 
 def test_lint_timeout_is_configurable(tmp_path: Path, monkeypatch) -> None:
@@ -50,7 +51,7 @@ def test_lint_timeout_is_configurable(tmp_path: Path, monkeypatch) -> None:
     f.write_text("a = 1\n")
     monkeypatch.setenv("SUPERTOOL_LINT_TIMEOUT", "30")
     monkeypatch.setattr(subprocess, "run", _capture)
-    out = supertool._vim_render_lint(str(f))
+    out = _supertool_vim._vim_render_lint(str(f))
     assert seen["timeout"] == 30
     assert "30s" in out
 
@@ -68,7 +69,7 @@ def test_bad_lint_timeout_env_falls_back_to_the_default(
     f.write_text("a = 1\n")
     monkeypatch.setenv("SUPERTOOL_LINT_TIMEOUT", "not-a-number")
     monkeypatch.setattr(subprocess, "run", _capture)
-    supertool._vim_render_lint(str(f))
+    _supertool_vim._vim_render_lint(str(f))
     assert seen["timeout"] == supertool._LINT_TIMEOUT_DEFAULT
 
 
@@ -99,7 +100,7 @@ def test_a_missing_binary_still_lints_silently(tmp_path: Path, monkeypatch) -> N
     )
     f = tmp_path / "x.php"
     f.write_text("<?php\necho 'hi';\n")
-    assert supertool._vim_render_lint(str(f)) == ""
+    assert _supertool_vim._vim_render_lint(str(f)) == ""
 
 
 def test_a_checker_that_cannot_be_started_declines(tmp_path: Path, monkeypatch) -> None:
@@ -110,7 +111,7 @@ def test_a_checker_that_cannot_be_started_declines(tmp_path: Path, monkeypatch) 
     f.write_text("a = 1\n")
     monkeypatch.setattr(subprocess, "run",
                         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
-    out = supertool._vim_render_lint(str(f))
+    out = _supertool_vim._vim_render_lint(str(f))
     assert "POST-EDIT LINT DECLINED" in out
     assert "py_compile" in out
     assert "NOT checked" in out
@@ -130,14 +131,14 @@ def test_the_python_lint_never_bets_on_a_path_lookup(tmp_path: Path, monkeypatch
     monkeypatch.setattr(subprocess, "run", capture)
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
-    supertool._vim_render_lint(str(f))
+    _supertool_vim._vim_render_lint(str(f))
     assert seen["cmd"][0] == sys.executable
 
 
 def test_a_clean_lint_still_says_so(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("a = 1\n")
-    out = supertool._vim_render_lint(str(f))
+    out = _supertool_vim._vim_render_lint(str(f))
     assert "TIMED OUT" not in out and "FAILED" not in out
 
 
