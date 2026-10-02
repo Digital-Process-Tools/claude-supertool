@@ -25,6 +25,7 @@ import subprocess
 from pathlib import Path
 
 import supertool
+import _supertool_doctor
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -275,7 +276,7 @@ def test_init_declines_when_git_ls_files_fails(tmp_path, monkeypatch) -> None:
     real gap from a tool that could not look (audit finding 1)."""
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
-    monkeypatch.setattr(supertool, "_init_tracked_files", lambda root: None)
+    monkeypatch.setattr(_supertool_doctor, "_init_tracked_files", lambda root: None)
     out = supertool.op_init("")
     assert "ERROR" in out
     assert "ls-files" in out
@@ -295,14 +296,14 @@ def test_init_repo_root_compare_tolerates_case_that_normcase_folds(tmp_path, mon
     reasoned rather than fully observed on this box)."""
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
-    real_run_git = supertool._init_run_git
+    real_run_git = _supertool_doctor._init_run_git
 
     def _shout_toplevel(args, cwd):
         out = real_run_git(args, cwd)
         if args[:2] == ["rev-parse", "--show-toplevel"] and out:
             return out.upper()
         return out
-    monkeypatch.setattr(supertool, "_init_run_git", _shout_toplevel)
+    monkeypatch.setattr(_supertool_doctor, "_init_run_git", _shout_toplevel)
     monkeypatch.setattr(supertool.os.path, "normcase", lambda p: p.upper())
 
     out = supertool.op_init("")

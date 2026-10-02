@@ -22,6 +22,7 @@ import pytest
 from _symlink import requires_symlink
 
 import supertool
+import _supertool_gc
 
 DAY = 86400.0
 
@@ -56,7 +57,7 @@ def test_retention_boundary_is_exact(cache: Path) -> None:
     stale = _entry(cache / "vim-undo" / "stale", age=retention + 1, now=now)
     fresh = _entry(cache / "vim-undo" / "fresh", age=retention - 1, now=now)
 
-    res = supertool._gc_sweep_kind("vim-undo", retention, dry=False, now=now)
+    res = _supertool_gc._gc_sweep_kind("vim-undo", retention, dry=False, now=now)
 
     assert not stale.exists()
     assert fresh.exists()
@@ -69,7 +70,7 @@ def test_entry_exactly_at_the_retention_edge_is_kept(cache: Path) -> None:
     retention = 7 * DAY
     edge = _entry(cache / "vim-undo" / "edge", age=retention, now=now)
 
-    res = supertool._gc_sweep_kind("vim-undo", retention, dry=False, now=now)
+    res = _supertool_gc._gc_sweep_kind("vim-undo", retention, dry=False, now=now)
 
     assert edge.exists()
     assert res["removed"] == 0
@@ -146,7 +147,7 @@ def test_entry_with_a_future_mtime_is_kept_and_reported(cache: Path) -> None:
     skewed = _entry(cache / "vim-undo" / "skewed", age=-3600, now=now)
     stale = _entry(cache / "vim-undo" / "stale", age=30 * DAY, now=now)
 
-    res = supertool._gc_sweep_kind("vim-undo", 7 * DAY, dry=False, now=now)
+    res = _supertool_gc._gc_sweep_kind("vim-undo", 7 * DAY, dry=False, now=now)
 
     assert skewed.exists(), "a clock-skewed entry must never be silently removed"
     assert not stale.exists()
@@ -161,7 +162,7 @@ def test_entry_whose_stat_fails_is_kept_and_reported(cache: Path) -> None:
     dangling = cache / "vim-undo" / "dangling"
     dangling.symlink_to(cache / "vim-undo" / "does-not-exist")
 
-    res = supertool._gc_sweep_kind("vim-undo", 7 * DAY, dry=False, now=now)
+    res = _supertool_gc._gc_sweep_kind("vim-undo", 7 * DAY, dry=False, now=now)
 
     assert dangling.is_symlink(), "unstattable entry must be left alone"
     assert res["skipped"] == 1
@@ -182,7 +183,7 @@ def test_skipped_entries_are_surfaced_in_the_receipt(cache: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_validators_default_window_is_wider_than_vim_undo() -> None:
-    d = supertool._GC_DEFAULT_RETENTION_DAYS
+    d = _supertool_gc._GC_DEFAULT_RETENTION_DAYS
     assert d["vim-undo"] == 7
     assert d["vim-cursor"] == 7
     assert d["validators"] == 30
@@ -203,7 +204,7 @@ def test_statusline_is_a_registered_gc_kind() -> None:
     that (default 300s), so this window only bounds unattributed growth
     across abandoned worktrees, not staleness during active use.
     """
-    d = supertool._GC_DEFAULT_RETENTION_DAYS
+    d = _supertool_gc._GC_DEFAULT_RETENTION_DAYS
     assert "statusline" in d
     assert d["statusline"] == 7
 
@@ -257,7 +258,7 @@ def test_gc_does_not_descend_into_or_delete_subdirectories(cache: Path) -> None:
     now = time.time()
     nested = _entry(cache / "vim-undo" / "sub" / "deep", age=365 * DAY, now=now)
 
-    res = supertool._gc_sweep_kind("vim-undo", 7 * DAY, dry=False, now=now)
+    res = _supertool_gc._gc_sweep_kind("vim-undo", 7 * DAY, dry=False, now=now)
 
     assert nested.exists()
     assert (cache / "vim-undo" / "sub").is_dir()
@@ -265,7 +266,7 @@ def test_gc_does_not_descend_into_or_delete_subdirectories(cache: Path) -> None:
 
 
 def test_missing_kind_directory_is_not_an_error(cache: Path) -> None:
-    res = supertool._gc_sweep_kind("vim-undo", 7 * DAY, dry=False)
+    res = _supertool_gc._gc_sweep_kind("vim-undo", 7 * DAY, dry=False)
     assert res["removed"] == 0
     assert res["missing"] is True
 
@@ -294,7 +295,7 @@ def test_auto_gc_runs_at_most_once_per_interval(
     cache: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[int] = []
-    monkeypatch.setattr(supertool, "_gc_sweep_all",
+    monkeypatch.setattr(_supertool_gc, "_gc_sweep_all",
                         lambda *a, **k: calls.append(1) or [])
 
     supertool._maybe_auto_gc()
@@ -309,7 +310,7 @@ def test_auto_gc_runs_again_once_the_interval_has_elapsed(
     cache: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[int] = []
-    monkeypatch.setattr(supertool, "_gc_sweep_all",
+    monkeypatch.setattr(_supertool_gc, "_gc_sweep_all",
                         lambda *a, **k: calls.append(1) or [])
 
     supertool._maybe_auto_gc()
@@ -336,7 +337,7 @@ def test_auto_gc_never_raises_and_still_stamps(
     def explode(*a: object, **k: object) -> None:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(supertool, "_gc_sweep_all", explode)
+    monkeypatch.setattr(_supertool_gc, "_gc_sweep_all", explode)
 
     supertool._maybe_auto_gc()
 
@@ -346,7 +347,7 @@ def test_auto_gc_never_raises_and_still_stamps(
 def test_auto_gc_is_disabled_by_env(cache: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SUPERTOOL_GC_DISABLE", "1")
     calls: list[int] = []
-    monkeypatch.setattr(supertool, "_gc_sweep_all",
+    monkeypatch.setattr(_supertool_gc, "_gc_sweep_all",
                         lambda *a, **k: calls.append(1) or [])
 
     supertool._maybe_auto_gc()
@@ -370,7 +371,7 @@ def test_auto_gc_interval_is_configurable(
 ) -> None:
     supertool._CONFIG = {"gc": {"interval_seconds": 1}}
     calls: list[int] = []
-    monkeypatch.setattr(supertool, "_gc_sweep_all",
+    monkeypatch.setattr(_supertool_gc, "_gc_sweep_all",
                         lambda *a, **k: calls.append(1) or [])
 
     supertool._maybe_auto_gc()

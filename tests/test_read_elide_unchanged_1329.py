@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+import _supertool_gc
 
 
 @pytest.fixture()
@@ -366,4 +367,4 @@ def test_the_config_switch_turns_it_off(
 
 def test_read_elide_is_a_reaped_cache_kind() -> None:
     """Nine worktrees x every file read leaves entries; gc must know the kind."""
-    assert "read-elide" in supertool._GC_DEFAULT_RETENTION_DAYS
+    assert "read-elide" in _supertool_gc._GC_DEFAULT_RETENTION_DAYS

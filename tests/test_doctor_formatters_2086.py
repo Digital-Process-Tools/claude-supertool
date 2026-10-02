@@ -11,6 +11,7 @@ diagnostic (CLAUDE.md, "The defect this codebase keeps having").
 from __future__ import annotations
 
 import supertool
+import _supertool_doctor
 
 
 def test_doctor_reports_no_formatters_configured_when_section_absent() -> None:
@@ -101,7 +102,7 @@ def test_doctor_formatters_probe_mode_actually_probes(monkeypatch) -> None:
             }
         }
     })
-    monkeypatch.setattr(supertool, "_doctor_tracked_files", lambda: ["a.py"])
+    monkeypatch.setattr(_supertool_doctor, "_doctor_tracked_files", lambda: ["a.py"])
 
     probed = supertool.op_doctor("probe")
     assert calls == ["fake-fmt"], "doctor:probe must invoke the in-scope formatter"
@@ -118,7 +119,7 @@ def test_doctor_formatters_reports_not_applicable_when_no_match(monkeypatch) -> 
             }
         }
     })
-    monkeypatch.setattr(supertool, "_doctor_tracked_files", lambda: ["a.py"])
+    monkeypatch.setattr(_supertool_doctor, "_doctor_tracked_files", lambda: ["a.py"])
 
     out = supertool.op_doctor("probe")
     assert "not applicable" in out
@@ -135,7 +136,7 @@ def test_doctor_formatters_reports_could_not_tell_when_scope_unknown(monkeypatch
             }
         }
     })
-    monkeypatch.setattr(supertool, "_doctor_tracked_files", lambda: None)
+    monkeypatch.setattr(_supertool_doctor, "_doctor_tracked_files", lambda: None)
 
     out = supertool.op_doctor("probe")
     assert "could not tell whether this tree has a matching file" in out
@@ -144,7 +145,7 @@ def test_doctor_formatters_reports_could_not_tell_when_scope_unknown(monkeypatch
 def test_doctor_classify_formatter_probe_resolves() -> None:
     data = {"tool": "fake", "file": "x.py", "ok": True, "count": 0,
             "errors": [], "duration_ms": 5}
-    state, _ = supertool._doctor_classify_formatter_probe(data)
+    state, _ = _supertool_doctor._doctor_classify_formatter_probe(data)
     assert state == "resolves"
 
 
@@ -157,7 +158,7 @@ def test_doctor_classify_formatter_probe_absent_via_inline_adapter_error() -> No
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "RUFF_BIN not found: ruff"}],
             "duration_ms": 5}
-    state, detail = supertool._doctor_classify_formatter_probe(data)
+    state, detail = _supertool_doctor._doctor_classify_formatter_probe(data)
     assert state == "absent"
     assert "not found" in detail
 
@@ -169,7 +170,7 @@ def test_doctor_classify_formatter_probe_absent_via_legacy_msg() -> None:
     data = {"name": "fake", "ok": False, "msg": "[Errno 2] No such file or "
             "directory: 'fake-that-does-not-exist'", "duration_ms": 0,
             "metrics": {"lines_added": 0, "lines_removed": 0}}
-    state, detail = supertool._doctor_classify_formatter_probe(data)
+    state, detail = _supertool_doctor._doctor_classify_formatter_probe(data)
     assert state == "absent"
     assert "No such file" in detail
 
@@ -178,9 +179,9 @@ def test_doctor_classify_formatter_probe_never_defaults_an_unreadable_verdict_to
     """An adapter that answers something this classifier cannot place must
     land on 'could not tell', never on 'resolves' -- the same rule #1950
     states for the validator classifier, one payload shape over."""
-    state, _ = supertool._doctor_classify_formatter_probe({"something": "else"})
+    state, _ = _supertool_doctor._doctor_classify_formatter_probe({"something": "else"})
     assert state == "could not tell"
-    state, _ = supertool._doctor_classify_formatter_probe(None)
+    state, _ = _supertool_doctor._doctor_classify_formatter_probe(None)
     assert state == "could not tell"
 
 
@@ -194,7 +195,7 @@ def test_doctor_classify_formatter_probe_failed_run_that_is_not_absence() -> Non
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "ruff-format", "msg": "error: failed to parse x.py"}],
             "duration_ms": 5}
-    state, _ = supertool._doctor_classify_formatter_probe(data)
+    state, _ = _supertool_doctor._doctor_classify_formatter_probe(data)
     assert state == "resolves"
 
 
@@ -210,7 +211,7 @@ def test_doctor_classify_formatter_probe_never_calls_a_crashed_adapter_resolves(
             "raw": "Traceback (most recent call last):\n  File \"fake.py\", "
                    "line 3, in <module>\nZeroDivisionError: division by zero",
             "duration_ms": 12, "metrics": {"lines_added": 0, "lines_removed": 0}}
-    state, detail = supertool._doctor_classify_formatter_probe(data)
+    state, detail = _supertool_doctor._doctor_classify_formatter_probe(data)
     assert state == "could not tell"
     assert "exception" in detail
 
@@ -222,6 +223,6 @@ def test_doctor_classify_formatter_probe_legacy_failure_without_traceback_still_
     wrong with this file. Only a traceback flips this to 'could not tell'."""
     data = {"name": "fake-fmt", "ok": False, "raw": "fake-fmt: syntax error",
             "duration_ms": 12, "metrics": {"lines_added": 0, "lines_removed": 0}}
-    state, _ = supertool._doctor_classify_formatter_probe(data)
+    state, _ = _supertool_doctor._doctor_classify_formatter_probe(data)
     assert state == "resolves"
 

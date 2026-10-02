@@ -12,6 +12,7 @@ the issue exists to end.
 from __future__ import annotations
 
 import supertool
+import _supertool_doctor
 
 
 def test_doctor_dispatches_and_is_read_only() -> None:
@@ -50,7 +51,7 @@ def test_doctor_never_asserts_native_without_evidence(monkeypatch) -> None:
     def _boom(*a, **k):
         raise OSError("no such sysctl")
     monkeypatch.setattr(supertool.subprocess, "run", _boom)
-    info = supertool._doctor_interpreter()
+    info = _supertool_doctor._doctor_interpreter()
     assert info["rosetta"] is None
 
 
@@ -73,12 +74,12 @@ def test_doctor_rosetta_flag_never_trusts_a_translated_ancestor(monkeypatch) -> 
         returncode = 0
         stdout = "1\n"
     monkeypatch.setattr(supertool.subprocess, "run", lambda *a, **k: _Result())
-    info = supertool._doctor_interpreter()
+    info = _supertool_doctor._doctor_interpreter()
     assert info["rosetta"] is False
 
 
 def test_doctor_cpu_topology_states_uniform_or_could_not_tell_or_split() -> None:
-    topo = supertool._doctor_cpu_topology()
+    topo = _supertool_doctor._doctor_cpu_topology()
     assert topo["logical_cpus"] == supertool.os.cpu_count()
     assert topo["state"] in ("split", "uniform", "unknown")
     if topo["state"] == "split":
@@ -88,7 +89,7 @@ def test_doctor_cpu_topology_states_uniform_or_could_not_tell_or_split() -> None
 
 def test_doctor_classifies_an_absent_tool_as_absent_not_resolves() -> None:
     data = {"tool": "fake", "file": "x.py", "skipped": "fake not found on PATH"}
-    state, detail = supertool._doctor_classify_probe(data)
+    state, detail = _supertool_doctor._doctor_classify_probe(data)
     assert state == "absent"
     assert "not found" in detail
 
@@ -98,21 +99,21 @@ def test_doctor_classifies_adapter_crash_as_could_not_tell() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "fake adapter crashed"}],
             "duration_ms": 5}
-    state, detail = supertool._doctor_classify_probe(data)
+    state, detail = _supertool_doctor._doctor_classify_probe(data)
     assert state == "could not tell"
 
 
 def test_doctor_classifies_a_real_verdict_as_resolves() -> None:
     data = {"tool": "fake", "file": "x.py", "ok": True, "count": 0,
             "errors": [], "duration_ms": 5}
-    state, _ = supertool._doctor_classify_probe(data)
+    state, _ = _supertool_doctor._doctor_classify_probe(data)
     assert state == "resolves"
 
 
 def test_doctor_classifies_ambiguous_skip_as_could_not_tell_never_resolves() -> None:
     """A scope-shaped skip must not be laundered into 'resolves' by default."""
     data = {"tool": "fake", "file": "x.py", "skipped": "no target resolved"}
-    state, _ = supertool._doctor_classify_probe(data)
+    state, _ = _supertool_doctor._doctor_classify_probe(data)
     assert state == "could not tell"
 
 
@@ -129,7 +130,7 @@ def test_doctor_classifies_an_inline_adapter_error_absence_as_absent() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "phpstan binary not found"}],
             "duration_ms": 5}
-    state, detail = supertool._doctor_classify_probe(data)
+    state, detail = _supertool_doctor._doctor_classify_probe(data)
     assert state == "absent"
     assert "not found" in detail
 

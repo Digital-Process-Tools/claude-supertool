@@ -283,4 +283,4 @@ ignore = [
 # every top-level `*.py` file as a module that must ship, regardless of how
 # it is loaded at runtime, and a `pip install .` that omitted it would ship a
 # core that raises ImportError on its very first guarded command.
-py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_shipped_reference"]
+py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_shipped_reference"]

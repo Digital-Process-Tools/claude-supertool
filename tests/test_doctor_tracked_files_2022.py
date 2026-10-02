@@ -39,6 +39,7 @@ import tempfile
 from contextlib import contextmanager
 
 import supertool
+import _supertool_doctor
 
 _HERMETIC = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -87,7 +88,7 @@ def _tracking_one_file(name: str, *, quote_path: bool = True):
 def test_tracked_files_must_fire_a_plain_ascii_name() -> None:
     """Positive control: an ordinary tracked file is reported, unmangled."""
     with _tracking_one_file("plain.py"):
-        files = supertool._doctor_tracked_files()
+        files = _supertool_doctor._doctor_tracked_files()
     assert files == ["plain.py"]
 
 
@@ -98,7 +99,7 @@ def test_tracked_files_must_not_split_a_u2028_filename_in_two() -> None:
     """
     name = "a weird.py"
     with _tracking_one_file(name, quote_path=False):
-        files = supertool._doctor_tracked_files()
+        files = _supertool_doctor._doctor_tracked_files()
     assert files == [name]
     # The old splitlines() route folded this into two entries; assert the
     # failure mode by name so a regression is legible, not just red.
@@ -122,7 +123,7 @@ def test_tracked_files_must_not_leave_c_quoting_on_a_non_ascii_name() -> None:
     """
     name = "café.py"
     with _tracking_one_file(name, quote_path=True):
-        files = supertool._doctor_tracked_files()
+        files = _supertool_doctor._doctor_tracked_files()
     assert files == [name]
     assert supertool._match_glob(files[0], "*.py")
 
@@ -155,7 +156,7 @@ def test_validators_section_target_never_leaves_the_repo_for_a_u2028_name(
 
     monkeypatch.setattr(supertool, "_validator_run_one", _fake_run_one)
     with _tracking_one_file(name, quote_path=False):
-        supertool._doctor_validators_section(config, probe=True)
+        _supertool_doctor._doctor_validators_section(config, probe=True)
 
     for t in seen_targets:
         assert " " not in t or t == name
@@ -172,7 +173,7 @@ def test_classify_probe_render_does_not_forge_a_row_from_an_embedded_newline(
     """
     forged_reason = "not applicable\n- forged: resolves -- everything is fine"
     data = {"tool": "fake", "file": "x.py", "skipped": forged_reason}
-    _state, detail = supertool._doctor_classify_probe(data)
+    _state, detail = _supertool_doctor._doctor_classify_probe(data)
 
     config = {"validators": {"fake": {"match": "*.py", "cmd": "true {file}"}}}
 
@@ -181,7 +182,7 @@ def test_classify_probe_render_does_not_forge_a_row_from_an_embedded_newline(
 
     monkeypatch.setattr(supertool, "_validator_run_one", _fake_run_one)
     with _tracking_one_file("real.py"):
-        out = supertool._doctor_validators_section(config, probe=True)
+        out = _supertool_doctor._doctor_validators_section(config, probe=True)
 
     assert detail == forged_reason  # the classifier itself is not the bug
     rendered_lines = out.splitlines()
@@ -224,7 +225,7 @@ def test_a_crashing_probe_does_not_forge_a_row_from_the_exception_text(
 
     monkeypatch.setattr(supertool, "_validator_run_one", _fake_run_one)
     with _tracking_one_file("real.py"):
-        out = supertool._doctor_validators_section(config, probe=True)
+        out = _supertool_doctor._doctor_validators_section(config, probe=True)
 
     rendered_lines = out.splitlines()
     assert not any(ln.strip().startswith("- forged:") for ln in rendered_lines), (
