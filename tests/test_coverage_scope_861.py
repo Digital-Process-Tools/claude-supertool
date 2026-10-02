@@ -187,14 +187,17 @@ def test_the_measured_paths_are_absolute() -> None:
     """
     lines = gate._source_lines()
     module_names = ("supertool", "_supertool", "_supertool_vim",
-                     "_supertool_guard", "_supertool_doctor", "_supertool_gc")
+                     "_supertool_guard", "_supertool_doctor", "_supertool_gc",
+                     "_supertool_validate")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "
         "`_supertool_vim` since #2706 split the vim implementation out of "
         "it, `_supertool_guard` since #2706 lane 0 split the raw-command "
         "guard out the same way, `_supertool_doctor`/`_supertool_gc` since "
-        "the same issue split doctor/init/gc out of it too")
+        "the same issue split doctor/init/gc out of it too, "
+        "`_supertool_validate` since the same issue split validators, "
+        "formatters, advice and _run_with_validators out of it")
     paths = [line for line in lines if line not in module_names]
     assert paths, "no directory sources at all — the scope collapsed"
     for line in paths:

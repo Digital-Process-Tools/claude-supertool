@@ -20,6 +20,8 @@ import pytest
 
 import supertool
 
+from _core_sources import core_source_text
+
 PRESETS_GIT = Path(__file__).parent.parent / "presets" / "git"
 
 
@@ -110,9 +112,13 @@ class TestStagedSymlinkRejected:
         so we check that the implementation rejects symlinks at the filter
         step. The dispatch logic uses `os.path.islink` — verified by source.
         """
-        # encoding='utf-8' — supertool.py contains non-cp1252 chars (em-dash,
-        # arrows) that crash the Windows default codec.
-        src = Path(supertool.__file__).read_text(encoding="utf-8")
+        # core_source_text(), not Path(supertool.__file__).read_text(): the
+        # op_format_staged/op_validate_staged bodies this test is pinning
+        # live in `_supertool_validate.py` since #2706 (the validate part),
+        # not in `_supertool.py` itself any more. A single-file read here
+        # would silently stop seeing the pattern the moment code moves,
+        # which is exactly the failure core_source_text() exists to avoid.
+        src = core_source_text()
         # Both staged ops must check islink before isfile.
         # (Loose grep — exact line could shift.)
         assert "os.path.islink(p)" in src

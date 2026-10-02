@@ -230,6 +230,20 @@ ENFORCED: "dict[str, float]" = {
     "_supertool_guard.py": 93.0,
     "_supertool_doctor.py": 80.0,
     "_supertool_gc.py": 80.0,
+    # Moved out of _supertool.py by #2706 (the validate part: validators,
+    # formatters, advice, _run_with_validators, op_validate*, op_format*).
+    # Measured 2026-10-02 on macOS/py3.13 over `-k "valid or format"` only
+    # (a narrowed run, not the full suite this gate itself runs -- see
+    # CLAUDE.md on why the full suite is not run locally), with
+    # `pytest -n0 --cov=_supertool_validate` (the `-n0` form, since the
+    # multi-process default under-measured at 0% with no per-process
+    # COVERAGE_PROCESS_START wiring for this module yet): 89%. Floored 6
+    # points under that rather than this file's usual 3-point slack: an
+    # earlier part in this same split measured 3.5 points lower on CI's
+    # Linux runner than on this local macOS run, so the wider margin is
+    # deliberate headroom for that same local-vs-CI gap, not carried
+    # forward as if the narrowed figure were the real one either way.
+    "_supertool_validate.py": 83.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -377,7 +391,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_validate"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
