@@ -186,7 +186,8 @@ def test_the_measured_paths_are_absolute() -> None:
     the issue itself.
     """
     lines = gate._source_lines()
-    module_names = ("supertool", "_supertool", "_supertool_vim", "_supertool_guard")
+    module_names = ("supertool", "_supertool", "_supertool_vim",
+                    "_supertool_guard", "_supertool_config")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "

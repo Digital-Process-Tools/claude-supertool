@@ -217,6 +217,29 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 (the config/presets-merge/env-knobs/
+    # exclude/gitignore/rtk/display part). Measured 2026-10-02 on macOS/py3.13
+    # over a narrowed `-k` selection (config/preset/exclude/gitignore/rtk/
+    # plain_mode/mixed_tree/env_int/env_float/op_config_bool/display/
+    # coerce_bool test names, 1093 tests, not the full suite this gate itself
+    # runs -- see CLAUDE.md on why the full suite is not run locally): 85%,
+    # with `-n0` (no xdist). The first attempt at this measurement used `-n
+    # auto` (pyproject's own default) and reported 14% -- pytest-cov does not
+    # reliably combine in-process coverage across xdist workers for a module
+    # that is not itself spawned as a subprocess, so that number was the
+    # tool's own undercounting, not a real measurement; `-n0` is the escape
+    # hatch. This module is reached by nearly every op in the real suite --
+    # `_load_config()` runs on essentially every supertool invocation -- which
+    # is also why the number came back this high from a selection whose own
+    # test *names* mostly have nothing to do with config.
+    #
+    # Floored 6 points under the local number, not the usual 3 (_SLACK below)
+    # -- #2714 measured a sibling part's local narrowed macOS figure (86.3%)
+    # against CI's own `coverage` job figure for the same file (82.75%) and
+    # found a ~3.5 point gap that broke the floor outright; doubling the
+    # margin here is a local number pending CI, not a figure the `coverage`
+    # job has confirmed yet.
+    "_supertool_config.py": 79.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -364,7 +387,8 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard",
+           "_supertool_config"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
