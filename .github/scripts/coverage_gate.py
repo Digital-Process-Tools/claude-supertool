@@ -258,6 +258,18 @@ ENFORCED: "dict[str, float]" = {
     # measured locally, never on CI, so the usual slack is doubled rather
     # than carried forward as if the local figure were the CI figure.
     "_supertool_edit.py": 81.0,
+    # Moved out of _supertool.py by #2706 (op names/synonyms/near-miss
+    # suggestions/safety classification, plus arg-splitting and colon/
+    # extra-token refusals -- two contiguous spans of the pre-split file,
+    # concatenated into one part). Measured 2026-10-02 on macOS/py3.13, in
+    # process (no COVERAGE_PROCESS_START), `coverage run --include=*_supertool_parse.py`
+    # over the test files that call its functions by name or drive dispatch
+    # through them: 92%. Floored 7 points under that number, not 3 like
+    # _supertool_guard.py above -- #2714's lane measured 86.3% locally and
+    # CI's coverage job (which attributes child-process calls the way this
+    # narrowed in-process run cannot) measured 82.75%, under its 83.0 floor.
+    # This is a LOCAL number pending CI's own measurement, not the real one.
+    "_supertool_parse.py": 85.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -405,7 +417,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
