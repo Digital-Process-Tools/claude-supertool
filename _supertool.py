@@ -129,7 +129,6 @@ import difflib
 import hashlib
 import importlib.machinery
 import os
-import platform
 import stat
 import re
 import shlex

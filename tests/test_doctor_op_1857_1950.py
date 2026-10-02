@@ -26,7 +26,7 @@ def test_doctor_dispatches_and_is_read_only() -> None:
 def test_doctor_reports_interpreter_facts() -> None:
     out = supertool.op_doctor("")
     assert supertool.sys.executable in out
-    assert supertool.platform.python_version() in out
+    assert _supertool_doctor.platform.python_version() in out
     # The architecture line is present under some spelling regardless of host.
     assert "rosetta" in out.lower() or "not applicable" in out.lower()
 
@@ -46,7 +46,7 @@ def test_doctor_never_asserts_native_without_evidence(monkeypatch) -> None:
     # process), so exercising the "sysctl failed" path needs the OTHER
     # architecture, where a real Intel Mac genuinely has no
     # sysctl.proc_translated node to answer.
-    monkeypatch.setattr(supertool.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(_supertool_doctor.platform, "machine", lambda: "x86_64")
 
     def _boom(*a, **k):
         raise OSError("no such sysctl")
@@ -68,7 +68,7 @@ def test_doctor_rosetta_flag_never_trusts_a_translated_ancestor(monkeypatch) -> 
     an interpreter that already is one.
     """
     monkeypatch.setattr(supertool.sys, "platform", "darwin")
-    monkeypatch.setattr(supertool.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(_supertool_doctor.platform, "machine", lambda: "arm64")
 
     class _Result:
         returncode = 0

@@ -17,7 +17,6 @@ silently, which is the failure #2175 was filed to prevent.
 """
 from __future__ import annotations
 
-import supertool
 import _supertool_doctor
 
 
