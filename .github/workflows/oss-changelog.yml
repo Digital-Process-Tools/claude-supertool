@@ -279,8 +279,8 @@ jobs:
           # line is reached, so declaring `user_visible_paths` cannot make that
           # bypass possible again -- the `$removed && ! $assembled` branch at
           # the top of this step already returned.
-          if [ -n '^_?supertool\.py$|^presets/|^validators/|^formatters/|^notifiers/|^\.claude-plugin/' ]; then
-            if ! printf '%s\n' "$changed" | grep -Eq '^_?supertool\.py$|^presets/|^validators/|^formatters/|^notifiers/|^\.claude-plugin/'; then
+          if [ -n '^_?supertool(_[a-z0-9_]+)?\.py$|^presets/|^validators/|^formatters/|^notifiers/|^\.claude-plugin/' ]; then
+            if ! printf '%s\n' "$changed" | grep -Eq '^_?supertool(_[a-z0-9_]+)?\.py$|^presets/|^validators/|^formatters/|^notifiers/|^\.claude-plugin/'; then
               echo "changelog: skipped (no user-visible paths changed)"
               exit 0
             fi

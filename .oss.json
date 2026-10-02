@@ -15,8 +15,7 @@
   "curate_route_threshold": 2,
   "changelog_dir": "changelog.d",
   "user_visible_paths": [
-    "^_?supertool\\.py$",
-    "^_supertool_vim\\.py$",
+    "^_?supertool(_[a-z0-9_]+)?\\.py$",
     "^presets/",
     "^validators/",
     "^formatters/",

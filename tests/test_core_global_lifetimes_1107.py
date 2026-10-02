@@ -41,6 +41,7 @@ A name found here must be in one of three tables, and the third is new:
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -48,8 +49,19 @@ import pytest
 import conftest
 import supertool
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _core_sources import core_source_text  # noqa: E402
+
 CORE = Path(supertool.__file__)
 CONFTEST = Path(conftest.__file__)
+
+
+def _core_text() -> str:
+    """`_supertool.py` plus every `_supertool_<x>.py` part #2706 has split out
+    of it, concatenated -- a `global` declared in a part still rebinds a name
+    this scan must see, and `CORE.read_text()` alone would miss it the moment
+    that part moved."""
+    return core_source_text()
 
 #: The autouse fixture whose save/restore lines FIXTURE_RESTORED_GLOBALS claims.
 _FIXTURE = "_disable_rtk_and_config"
@@ -160,7 +172,7 @@ def fixture_restored_names(source: str, fixture: str) -> set[str]:
 
 def test_the_rebind_scan_finds_the_names_it_is_built_on() -> None:
     """A scan that stopped matching reports zero offenders, which reads clean."""
-    live = runtime_rebound_globals(CORE.read_text(encoding="utf-8"))
+    live = runtime_rebound_globals(_core_text())
     for name in ("_VALIDATOR_MEANING_VERSION", "_RTK_PATH", "_FORMAT_QUEUE"):
         assert name in live, (
             f"{name} is rebound under a `global` in {CORE.name} but the scan "
@@ -228,7 +240,7 @@ def test_the_fixture_scan_finds_the_names_it_is_built_on() -> None:
 # ---------------------------------------------------------------------------
 
 def test_every_runtime_rebound_global_has_a_declared_lifetime() -> None:
-    live = runtime_rebound_globals(CORE.read_text(encoding="utf-8"))
+    live = runtime_rebound_globals(_core_text())
     accounted = (set(conftest.RESET_GLOBALS)
                  | set(conftest.RESET_EXEMPT_GLOBALS)
                  | set(conftest.FIXTURE_RESTORED_GLOBALS))
@@ -261,7 +273,7 @@ def test_the_fixture_restored_claims_are_true() -> None:
 
 def test_no_declared_lifetime_names_something_that_is_no_longer_state() -> None:
     """The other direction. A registry that outlives its subject rots quietly."""
-    live = runtime_rebound_globals(CORE.read_text(encoding="utf-8"))
+    live = runtime_rebound_globals(_core_text())
     stale = sorted(name for name in conftest.FIXTURE_RESTORED_GLOBALS
                    if name not in live)
     assert stale == [], (

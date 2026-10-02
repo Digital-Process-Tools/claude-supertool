@@ -15,9 +15,13 @@ chokepoint, so a fifth route cannot inherit a third behaviour.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import supertool
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _core_sources import core_source_paths  # noqa: E402
 
 
 def _probe(tmp_path: Path) -> Path:
@@ -141,16 +145,18 @@ def test_the_refusal_is_reached_through_one_chokepoint() -> None:
     call to `_op_grep`/`_op_around` must still run the pattern the caller
     meant, and the helper is idempotent — so only the refusal is counted.
     """
-    src = Path(supertool.__file__).with_name("_supertool.py").read_text(
-        encoding="utf-8")
-    enclosing = None
+    # "the core" is _supertool.py plus every _supertool_<x>.py part #2706 has
+    # split out of it -- a second caller that moved into a part would not be
+    # seen by scanning _supertool.py alone.
     callers = []
-    for line in src.splitlines():
-        m = re.match(r"def (\w+)", line)
-        if m:
-            enclosing = m.group(1)
-        elif "_saturating_pattern_refusal(" in line:
-            callers.append(enclosing)
+    for path in core_source_paths():
+        enclosing = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"def (\w+)", line)
+            if m:
+                enclosing = m.group(1)
+            elif "_saturating_pattern_refusal(" in line:
+                callers.append(enclosing)
     assert callers == ["_pattern_gate"], (
         "the refusal is reached through one chokepoint so no route can "
         "half-adopt it; called from: " + repr(callers))

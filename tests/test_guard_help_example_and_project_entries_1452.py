@@ -44,6 +44,8 @@ import pytest
 
 import supertool
 
+from _core_sources import core_source_paths
+
 _ROOT = Path(__file__).resolve().parent.parent
 _SOURCES = ("_supertool.py", "docs/contributing.md", "CHANGELOG.md")
 _CLAIM = re.compile(r"wrong block on `([^`]+)`")
@@ -62,9 +64,16 @@ def shipped_presets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 def _claimed_wrong_blocks():
     for name in _SOURCES:
-        text = (_ROOT / name).read_text(encoding="utf-8")
-        for command in _CLAIM.findall(text):
-            yield name, command
+        # "_supertool.py" is a logical name for the core, which #2706 may
+        # have split into _supertool.py plus _supertool_<x>.py parts -- scan
+        # every one of them under this same logical name, or a claim moved
+        # out of the core file along with the code it was written next to
+        # would silently stop being checked.
+        paths = core_source_paths() if name == "_supertool.py" else [_ROOT / name]
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for command in _CLAIM.findall(text):
+                yield name, command
 
 
 class TestEveryCommandCalledAWrongBlockIsBlocked:

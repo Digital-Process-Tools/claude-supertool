@@ -38,6 +38,9 @@ from typing import Any
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _core_sources import core_source_paths  # noqa: E402
+
 ROOT = Path(__file__).parent.parent
 ENTRY = ROOT / "supertool.py"
 CORE = ROOT / "_supertool.py"
@@ -246,9 +249,13 @@ def test_the_scan_sees_every_spelling_that_lets_a_non_ascii_digit_reach_int() ->
 
 
 def test_the_core_does_not_reach_for_isdigit_again() -> None:
-    text = CORE.read_text(encoding="utf-8")
-    assert len(text.splitlines()) > 20000, (
+    # "the core" is _supertool.py plus every _supertool_<x>.py part #2706 has
+    # split out of it -- scanning CORE alone would stop seeing a part's own
+    # isdigit() reach the moment that part moved, silently.
+    texts = [p.read_text(encoding="utf-8") for p in core_source_paths()]
+    total_lines = sum(len(t.splitlines()) for t in texts)
+    assert total_lines > 20000, (
         "read %d lines of the core — the scan below proves nothing if the "
-        "file did not arrive" % len(text.splitlines()))
-    offenders = _isdigit_code_lines(text)
+        "file did not arrive" % total_lines)
+    offenders = [line for text in texts for line in _isdigit_code_lines(text)]
     assert offenders == [], "\n".join(offenders)

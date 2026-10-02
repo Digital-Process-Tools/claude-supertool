@@ -30,11 +30,20 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _core_sources import core_source_paths  # noqa: E402
+
 REPO = Path(__file__).parent.parent
 HOOK = REPO / "hooks" / "session-start.sh"
 CORE = REPO / "supertool.py"
 #: `supertool.py` is an entry-point shim since #931 and cannot run without this.
 CORE_IMPL = REPO / "_supertool.py"
+#: `_supertool.py` since #2706 may `_load_part(...)` one or more
+#: `_supertool_<x>.py` files beside itself; a checkout missing one fails at
+#: import with an ImportError, not with the mixed-tree refusal this suite
+#: exists to pin -- so a synthetic checkout needs every part, not only the
+#: core, or a custom op through it fails for a reason unrelated to #678.
+CORE_PARTS = [p for p in core_source_paths() if p != CORE_IMPL]
 
 # Same reason as tests/test_session_hook_plugin_path.py: a bare `bash` on the
 # Windows runner is the WSL launcher stub, so the hook never executes and every
@@ -65,6 +74,8 @@ def _supertool_checkout(d: Path) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     shutil.copy(CORE, d / "supertool.py")
     shutil.copy(CORE_IMPL, d / "_supertool.py")
+    for part in CORE_PARTS:
+        shutil.copy(part, d / part.name)
     _write_config(d)
     return d
 

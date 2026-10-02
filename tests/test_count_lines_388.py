@@ -60,11 +60,18 @@ def test_only_one_definition_survives() -> None:
 
     Parsed rather than grepped: a string search would miss an indented or
     nested duplicate and could be tripped by the name appearing in a docstring.
+
+    `inspect.getsource(supertool)` only reads `_supertool.py` itself -- #2706
+    may have moved a duplicate into a `_supertool_<x>.py` part, which would
+    still shadow this name at runtime (every part shares the core's own
+    globals()) and would not be seen by that call alone.
     """
     import ast
-    import inspect
-    tree = ast.parse(inspect.getsource(supertool))
-    defs = [n for n in tree.body
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from _core_sources import core_source_texts  # noqa: E402
+    defs = [n for text in core_source_texts()
+            for n in ast.parse(text).body
             if isinstance(n, ast.FunctionDef) and n.name == "_count_lines"]
     assert len(defs) == 1, f"{len(defs)} module-scope definitions"
 

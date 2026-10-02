@@ -65,8 +65,12 @@ sys.path.insert(0, str(ROOT / "presets"))
 
 import _job_argv  # noqa: E402
 import _refname  # noqa: E402
+from _core_sources import core_source_paths  # noqa: E402
 
 #: Files and trees whose regexes decide whether a *value* is acceptable.
+#: "_supertool.py" stands for the core AND every `_supertool_<x>.py` part
+#: #2706 has split out of it (see `_python_sources` below) -- a regex this
+#: scan would have flagged does not stop being one for having moved.
 SCANNED = ("_supertool.py", "presets", ".github/scripts")
 
 #: The escape hatch, and it has to say why. Written on the `re.*` call's own
@@ -139,6 +143,9 @@ class _Site(NamedTuple):
 def _python_sources() -> list[Path]:
     out: list[Path] = []
     for entry in SCANNED:
+        if entry == "_supertool.py":
+            out.extend(core_source_paths())
+            continue
         target = ROOT / entry
         if target.is_file():
             out.append(target)
