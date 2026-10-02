@@ -229,7 +229,18 @@ ignore = [
 # introduced in supertool.py will not be caught. That is the trade — 34
 # standing false positives against prospective coverage in one file — and it
 # is reversible the day those closures are lifted out of the loop.
-"_supertool.py" = ["B023"]
+# F821 -- the reverse direction of the per-part ignores below: _supertool.py
+# itself still calls part-defined names by plain name (e.g. `op_guard(...)`,
+# `_read_op_from_payload(...)`) from code that has not moved out of the core
+# yet, and ruff lints _supertool.py standalone with no view of what a
+# `_load_part()`-loaded part defines. This was already true the moment lane 0
+# (#2706) moved the guard out -- `op_guard` itself was left undefined by
+# ruff's standalone view of _supertool.py from that commit on, uncaught
+# because nothing ignored it yet -- and wave 1 (config/parse/presets/
+# read+grep/edit/payload) adds many more of the same shape. The real
+# undefined-name check is the concatenated one, over core+parts joined in
+# load order: tests/test_part_loader_concatenated_ruff_2706.py.
+"_supertool.py" = ["B023", "F821"]
 # Same false positive, same reason, now that the closures live here after
 # the #2706 split: the `:s` action loop closures (`_run_sub`, `_resolve_d`)
 # moved out of _supertool.py into _supertool_vim.py along with the rest of
