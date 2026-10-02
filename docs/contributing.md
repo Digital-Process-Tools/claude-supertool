@@ -575,6 +575,8 @@ The assembler writes one definition per cut, which keeps the *next* release hone
 
 **Counting what is pending** is a file count, not a grep: `python3 .oss/assemble_changelog.py --count` prints a bare integer, and refuses if any name would fail to assemble. Counting `- **` lines under a heading answered a question about line prefixes and was read as an answer about pending work.
 
+**That cuts a release on `master`. A tag push separately triggers a slim `release` branch** the Anthropic plugin directory follows, built with `tests/`, `docs/` and the other dev-only paths removed so the directory's file-count and per-file-size limits do not time out on this repo's full tree: [docs/releasing.md](releasing.md).
+
 ---
 
 ## Helper script conventions

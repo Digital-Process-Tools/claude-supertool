@@ -290,6 +290,7 @@ REGISTER = {
     'tests/test_read.py::test_path_meta_suffix_stale_mtime_months': B,
     'tests/test_read.py::test_path_meta_suffix_stale_mtime_weeks': B,
     'tests/test_read.py::test_read_meta_symlink': P,
+    'tests/test_release_branch_preflight_2705.py::test_a_symlink_fails': A,
     'tests/test_retraction_realpath_abspath_1146.py::test_retraction_subject_matches_the_quoted_success_lines_own_spelling': B,
     'tests/test_review_regressions_395.py::test_gate_follows_symlinks_to_the_real_repo': B,
     'tests/test_security_claude_log.py::TestSymlinkInProjectsDir.test_symlink_in_projects_dir_itself': B,

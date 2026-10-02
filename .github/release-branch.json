@@ -1,0 +1,44 @@
+{
+  "_about": "Config for .github/scripts/{build,check,smoke}_release_tree.py (#2705, ported from claude-remember#851). The `release` branch is what the Anthropic plugin directory fetches; master keeps everything. See docs/releasing.md.",
+  "repo": "Digital-Process-Tools/claude-supertool",
+  "default_branch": "master",
+  "_deny_why": "Deny-list, not allow-list: a path forgotten here ships and is caught loudly by the size/count check; a path forgotten in an allow-list would vanish from users' installs silently. Entry ending in '/' = directory prefix, otherwise an exact path.",
+  "deny": [
+    ".claude/",
+    ".github/",
+    ".githooks/",
+    ".oss/",
+    "changelog.d/",
+    "docs/",
+    "outbound/",
+    "tests/",
+    "trap.d/",
+    ".editorconfig",
+    ".markdownlint.json",
+    ".oss.json",
+    ".supertool.json",
+    ".supertool.example.json",
+    "CLAUDE.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "pyproject.toml"
+  ],
+  "_kept_why": "_shipped_reference.py is NOT denied: it is the fallback _shipped_config() reads when .supertool.json is absent beside _supertool.py (the pip-install route, #1783) -- and this release tree denies .supertool.json, so the fallback is load-bearing here. .mcp.json ships because it registers the claude-channel notifier the plugin manifest declares.",
+  "_budget_why": "max_file_bytes and max_files are the directory's own rules (pre-submission checklist, 'Files in the plugin folder'); images and fonts are exempt from the per-file limit. max_total_bytes is this repository's own ceiling, set from the measured slim tree (6.4 MiB after the CHANGELOG cut) with headroom.",
+  "budget": {
+    "max_file_bytes": 262144,
+    "max_files": 512,
+    "max_total_bytes": 8388608
+  },
+  "_exceptions_why": "A declared exception lets check_release_tree.py report a REVIEW line instead of a FAIL for a named, issue-referenced path over max_file_bytes. Any other oversize file still fails -- this is not a second deny-list.",
+  "exceptions": [
+    {
+      "path": "_supertool.py",
+      "issue": 2706,
+      "reason": "the tool itself, 1.7 MiB; cannot be denied (it is what the plugin runs); splitting it is tracked separately in #2706"
+    }
+  ],
+  "changelog": "CHANGELOG.md",
+  "rewrite_links": true
+}
