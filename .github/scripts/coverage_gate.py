@@ -222,14 +222,17 @@ ENFORCED: "dict[str, float]" = {
     # op_map and the tree-sitter/ctags symbol-map internals). Measured
     # 2026-10-02 on macOS/py3.13 over a narrowed read/grep/around/between/
     # map/tree/glob selection, not the full suite this gate itself runs (see
-    # CLAUDE.md on why the full suite is not run locally): 80%. Floored 3
-    # points under that, the same slack this file already gives every other
-    # entry (_SLACK below).
-    "_supertool_read.py": 77.0,
+    # CLAUDE.md on why the full suite is not run locally): 80%. A LOCAL
+    # number, pending CI -- PR #2714 measured 82.75% locally-adjacent vs
+    # 86.3% on a narrowed macOS run for a sibling #2706 part, so this floors
+    # 6 points under the local figure rather than the 3-point slack
+    # elsewhere in this file, until CI's own number is known.
+    "_supertool_read.py": 74.0,
     # Moved out of _supertool.py by #2706 (op_grep, op_around,
     # op_between_symbol, op_between_pattern and the pattern gate). Measured
-    # the same run as _supertool_read.py above: 90%. Floored 3 points under.
-    "_supertool_grep.py": 87.0,
+    # the same run as _supertool_read.py above: 90%, a LOCAL number pending
+    # CI -- floored 6 points under for the same reason.
+    "_supertool_grep.py": 84.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,

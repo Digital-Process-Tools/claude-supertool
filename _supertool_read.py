@@ -1293,7 +1293,7 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
             out.append(f"[auto-read skipped: > {line_cap} lines — "
                        f"read:{files[0]}:full to see it]\n")
         else:
-            out.append(f"[auto-read: glob returned 1 file]\n")
+            out.append("[auto-read: glob returned 1 file]\n")
             out.append(render_file(files[0], 0,
                                    _get_op_int("read", "max_lines", MAX_READ_LINES),
                                    limit_defaulted=True))
@@ -2701,7 +2701,6 @@ def _regex_extract(path: str) -> List[Tuple[str, str, int, int, int]]:
         return []
 
     symbols: List[Tuple[str, str, int, int, int]] = []
-    lines = content.split("\n")
 
     for kind, regex in patterns:
         for m in regex.finditer(content):
