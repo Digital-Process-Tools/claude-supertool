@@ -228,6 +228,15 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 (dispatch, the accumulators and
+    # log_call). Measured 2026-10-02 on macOS/py3.13 over
+    # `-k "dispatch or log_call"` only, with COVERAGE_PROCESS_START set: 76%.
+    # Floored 6 points under that, more slack than this file's usual 3
+    # because `dispatch` is the universal op entry point and a huge share of
+    # the suite reaches it without "dispatch" or "log_call" in the test
+    # name -- the narrowed figure almost certainly understates the real one
+    # by more than the usual margin.
+    "_supertool_dispatch.py": 70.0,
     "_supertool_doctor.py": 80.0,
     "_supertool_gc.py": 80.0,
     "presets/": 83.0,
@@ -377,7 +386,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_dispatch", "_supertool_doctor", "_supertool_gc"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
