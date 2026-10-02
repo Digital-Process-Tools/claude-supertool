@@ -203,9 +203,10 @@ class GateRefusal(Exception):
 #: `_supertool.py` as thin stubs that import these modules lazily. Measured
 #: 2026-10-02 over just the directly migrated test files (not the full
 #: suite, which exercises more of both through `op_doctor`/`op_init`/`op_gc`
-#: elsewhere): 86.3% / 83.7%. Floors set a few points under that rather than
-#: at it, the same margin `_supertool.py`'s own 89.90% measured / 89.0 floor
-#: leaves, since CI's dedicated `coverage` job is the authoritative number.
+#: elsewhere): 86.3% / 83.7%. CI's dedicated `coverage` job, the authoritative
+#: number, then measured 82.75% / 87.76% on run 37057160506 (ubuntu): lower for
+#: doctor than the local macOS run, which exercises platform branches the Linux
+#: runner does not. Floors sit under the CI figure, not the local one.
 ENFORCED: "dict[str, float]" = {
     "_supertool.py": 89.0,
     # Moved out of _supertool.py by #2706 step 1 (the vim implementation).
@@ -227,7 +228,7 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
-    "_supertool_doctor.py": 83.0,
+    "_supertool_doctor.py": 80.0,
     "_supertool_gc.py": 80.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
