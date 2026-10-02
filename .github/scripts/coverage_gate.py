@@ -207,6 +207,16 @@ ENFORCED: "dict[str, float]" = {
     # real figure -- a few non-vim-named tests may also touch this module
     # and this run did not see them.
     "_supertool_vim.py": 83.0,
+    # Moved out of _supertool.py by #2706 lane 0 (the raw-command guard,
+    # chosen as the pilot part: 0 test monkeypatch sites). Measured
+    # 2026-10-02 on macOS/py3.13 over `-k guard` only, with
+    # COVERAGE_PROCESS_START set so the many guard tests that spawn
+    # `hooks/pre_bash_guard.py` in a subprocess are attributed (without that,
+    # the same selection measures 12% -- the in-process call sites only):
+    # 96.4%. Floored 3 points under the measured number, same slack as the
+    # rest of this file (_SLACK below), not carried forward as if the
+    # narrowed figure were the real one.
+    "_supertool_guard.py": 93.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -354,7 +364,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))

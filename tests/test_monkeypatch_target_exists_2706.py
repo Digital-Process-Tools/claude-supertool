@@ -22,33 +22,50 @@ fails only this one, which is exactly the gap an AttributeError cannot see.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SUPERTOOL_MODULES = ("supertool", "_supertool")
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _core_sources import core_source_paths  # noqa: E402
+
 
 def _defined_in_supertool() -> set:
-    """Names bound by a def/class/assignment at _supertool.py's own module
-    level -- NOT names merely imported into it (`import os`, `import re`),
-    which is the exact distinction #2706's own brief draws: an imported name
-    sitting on the module is not the same claim as a name _supertool.py
-    defines, and only the latter is what a monkeypatch of a *moved* name is
-    supposed to mean.
+    """Names bound by a def/class/assignment at module level, across
+    _supertool.py AND every `_supertool_<x>.py` part #2706 loads into it with
+    `_load_part()` -- NOT names merely imported into it (`import os`,
+    `import re`), which is the exact distinction #2706's own brief draws: an
+    imported name sitting on the module is not the same claim as a name
+    _supertool.py defines, and only the latter is what a monkeypatch of a
+    *moved* name is supposed to mean.
+
+    A `_load_part()`-loaded part is a different case from the vim split this
+    test was first written for: vim became a real, separately-imported
+    module, so a name moved there and never re-exported is genuinely gone
+    from _supertool's own namespace. A part's top-level statements instead
+    run with `exec(code, globals())` against _supertool's own globals() --
+    the same effect, at runtime, as if they had been written directly into
+    _supertool.py at that point -- so a name defined in a part IS a name
+    _supertool.py defines, by this test's own stated standard, and must be
+    counted here or every future guard-code patch site reads as a false
+    "moved, renamed, or removed".
     """
-    src = (REPO_ROOT / "_supertool.py").read_text(encoding="utf-8")
-    tree = ast.parse(src, filename="_supertool.py")
     names = set()
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.add(node.name)
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    names.add(target.id)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name):
-                names.add(node.target.id)
+    for path in core_source_paths():
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=str(path))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        names.add(target.id)
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name):
+                    names.add(node.target.id)
     return names
 
 
