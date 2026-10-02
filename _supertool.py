@@ -21989,8 +21989,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                             # fires for a lone batch:@file arg, so own the defer locally —
                             # unless already inside a deferred multi-arg call, where main()
                             # owns the queue. Issue #291.
-                            global _DEFER_FORMATTERS, _FORMAT_QUEUE
-                            global _VALIDATOR_DEFER_QUEUE, _VALIDATOR_DEFER_SEEN
+                            global _DEFER_FORMATTERS, _FORMAT_QUEUE  # noqa: F821
+                            global _VALIDATOR_DEFER_QUEUE, _VALIDATOR_DEFER_SEEN  # noqa: F821
                             _batch_owns_defer = not _DEFER_FORMATTERS
                             if _batch_owns_defer:
                                 _DEFER_FORMATTERS = True
@@ -23588,7 +23588,7 @@ def _main(argv: List[str]) -> int:
     # false while `format_staged` sat in the safe set, which is one of the two
     # things #1244 fixed; it is a claim about the set, so it stays true only as
     # long as the set does.
-    global _DEFER_FORMATTERS, _FORMAT_QUEUE, _VALIDATOR_DEFER_QUEUE, _VALIDATOR_DEFER_SEEN
+    global _DEFER_FORMATTERS, _FORMAT_QUEUE, _VALIDATOR_DEFER_QUEUE, _VALIDATOR_DEFER_SEEN  # noqa: F821
     defer = len(argv) > 1 and not parallel_path
     if defer:
         _DEFER_FORMATTERS = True
