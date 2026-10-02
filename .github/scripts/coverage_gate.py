@@ -228,6 +228,18 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 (the mcp/lsp/workspace part: LSP
+    # ops, workspace, and the MCP client, loaded by one _load_part() call --
+    # see "Decision: the remaining core splits as parts sharing one
+    # namespace"). Measured 2026-10-02 on macOS/py3.13 over the directly
+    # migrated test files only (test_security_lsp.py, test_mcp_workspace.py,
+    # test_op_resolve.py, test_op_workspace.py,
+    # test_mcp_restart_note_flattens_names_1489.py,
+    # test_mcp_stop_outcome_547.py, test_mcp_stop_crash_574.py,
+    # test_validators_stop_on_new_file.py, test_custom_ops.py), not the full
+    # suite this gate itself runs: 67%. Floored 3 points under that, same
+    # slack as every other entry here.
+    "_supertool_mcp.py": 64.0,
     "_supertool_doctor.py": 80.0,
     "_supertool_gc.py": 80.0,
     "presets/": 83.0,

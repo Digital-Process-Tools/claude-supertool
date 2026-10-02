@@ -749,7 +749,7 @@ def op_workspace(path: str) -> str:
     noisy_note = ""
     if symbol.lower() in _WORKSPACE_COMMON_SYMBOLS:
         display_cap = 10
-        noisy_note = f"  (common symbol — results may be noisy)\n"
+        noisy_note = "  (common symbol — results may be noisy)\n"
 
     # Grep with a high internal cap so we can show "X of Y" in the header.
     # Tests live in the dedicated ## Tests section — exclude them here so
