@@ -189,7 +189,7 @@ def test_the_measured_paths_are_absolute() -> None:
     module_names = ("supertool", "_supertool", "_supertool_vim",
                      "_supertool_guard", "_supertool_doctor", "_supertool_gc",
                      "_supertool_presets", "_supertool_edit", "_supertool_parse",
-                     "_supertool_payload")
+                     "_supertool_payload", "_supertool_config")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "

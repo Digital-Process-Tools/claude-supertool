@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _core_sources import core_source_paths  # noqa: E402
+from _core_sources import core_source_paths, part_call_sites  # noqa: E402
 
 RUFF = shutil.which("ruff")
 
@@ -61,12 +61,34 @@ def _part_body_lines(path: Path) -> list:
 
 
 def _concatenated_source() -> str:
+    """Core + every part's body, each part SPLICED IN at its own call site.
+
+    Not core-then-every-part-appended-at-the-end: `_load_part` executes each
+    part at the exact line its call occupies, and a part loaded near the HEAD
+    of the file, used by code throughout the rest of it (the config/presets/
+    env-knobs/exclude/gitignore/rtk/display part, #2706), has most of its
+    real callers sitting between its own call site and the file's tail --
+    appending its body after the whole core (and after every other part) puts
+    its definitions textually AFTER code that already uses them, which is a
+    fabricated F821 this test would otherwise report as a real one. Splicing
+    at the call site is what `exec(code, globals())` actually does, so it is
+    the one construction that cannot invent an ordering defect of its own.
+    """
     paths = core_source_paths()
-    core, parts = paths[0], paths[1:]
-    out = [core.read_text(encoding="utf-8")]
-    for part in parts:
-        out.append("".join(_part_body_lines(part)))
-    return (chr(10) + chr(10)).join(out)
+    core = paths[0]
+    bodies = {part.stem: "".join(_part_body_lines(part)) for part in paths[1:]}
+    core_text = core.read_text(encoding="utf-8")
+    sites = part_call_sites(core_text)
+    lines = core_text.splitlines(keepends=True)
+    by_line = {lineno: name for lineno, name in sites}
+    out = []
+    for i, line in enumerate(lines, start=1):
+        name = by_line.get(i)
+        if name is not None and name in bodies:
+            out.append(bodies[name])
+        else:
+            out.append(line)
+    return "".join(out)
 
 
 def _ruff_undefined_names(source: str, tmp_path: Path) -> str:
