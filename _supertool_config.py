@@ -1930,7 +1930,7 @@ def _is_disclosable_exclusion(
     or a credential, over-disclosure is the safe direction, and whoever added
     the pattern is the person most likely to want to know that it fired.
     """
-    signal = tuple(p for p in exclude_paths if p not in _NOISE_EXCLUDE_SET)
+    signal = tuple(p for p in exclude_paths if p not in _NOISE_EXCLUDE_SET)  # noqa: F811 -- shadows the `signal` import, whose only other use moved to _supertool_mcp.py's part (#2706)
     return bool(signal) and _is_excluded(rel_path, signal)
 
 

@@ -761,7 +761,7 @@ def _repo_root_for_containment() -> str:
         d = parent
 
 
-def _undeclared_path_refusal(op: str, signal: str) -> str:
+def _undeclared_path_refusal(op: str, signal: str) -> str:  # noqa: F811 -- shadows the `signal` import, whose only other use moved to _supertool_mcp.py's part (#2706)
     """What an op that takes a path and declares no boundary gets (#1287).
 
     A refusal, not a `skipped`. The three-state rule this repo applies

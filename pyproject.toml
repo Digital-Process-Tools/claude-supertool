@@ -56,7 +56,7 @@ testpaths = ["tests"]
 # the `coverage` job in `tests.yml`, which sets that environment up and reports
 # what it measured *and what it did not*. One number, one owner. Run it locally
 # with `python3 .github/scripts/coverage_gate.py`.
-addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_doctor --cov=_supertool_gc --cov=_supertool_presets --cov=_supertool_edit --cov=_supertool_parse --cov=_supertool_payload --cov=_supertool_config --cov=_supertool_read --cov=_supertool_grep --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
+addopts = "-n auto --durations=25 --cov=supertool --cov=_supertool --cov=_supertool_vim --cov=_supertool_guard --cov=_supertool_doctor --cov=_supertool_gc --cov=_supertool_presets --cov=_supertool_edit --cov=_supertool_parse --cov=_supertool_payload --cov=_supertool_config --cov=_supertool_read --cov=_supertool_grep --cov=_supertool_mcp --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
 # #1889: there was no supported way to get a stack out of a stuck run, in a
 # suite this repo's own notes call slow and non-hermetic -- a hang anywhere
 # in the twelve-leg matrix or the `coverage`/`slow` jobs previously ran
@@ -298,6 +298,14 @@ ignore = [
 # is tests/test_part_loader_concatenated_ruff_2706.py.
 "_supertool_read.py" = ["F821"]
 "_supertool_grep.py" = ["F821"]
+# Same reason (#2706): a part is exec(code, globals())'d into _supertool.py's
+# own namespace at runtime, not imported, so every name this file uses that
+# _supertool.py (or an earlier-loaded part) defines is genuinely bound by the
+# time it runs -- but ruff lints it standalone. The real check is
+# tests/test_part_loader_concatenated_ruff_2706.py, against the concatenated
+# source in load order; this entry only silences the single-file false
+# positive on names like Dict, Any, os, re, _mcp_specs, _load_config, op_map.
+"_supertool_mcp.py" = ["F821"]
 
 [tool.setuptools]
 # Four top-level modules, declared explicitly so setuptools doesn't try to
@@ -345,4 +353,4 @@ ignore = [
 # covering config load/merge, env knobs, exclude/gitignore/rtk and the
 # display region. `_supertool_read`/`_supertool_grep` are the same shape
 # too, covering the read-family ops and the grep/around/between family.
-py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep", "_shipped_reference"]
+py-modules = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep", "_supertool_mcp", "_shipped_reference"]

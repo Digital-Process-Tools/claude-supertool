@@ -187,16 +187,18 @@ def test_the_measured_paths_are_absolute() -> None:
     """
     lines = gate._source_lines()
     module_names = ("supertool", "_supertool", "_supertool_vim",
-                     "_supertool_guard", "_supertool_doctor", "_supertool_gc",
-                     "_supertool_presets", "_supertool_edit", "_supertool_parse",
-                     "_supertool_payload", "_supertool_config", "_supertool_read",
-                     "_supertool_grep")
+                     "_supertool_guard", "_supertool_mcp", "_supertool_doctor",
+                     "_supertool_gc", "_supertool_presets", "_supertool_edit",
+                     "_supertool_parse", "_supertool_payload", "_supertool_config",
+                     "_supertool_read", "_supertool_grep")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "
         "`_supertool_vim` since #2706 split the vim implementation out of "
         "it, `_supertool_guard` since #2706 lane 0 split the raw-command "
-        "guard out the same way, `_supertool_doctor`/`_supertool_gc` since "
+        "guard out the same way, `_supertool_mcp` since the same issue "
+        "split the mcp/lsp/workspace part out of it, "
+        "`_supertool_doctor`/`_supertool_gc` since "
         "the same issue split doctor/init/gc out of it too, "
         "`_supertool_presets` since #2706 split the custom-op / preset "
         "resolution region out the same way, `_supertool_edit` since #2706 "

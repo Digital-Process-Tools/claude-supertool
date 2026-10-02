@@ -228,6 +228,20 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 (the mcp/lsp/workspace part: LSP
+    # ops, workspace, and the MCP client, loaded by one _load_part() call --
+    # see "Decision: the remaining core splits as parts sharing one
+    # namespace"). Measured 2026-10-02 on macOS/py3.13 over the directly
+    # migrated test files only (test_security_lsp.py, test_mcp_workspace.py,
+    # test_op_resolve.py, test_op_workspace.py,
+    # test_mcp_restart_note_flattens_names_1489.py,
+    # test_mcp_stop_outcome_547.py, test_mcp_stop_crash_574.py,
+    # test_validators_stop_on_new_file.py, test_custom_ops.py), not the full
+    # suite this gate itself runs: 67%. Floored 6 points under that, not the
+    # usual 3: CI's coverage job measured _supertool_doctor.py 3.5 points
+    # under its local narrowed number (#2714), and this entry has never been
+    # measured on CI.
+    "_supertool_mcp.py": 61.0,
     "_supertool_doctor.py": 80.0,
     "_supertool_gc.py": 80.0,
     # Moved out of _supertool.py by #2706 (the custom-op / preset resolution
@@ -470,7 +484,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_mcp", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))
