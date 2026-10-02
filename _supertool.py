@@ -16561,6 +16561,136 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
             pass
 
 
+
+
+def _flat_cell(value: Any, limit: Optional[int] = None) -> str:
+    """An adapter-supplied value, rendered into a line the *tool* owns (#895).
+
+    #886 stated the guarantee for `validate:` output — **one line at column 0,
+    one block per file, whatever the files are called** — and implemented it in
+    `_flat_field` for the block header. The rows underneath were still written
+    against ``.replace(chr(10), " ")``, one separator out of the ten
+    `str.splitlines()` splits on, and `resolved_to` had no flattening at all.
+    A file named ``a<U+2028>validate: forged.q`` therefore got a correctly
+    flattened header and then wrote a second, forged one out of the row below
+    it, because the shipped subprocess adapters echo their input: `xmllint`
+    reports xmllint's stderr, `tsc-check` reports `output[:300]` raw, `phpstan`
+    reports `m["message"]`, `ruff` and `yaml-check` likewise.
+
+    So this is not a second copy of the rule — it is `_flat_field`, the same
+    one implementation, plus the two things a row does to a field that a header
+    does not: strip it, and bound its width. Applied to *every* adapter-supplied
+    string these renderers interpolate into a line of their own, not only to the
+    three the report named. `tool` is the leftmost field on the row and `skipped`
+    was the only one with no sanitising whatsoever; fixing `msg` and leaving
+    those would be this very defect one field over, which is the shape of the
+    #876 → #878 → #881 → #886 chain.
+
+    What is deliberately *not* routed here: `raw_stdout`, `raw_stderr` and
+    `diff` in verbose mode. Those are blocks, not fields — the reader asked for
+    the tool's output verbatim, every line of them is emitted indented, and so
+    none can produce a column-0 header. `presets/_untrusted.py` already draws
+    that line as `scrub()` versus `flat()`; drawing it differently here would be
+    the second copy of a rule this docstring is about.
+    """
+    text = _flat_field(str(value)).strip()
+    if limit and len(text) > limit:
+        # A cut with no marker is indistinguishable from a string that ended
+        # there — and the fields routed through here include the `skipped`
+        # reason and the `adapter` message, whose entire job is to disclose why
+        # nothing was checked. `apt install shellche)` and ``(`brew instal)``
+        # both shipped, reading as complete sentences. The marker stays inside
+        # `limit`, so no column widens.
+        return text[:max(limit - 1, 0)] + "…"
+    return text
+
+
+
+
+_UNTRUSTED_FLAT: Optional[Callable[[str], str]] = None
+_UNTRUSTED_FLAT_TRIED = False
+
+
+def _flat_field(text: str, *, disclose_newline: bool = False) -> str:
+    """A value the tool prints on its own line, kept to one line (#881).
+
+    The guarantee this establishes, stated so a parser can rely on it: **a
+    ``validate:`` header is exactly one line, whatever path it was handed.**
+    Not "one line for the paths we expected" — a filename is whatever the
+    filesystem accepted, and on POSIX that includes newlines. A worktree file
+    named ``evil\\nvalidate: forged.py\\nok : ok\\n.py`` used to emit three
+    header lines for one file, and the caller that folds blocks back to files
+    positionally then attributed a forged clean verdict to a file that does not
+    parse (#881). The same defect as #876 with the filename echoed one file
+    over.
+
+    Implemented by `presets/_untrusted.flat`, which is the repo's answer to
+    this exact question and shipped in this same release for the worktrees
+    board — one guarantee with one implementation, because a second copy of a
+    rule beside the real one is what these issues are about. Loaded by path,
+    the way `presets/mcp/_paths.py` already is.
+
+    The fallback, for an install without `presets/`, is not a second copy of
+    that rule: `str.isprintable()` is false for every control character
+    including the newline, and `repr()` of any `str` is one line by the
+    language's own definition. An ordinary path is printable and passes through
+    byte-identical either way, so nothing about normal output moves.
+
+    "One line" is measured against `str.splitlines()`, the ten separators the
+    consumer folds on — not against the newline. The preset covered eight of
+    them when this consolidation shipped and the fallback covered all ten, so
+    the install *without* `presets/` was the safe one for a release (#886).
+    Recorded because the argument for consolidating was "one guarantee, one
+    implementation", which was right in shape and unverified in fact:
+    consolidation is a win only once the survivor is the stronger of the two.
+
+    `disclose_newline` (#1571) forwards to `presets/_untrusted.flat`'s own
+    flag of the same name. The default is right for a title, which cannot
+    hold a newline on either tracker, so collapsing one to a space renders
+    something that never happens. A **path** can hold one, and there the
+    space is this repo's own defect class in miniature: it turns *this name
+    has a newline in it* into a DIFFERENT, plausible name that is not on
+    disk. Every caller of this function that renders a path the reader may
+    need to open again passes `disclose_newline=True`.
+    """
+    global _UNTRUSTED_FLAT, _UNTRUSTED_FLAT_TRIED
+    if not _UNTRUSTED_FLAT_TRIED:
+        _UNTRUSTED_FLAT_TRIED = True
+        try:
+            import importlib.util
+            _u_path = os.path.join(_INSTALL_DIR, "presets", "_untrusted.py")
+            _u_spec = importlib.util.spec_from_file_location(
+                "_supertool_untrusted", _u_path)
+            if _u_spec is not None and _u_spec.loader is not None:
+                _u_mod = importlib.util.module_from_spec(_u_spec)
+                _u_spec.loader.exec_module(_u_mod)
+                _UNTRUSTED_FLAT = getattr(_u_mod, "flat", None)
+        except Exception:
+            _UNTRUSTED_FLAT = None
+    if _UNTRUSTED_FLAT is not None:
+        return _UNTRUSTED_FLAT(text, disclose_newline=disclose_newline)
+    return text if text.isprintable() else repr(text)
+
+
+def _flat_keys(names: Iterable[object]) -> str:
+    """Caller-written payload key names, rendered into a refusal (#1583).
+
+    A TOML or JSON key is an arbitrary string and may legally contain a
+    newline, so `', '.join(unknown)` put a line of the payload author's
+    choosing at column 0 inside a **system-authored** denial — the same shape
+    #1554 closed for `_CONFIG_PATH` and #1588 for a read path. Five refusals
+    did the unflattened thing; this is the one place that stops.
+
+    `_flat_field`, not `_guard_quote`. The two differ only by the cap, and the
+    cap is `guard_refusal`'s own byte budget: applied to a key it truncates and
+    appends `… (+N chars)`, which leaves the caller unable to find the key in
+    their own payload. The refusal still has to NAME the offending field, so a
+    flattener that renders it unrecognisably trades a forge for a dead end.
+    An ordinary key is printable and passes through byte-identical.
+    """
+    return ", ".join(_flat_field(str(n)) for n in names)
+
+
 # ---------------------------------------------------------------------------
 # LSP-backed single-file ops: diag, hover, rename
 #
@@ -17116,7 +17246,7 @@ def op_workspace(path: str) -> str:
     validators = cfg.get("validators") or {}
     if validators:
         out.append("## Validators\n\n")
-        out.append(op_validate(path, verbose=True))
+        out.append(op_validate(path, verbose=True))  # noqa: F821
         out.append("\n")
 
     # ── Section 5: Siblings ──────────────────────────────────────────────────
@@ -19744,8 +19874,8 @@ def _validate_from_payload(p: Dict[str, Any]) -> str:
         tools = _payload_strlist(p, "tools")
     verbose = _payload_bool(p, "verbose")
     if len(files) > 1:
-        return op_validate_multi(files, tools or None, verbose=verbose)
-    return op_validate(files[0], tools or None, verbose=verbose)
+        return op_validate_multi(files, tools or None, verbose=verbose)  # noqa: F821
+    return op_validate(files[0], tools or None, verbose=verbose)  # noqa: F821
 
 
 def _payload_int(p: Dict[str, Any], key: str, default: int) -> int:
@@ -20881,7 +21011,7 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
         # next top-level call would report skips belonging to a call that
         # already died. The outermost frame owns the reset either way.
         if depth == 0:
-            _FORMATTER_SKIPS.clear()
+            _FORMATTER_SKIPS.clear()  # noqa: F821
 
 
 def dispatch_verdict(
@@ -21647,15 +21777,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             new_str = _dec(parts[2] if len(parts) > 2 else "")
             rpath = parts[3] if len(parts) > 3 and parts[3] else "."
             dry = op == "replace_dry"
-            body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, rpath, dry=dry))
+            body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, rpath, dry=dry))  # noqa: F821
         elif op == "edit":
             old_str = _dec(parts[1] if len(parts) > 1 else "")
             new_str = _dec(parts[2] if len(parts) > 2 else "")
             epath = parts[3] if len(parts) > 3 else ""
             if _at_file_replace_all:
-                body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, epath or "."))
+                body = _run_with_validators(op, parts, lambda: op_replace(old_str, new_str, epath or "."))  # noqa: F821
             else:
-                body = _run_with_validators(op, parts, lambda: op_edit(old_str, new_str, epath))
+                body = _run_with_validators(op, parts, lambda: op_edit(old_str, new_str, epath))  # noqa: F821
         elif op == "replace_lines":
             rl_path = parts[1] if len(parts) > 1 else ""
             try:
@@ -21666,21 +21796,21 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             else:
                 # CONTENT may legitimately contain ':' — rejoin remaining parts
                 rl_content = _dec(":".join(parts[4:]) if len(parts) > 4 else "")
-                body = _run_with_validators(op, parts, lambda: op_replace_lines(rl_path, rl_start, rl_end, rl_content))
+                body = _run_with_validators(op, parts, lambda: op_replace_lines(rl_path, rl_start, rl_end, rl_content))  # noqa: F821
         elif op == "paste":
             p_path = parts[1] if len(parts) > 1 else ""
             # CONTENT may contain ':' — rejoin everything after the path
             p_content = _dec(":".join(parts[2:]) if len(parts) > 2 else "")
-            body = _run_with_validators(op, parts, lambda: op_paste(p_path, p_content))
+            body = _run_with_validators(op, parts, lambda: op_paste(p_path, p_content))  # noqa: F821
         elif op == "append":
             a_path = parts[1] if len(parts) > 1 else ""
             # CONTENT may contain ':' — rejoin everything after the path
             a_content = _dec(":".join(parts[2:]) if len(parts) > 2 else "")
-            body = _run_with_validators(op, parts, lambda: op_append(a_path, a_content))
+            body = _run_with_validators(op, parts, lambda: op_append(a_path, a_content))  # noqa: F821
         elif op == "vim":
             vim_path = parts[1] if len(parts) > 1 else ""
             vim_script = ":".join(parts[2:]) if len(parts) > 2 else ""
-            body = _run_with_validators(op, parts, lambda: op_vim(vim_path, vim_script))
+            body = _run_with_validators(op, parts, lambda: op_vim(vim_path, vim_script))  # noqa: F821
         elif op == "json-set":
             # json-set:@file / json-set:@- only (#1822) -- its 'set' field
             # is a table (dotted-key -> value), not a scalar, so it cannot
@@ -21738,7 +21868,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                             js_path = str(js_lower["path"])
                             js_fields = js_lower["set"]
                             js_parts = ["json-set", js_path]
-                            body = _run_with_validators(
+                            body = _run_with_validators(  # noqa: F821
                                 "json-set", js_parts,
                                 lambda: op_json_set(js_path, js_fields))
         elif op == "batch":
@@ -21997,8 +22127,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                             if not _snap_err and not _cap_exceeded:
                                 body = "".join(results)
                                 if _batch_owns_defer:
-                                    body += _drain_format_queue()
-                                    body += _drain_validator_queue()
+                                    body += _drain_format_queue()  # noqa: F821
+                                    body += _drain_validator_queue()  # noqa: F821
         elif op == "payload-lint":
             body = op_payload_lint(parts[1] if len(parts) > 1 else "")
         elif op == "validate":
@@ -22017,9 +22147,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 _v_contained, v_files = _gate_paths(v_files)
                 if _v_contained:
                     return _receipt(header, _v_contained)
-                body = op_validate_multi(v_files, v_tools or None, verbose=v_verbose)
+                body = op_validate_multi(v_files, v_tools or None, verbose=v_verbose)  # noqa: F821
             else:
-                body = op_validate(v_path, v_tools or None, verbose=v_verbose)
+                body = op_validate(v_path, v_tools or None, verbose=v_verbose)  # noqa: F821
         elif op == "format":
             # verbose flag: literal "verbose" token anywhere after op name.
             # Forms: format:PATH:verbose  or  format:PATH:tool1,tool2:verbose
@@ -22027,21 +22157,21 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             f_parts = [p for p in parts[1:] if p != "verbose"]
             f_path = f_parts[0] if len(f_parts) > 0 else ""
             f_tools = [t for t in (f_parts[1].split(",") if len(f_parts) > 1 and f_parts[1] else []) if t]
-            body = op_format(f_path, f_tools or None, verbose=f_verbose)
+            body = op_format(f_path, f_tools or None, verbose=f_verbose)  # noqa: F821
         elif op == "validate_staged":
             # verbose flag: literal "verbose" token anywhere after op name.
             # Forms: validate_staged:verbose  or  validate_staged::tool1,tool2:verbose
             vs_verbose = "verbose" in parts[1:]
             vs_parts = [p for p in parts[1:] if p != "verbose"]
             vs_tools = [t for t in (vs_parts[0].split(",") if len(vs_parts) > 0 and vs_parts[0] else []) if t]
-            body = op_validate_staged(vs_tools or None, verbose=vs_verbose)
+            body = op_validate_staged(vs_tools or None, verbose=vs_verbose)  # noqa: F821
         elif op == "format_staged":
             # verbose flag: literal "verbose" token anywhere after op name.
             # Forms: format_staged:verbose  or  format_staged::tool1,tool2:verbose
             fs_verbose = "verbose" in parts[1:]
             fs_parts = [p for p in parts[1:] if p != "verbose"]
             fs_tools = [t for t in (fs_parts[0].split(",") if len(fs_parts) > 0 and fs_parts[0] else []) if t]
-            body = op_format_staged(fs_tools or None, verbose=fs_verbose)
+            body = op_format_staged(fs_tools or None, verbose=fs_verbose)  # noqa: F821
         elif op == "resolve":
             rs_symbol = parts[1] if len(parts) > 1 else ""
             rs_from_file = parts[2] if len(parts) > 2 else None
@@ -22203,12 +22333,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         body += "".join(w[1] for w in _WRITE_WARNINGS)
         _WRITE_WARNINGS.clear()
 
-    if _FORMATTER_SKIPS and getattr(_DISPATCH_STATE, "depth", 1) <= 1:
+    if _FORMATTER_SKIPS and getattr(_DISPATCH_STATE, "depth", 1) <= 1:  # noqa: F821
         body += (
-            "[formatters] skipped: " + ", ".join(_FORMATTER_SKIPS)
+            "[formatters] skipped: " + ", ".join(_FORMATTER_SKIPS)  # noqa: F821
             + " — no config for it in the edited file's repo (#393)\n"
         )
-        _FORMATTER_SKIPS.clear()
+        _FORMATTER_SKIPS.clear()  # noqa: F821
 
     # Swap in the compact header only if the op actually wrote — see the note
     # where it was built. The test is the write counter, not an ERROR prefix on
@@ -23498,11 +23628,11 @@ def _main(argv: List[str]) -> int:
 
     # Drain deferred formatters now that every op has landed.
     if defer:
-        drain_out = _drain_format_queue()
+        drain_out = _drain_format_queue()  # noqa: F821
         if drain_out:
             sys.stdout.write(drain_out)
             total_out_bytes += len(drain_out.encode("utf-8"))
-        validator_drain_out = _drain_validator_queue()
+        validator_drain_out = _drain_validator_queue()  # noqa: F821
         if validator_drain_out:
             sys.stdout.write(validator_drain_out)
             total_out_bytes += len(validator_drain_out.encode("utf-8"))

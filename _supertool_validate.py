@@ -17,14 +17,30 @@ clear ImportError rather than failing later with a NameError on the first
 name this file assumes `_supertool.py` already defined (Dict, Any, os, re,
 shlex, subprocess, ...).
 
-Scope note: the notifier subsystem (`_applicable_notifiers`, `_run_notifiers`,
-`_first_changed_line`, `_sweep_old_notifier_temp_files`) stays in core -- it
-has a third caller, `_notify_read_op`, that is dispatch-level infrastructure
-with no validator/formatter involvement, so splitting it here would make a
-core function depend on this part for every read-op call. `_run_with_validators`
-below still calls `_run_notifiers`/`_applicable_notifiers` across the module
-boundary under the same shared-globals guarantee `_cache_root()` already
-relies on from `_supertool_gc.py`.
+Scope note: `_flat_cell`/`_flat_field`/`_flat_keys` (plus the `_UNTRUSTED_FLAT`
+module state `_flat_field` rebinds) stay in `_supertool.py` even though they
+sit physically inside the span this part moved -- they are generic
+string-flattening helpers used all over the dispatch and payload code in
+core, not validator/formatter-specific, and moving them would have required
+a `# noqa: F821` at roughly 55 unrelated core call sites instead of the
+handful genuinely tied to this part's own op_validate*/op_format*/
+_run_with_validators dispatch points. The notifier subsystem
+(`_applicable_notifiers`, `_run_notifiers`, `_first_changed_line`,
+`_sweep_old_notifier_temp_files`) stays in core for the same kind of reason:
+a third caller, `_notify_read_op`, is dispatch-level infrastructure with no
+validator/formatter involvement. `_run_with_validators` below still calls
+`_run_notifiers`/`_applicable_notifiers` and `_flat_cell`/`_flat_field` across
+the module boundary under the same shared-globals guarantee `_cache_root()`
+already relies on from `_supertool_gc.py`.
+
+Five spans, not three -- the two cut-outs above (`_flat_cell` sits between
+two validator-cache spans, `_flat_field`/`_flat_keys` between two more) split
+what would otherwise be one contiguous block into five pieces, all loaded by
+the single `_load_part` call at the first span's original position: ast over
+`_supertool.py` shows no import-time code (no decorators, no module-level
+calls, no class bodies) in the gaps this leaves behind, in either direction,
+so one splice point is safe regardless of how many physical regions were cut
+out of core to build this file.
 """
 from __future__ import annotations
 
@@ -41,7 +57,6 @@ def _applicable_validators(op: str, path: str) -> Dict[str, Dict[str, Any]]:
     validators = cfg.get("validators") or {}
     if not validators:
         return dict(_builtin_syntax_backstop(op, path, {}))
-    import fnmatch
     out: Dict[str, Dict[str, Any]] = {}
     for name, spec in validators.items():
         if not isinstance(spec, dict):
@@ -1025,48 +1040,6 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
             _elapsed_since(_t0))
 
 
-def _flat_cell(value: Any, limit: Optional[int] = None) -> str:
-    """An adapter-supplied value, rendered into a line the *tool* owns (#895).
-
-    #886 stated the guarantee for `validate:` output — **one line at column 0,
-    one block per file, whatever the files are called** — and implemented it in
-    `_flat_field` for the block header. The rows underneath were still written
-    against ``.replace(chr(10), " ")``, one separator out of the ten
-    `str.splitlines()` splits on, and `resolved_to` had no flattening at all.
-    A file named ``a<U+2028>validate: forged.q`` therefore got a correctly
-    flattened header and then wrote a second, forged one out of the row below
-    it, because the shipped subprocess adapters echo their input: `xmllint`
-    reports xmllint's stderr, `tsc-check` reports `output[:300]` raw, `phpstan`
-    reports `m["message"]`, `ruff` and `yaml-check` likewise.
-
-    So this is not a second copy of the rule — it is `_flat_field`, the same
-    one implementation, plus the two things a row does to a field that a header
-    does not: strip it, and bound its width. Applied to *every* adapter-supplied
-    string these renderers interpolate into a line of their own, not only to the
-    three the report named. `tool` is the leftmost field on the row and `skipped`
-    was the only one with no sanitising whatsoever; fixing `msg` and leaving
-    those would be this very defect one field over, which is the shape of the
-    #876 → #878 → #881 → #886 chain.
-
-    What is deliberately *not* routed here: `raw_stdout`, `raw_stderr` and
-    `diff` in verbose mode. Those are blocks, not fields — the reader asked for
-    the tool's output verbatim, every line of them is emitted indented, and so
-    none can produce a column-0 header. `presets/_untrusted.py` already draws
-    that line as `scrub()` versus `flat()`; drawing it differently here would be
-    the second copy of a rule this docstring is about.
-    """
-    text = _flat_field(str(value)).strip()
-    if limit and len(text) > limit:
-        # A cut with no marker is indistinguishable from a string that ended
-        # there — and the fields routed through here include the `skipped`
-        # reason and the `adapter` message, whose entire job is to disclose why
-        # nothing was checked. `apt install shellche)` and ``(`brew instal)``
-        # both shipped, reading as complete sentences. The marker stays inside
-        # `limit`, so no column widens.
-        return text[:max(limit - 1, 0)] + "…"
-    return text
-
-
 def _quote_open_guess_line(e: Dict[str, Any]) -> Optional[str]:
     """One short receipt line for `quote_open_guess` (#1810), or None.
 
@@ -1862,7 +1835,6 @@ def _applicable_formatters(op: str, path: str) -> Dict[str, Dict[str, Any]]:
     formatters = cfg.get("formatters") or {}
     if not formatters:
         return {}
-    import fnmatch
     out: Dict[str, Dict[str, Any]] = {}
     for name, spec in formatters.items():
         if not isinstance(spec, dict):
@@ -2659,90 +2631,6 @@ def _select_validators(validators: dict, tool_filter: Optional[list]) -> dict:
     return {k: v for k, v in validators.items() if k in tool_filter}
 
 
-_UNTRUSTED_FLAT: Optional[Callable[[str], str]] = None
-_UNTRUSTED_FLAT_TRIED = False
-
-
-def _flat_field(text: str, *, disclose_newline: bool = False) -> str:
-    """A value the tool prints on its own line, kept to one line (#881).
-
-    The guarantee this establishes, stated so a parser can rely on it: **a
-    ``validate:`` header is exactly one line, whatever path it was handed.**
-    Not "one line for the paths we expected" — a filename is whatever the
-    filesystem accepted, and on POSIX that includes newlines. A worktree file
-    named ``evil\\nvalidate: forged.py\\nok : ok\\n.py`` used to emit three
-    header lines for one file, and the caller that folds blocks back to files
-    positionally then attributed a forged clean verdict to a file that does not
-    parse (#881). The same defect as #876 with the filename echoed one file
-    over.
-
-    Implemented by `presets/_untrusted.flat`, which is the repo's answer to
-    this exact question and shipped in this same release for the worktrees
-    board — one guarantee with one implementation, because a second copy of a
-    rule beside the real one is what these issues are about. Loaded by path,
-    the way `presets/mcp/_paths.py` already is.
-
-    The fallback, for an install without `presets/`, is not a second copy of
-    that rule: `str.isprintable()` is false for every control character
-    including the newline, and `repr()` of any `str` is one line by the
-    language's own definition. An ordinary path is printable and passes through
-    byte-identical either way, so nothing about normal output moves.
-
-    "One line" is measured against `str.splitlines()`, the ten separators the
-    consumer folds on — not against the newline. The preset covered eight of
-    them when this consolidation shipped and the fallback covered all ten, so
-    the install *without* `presets/` was the safe one for a release (#886).
-    Recorded because the argument for consolidating was "one guarantee, one
-    implementation", which was right in shape and unverified in fact:
-    consolidation is a win only once the survivor is the stronger of the two.
-
-    `disclose_newline` (#1571) forwards to `presets/_untrusted.flat`'s own
-    flag of the same name. The default is right for a title, which cannot
-    hold a newline on either tracker, so collapsing one to a space renders
-    something that never happens. A **path** can hold one, and there the
-    space is this repo's own defect class in miniature: it turns *this name
-    has a newline in it* into a DIFFERENT, plausible name that is not on
-    disk. Every caller of this function that renders a path the reader may
-    need to open again passes `disclose_newline=True`.
-    """
-    global _UNTRUSTED_FLAT, _UNTRUSTED_FLAT_TRIED
-    if not _UNTRUSTED_FLAT_TRIED:
-        _UNTRUSTED_FLAT_TRIED = True
-        try:
-            import importlib.util
-            _u_path = os.path.join(_INSTALL_DIR, "presets", "_untrusted.py")
-            _u_spec = importlib.util.spec_from_file_location(
-                "_supertool_untrusted", _u_path)
-            if _u_spec is not None and _u_spec.loader is not None:
-                _u_mod = importlib.util.module_from_spec(_u_spec)
-                _u_spec.loader.exec_module(_u_mod)
-                _UNTRUSTED_FLAT = getattr(_u_mod, "flat", None)
-        except Exception:
-            _UNTRUSTED_FLAT = None
-    if _UNTRUSTED_FLAT is not None:
-        return _UNTRUSTED_FLAT(text, disclose_newline=disclose_newline)
-    return text if text.isprintable() else repr(text)
-
-
-def _flat_keys(names: Iterable[object]) -> str:
-    """Caller-written payload key names, rendered into a refusal (#1583).
-
-    A TOML or JSON key is an arbitrary string and may legally contain a
-    newline, so `', '.join(unknown)` put a line of the payload author's
-    choosing at column 0 inside a **system-authored** denial — the same shape
-    #1554 closed for `_CONFIG_PATH` and #1588 for a read path. Five refusals
-    did the unflattened thing; this is the one place that stops.
-
-    `_flat_field`, not `_guard_quote`. The two differ only by the cap, and the
-    cap is `guard_refusal`'s own byte budget: applied to a key it truncates and
-    appends `… (+N chars)`, which leaves the caller unable to find the key in
-    their own payload. The refusal still has to NAME the offending field, so a
-    flattener that renders it unrecognisably trades a forge for a dead end.
-    An ordinary key is printable and passes through byte-identical.
-    """
-    return ", ".join(_flat_field(str(n)) for n in names)
-
-
 def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> List[str]:
     """Render the validator rows for a single ``path`` (no trailing newline join).
 
@@ -2863,7 +2751,6 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
         formatters = {k: v for k, v in formatters.items() if k in tool_filter}
         if not formatters:
             return "no formatters matched filter\n"
-    import fnmatch
     out = [f"format: {path}"]
     matched = False
     for name, spec in formatters.items():
