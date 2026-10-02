@@ -2406,8 +2406,8 @@ def _validate_from_payload(p: Dict[str, Any]) -> str:
         tools = _payload_strlist(p, "tools")
     verbose = _payload_bool(p, "verbose")
     if len(files) > 1:
-        return op_validate_multi(files, tools or None, verbose=verbose)
-    return op_validate(files[0], tools or None, verbose=verbose)
+        return op_validate_multi(files, tools or None, verbose=verbose)  # noqa: F821
+    return op_validate(files[0], tools or None, verbose=verbose)  # noqa: F821
 
 
 def _payload_int(p: Dict[str, Any], key: str, default: int) -> int:
