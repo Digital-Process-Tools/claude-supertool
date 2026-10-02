@@ -142,7 +142,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple, Union  # noqa: F401 -- MutableMapping has no direct use in this file after #2706 moved its two call sites into _supertool_presets.py, which execs into this module's own globals() and still needs the name bound here
 
 VERSION = "0.64.0"
 
