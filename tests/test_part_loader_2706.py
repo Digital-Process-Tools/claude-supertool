@@ -21,6 +21,7 @@ import ast
 import importlib
 import importlib.machinery
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -259,11 +260,23 @@ def test_loading_a_part_writes_and_reuses_a_pyc(tmp_path):
     assert Path(cache).exists(), "no __pycache__ entry written for the part"
     before = Path(cache).read_bytes()
 
-    # Reused, not recompiled: made unreadable, get_code must still succeed.
-    path.chmod(0o000)
-    try:
-        importlib.machinery.SourceFileLoader(name, str(path)).get_code(name)
-    finally:
-        path.chmod(0o644)
+    # Reused, not recompiled -- proven cross-platform via the loader's own
+    # cache-validity check (mtime + size), not via chmod(0o000): on Windows,
+    # chmod only toggles the read-only attribute and leaves a file readable
+    # (CPython's own documented `os.chmod` behaviour), so an unreadable-file
+    # negative control is silently vacuous on that platform while still
+    # reporting green. Corrupting the source to invalid syntax, while
+    # restoring its exact original mtime and size, makes the two checks that
+    # actually decide reuse agree with the stale cache on every OS: if
+    # get_code() ever fell back to re-reading and recompiling this source,
+    # the SyntaxError below would fire immediately rather than silently
+    # succeeding.
+    stat = path.stat()
+    broken = (b"x" * (stat.st_size - 1)) + b"\n"
+    assert len(broken) == stat.st_size, "corrupted source must keep the same size"
+    path.write_bytes(broken)
+    os.utime(path, (stat.st_atime, stat.st_mtime))
+
+    importlib.machinery.SourceFileLoader(name, str(path)).get_code(name)
     after = Path(cache).read_bytes()
     assert before == after, "the cache was rewritten rather than reused"

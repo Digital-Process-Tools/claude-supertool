@@ -26188,7 +26188,17 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # would hand the matcher a different command than the one the
             # user typed.
             header = ""
-            body = op_guard(":".join(parts[1:]))
+            # op_guard is defined in _supertool_guard.py (#2706), loaded by
+            # _load_part() into this module's own globals() before this line
+            # ever runs -- genuinely bound at call time, but ruff lints this
+            # file standalone and cannot see a name defined in a part, hence
+            # the F821 silenced here rather than for the whole file (which
+            # would lose real-undefined-name coverage over everything else
+            # in it). The real check for a core call into a part-only name
+            # (this direction) or a part call into a core-only name (the
+            # other direction) is tests/test_part_loader_concatenated_ruff_2706.py,
+            # which lints core+parts concatenated and sees both directions.
+            body = op_guard(":".join(parts[1:]))  # noqa: F821
         elif op == "doctor":
             # Meta-op, markdown headers of its own — same treatment as
             # `version`/`registry`.
