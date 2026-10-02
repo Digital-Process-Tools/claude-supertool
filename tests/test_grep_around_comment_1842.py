@@ -8,10 +8,13 @@ as `grep` does. Nothing fails, and the path did move.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import supertool
-import _supertool
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _core_sources import core_source_text  # noqa: E402
 
 
 def test_two_token_shape_moves_the_path_without_failing(tmp_path: Path) -> None:
@@ -29,8 +32,15 @@ def test_two_token_shape_moves_the_path_without_failing(tmp_path: Path) -> None:
 def test_the_comment_names_both_shapes() -> None:
     """The corrected comment must not claim, unqualified, that the trailing
     slots parsing as ints is why the two-token shape is safe -- it must say
-    the two-token shape moves the path exactly like `grep` does."""
-    src = Path(_supertool.__file__).read_text(encoding="utf-8")
+    the two-token shape moves the path exactly like `grep` does.
+
+    `_PATH_ARG_POSITIONS` (and the comment above it) moved out of
+    `_supertool.py` into `_supertool_parse.py` by #2706 -- reading only
+    `_supertool.__file__`'s own source text would no longer find it.
+    `core_source_text()` concatenates the core and every loaded part, in
+    load order, so this keeps finding the comment wherever it lives.
+    """
+    src = core_source_text()
     idx = src.index('"grep_around": (2,),')
     comment = src[max(0, idx - 700):idx]
     assert "two-token" in comment or "two token" in comment, comment
