@@ -198,6 +198,15 @@ class GateRefusal(Exception):
 #: tests/test_coverage_gate_floor_991.py.
 ENFORCED: "dict[str, float]" = {
     "_supertool.py": 89.0,
+    # Moved out of _supertool.py by #2706 step 1 (the vim implementation).
+    # Measured 2026-10-02 on macOS/py3.13 over `-k vim` only (a narrowed run,
+    # not the full suite this gate itself runs -- see CLAUDE.md on why the
+    # full suite is not run locally): 86%. Floored 3 points under that, the
+    # same slack this file already gives every other entry (_SLACK below),
+    # rather than carrying the narrowed number forward as if it were the
+    # real figure -- a few non-vim-named tests may also touch this module
+    # and this run did not see them.
+    "_supertool_vim.py": 83.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -345,7 +354,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool"]
+    out = ["supertool", "_supertool", "_supertool_vim"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))

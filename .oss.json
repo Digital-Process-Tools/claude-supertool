@@ -16,6 +16,7 @@
   "changelog_dir": "changelog.d",
   "user_visible_paths": [
     "^_?supertool\\.py$",
+    "^_supertool_vim\\.py$",
     "^presets/",
     "^validators/",
     "^formatters/",

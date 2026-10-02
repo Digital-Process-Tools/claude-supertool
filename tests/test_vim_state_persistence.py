@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import supertool
+import _supertool_vim
 
 
 def test_vim_save_cursor_respects_no_persist(tmp_path: Path, monkeypatch) -> None:
@@ -12,9 +13,9 @@ def test_vim_save_cursor_respects_no_persist(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.txt"
     f.write_text("hello\n")
-    supertool._vim_save_cursor(str(f), 3)
+    _supertool_vim._vim_save_cursor(str(f), 3)
     # No file should be created in the cache.
-    state_path = Path(supertool._vim_cursor_state_path(str(f)))
+    state_path = Path(_supertool_vim._vim_cursor_state_path(str(f)))
     assert not state_path.exists()
 
 
@@ -24,14 +25,14 @@ def test_vim_save_cursor_preserves_marks(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     f = tmp_path / "x.txt"
     f.write_text("hello world\n")
-    state_path = Path(supertool._vim_cursor_state_path(str(f)))
+    state_path = Path(_supertool_vim._vim_cursor_state_path(str(f)))
     state_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         # Seed with marks via the full state writer.
-        supertool._vim_save_state(str(f), 0, {"a": 5}, None)
+        _supertool_vim._vim_save_state(str(f), 0, {"a": 5}, None)
         # Now use the shim — should keep the mark.
-        supertool._vim_save_cursor(str(f), 7)
-        state = supertool._vim_load_state(str(f), 100)
+        _supertool_vim._vim_save_cursor(str(f), 7)
+        state = _supertool_vim._vim_load_state(str(f), 100)
         assert state["cursor"] == 7
         assert state["marks"].get("a") == 5
     finally:
@@ -42,8 +43,8 @@ def test_vim_save_state_respects_no_persist(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setenv("SUPERTOOL_VIM_NO_PERSIST", "1")
     f = tmp_path / "x.txt"
     f.write_text("hello\n")
-    supertool._vim_save_state(str(f), 3, {}, None)
-    state_path = Path(supertool._vim_cursor_state_path(str(f)))
+    _supertool_vim._vim_save_state(str(f), 3, {}, None)
+    state_path = Path(_supertool_vim._vim_cursor_state_path(str(f)))
     assert not state_path.exists()
 
 
