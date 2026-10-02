@@ -17,35 +17,35 @@ silently, which is the failure #2175 was filed to prevent.
 """
 from __future__ import annotations
 
-import supertool
+import _supertool_doctor
 
 
 def test_github_exact_match_only() -> None:
-    assert supertool._init_platform("github.com") == "github"
+    assert _supertool_doctor._init_platform("github.com") == "github"
 
 
 def test_github_spoofed_host_refused() -> None:
     # The #1212 case: a substring/suffix match here would treat an
     # attacker-controlled host as github.com.
-    assert supertool._init_platform("evilgithub.com") is None
+    assert _supertool_doctor._init_platform("evilgithub.com") is None
 
 
 def test_gitlab_com_matches() -> None:
-    assert supertool._init_platform("gitlab.com") == "gitlab"
+    assert _supertool_doctor._init_platform("gitlab.com") == "gitlab"
 
 
 def test_gitlab_self_hosted_matches() -> None:
     # The case the substring convention exists to support -- a company's
     # own self-hosted GitLab instance, not gitlab.com itself.
-    assert supertool._init_platform("gitlab.dp.tools") == "gitlab"
+    assert _supertool_doctor._init_platform("gitlab.dp.tools") == "gitlab"
 
 
 def test_gitlab_substring_is_the_documented_tradeoff() -> None:
     # Deliberately loose, per the docstring's cross-reference to
     # `origin_slug`: any host merely containing "gitlab" resolves to
     # "gitlab". This is not a bug to "fix" by tightening -- see #2175.
-    assert supertool._init_platform("notgitlab.com") == "gitlab"
+    assert _supertool_doctor._init_platform("notgitlab.com") == "gitlab"
 
 
 def test_unrecognised_host_is_none() -> None:
-    assert supertool._init_platform("bitbucket.org") is None
+    assert _supertool_doctor._init_platform("bitbucket.org") is None

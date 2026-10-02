@@ -196,6 +196,17 @@ class GateRefusal(Exception):
 #: `_supertool.py` entry above or the shim would inherit a floor written for
 #: 17.4k lines it no longer holds. Pinned by
 #: tests/test_coverage_gate_floor_991.py.
+#:
+#: `_supertool_doctor.py` / `_supertool_gc.py` (#2706): split out of
+#: `_supertool.py` so that file clears the Anthropic plugin directory's
+#: 256 KiB per-file limit; `op_doctor`/`op_init`/`op_gc` stay in
+#: `_supertool.py` as thin stubs that import these modules lazily. Measured
+#: 2026-10-02 over just the directly migrated test files (not the full
+#: suite, which exercises more of both through `op_doctor`/`op_init`/`op_gc`
+#: elsewhere): 86.3% / 83.7%. CI's dedicated `coverage` job, the authoritative
+#: number, then measured 82.75% / 87.76% on run 37057160506 (ubuntu): lower for
+#: doctor than the local macOS run, which exercises platform branches the Linux
+#: runner does not. Floors sit under the CI figure, not the local one.
 ENFORCED: "dict[str, float]" = {
     "_supertool.py": 89.0,
     # Moved out of _supertool.py by #2706 step 1 (the vim implementation).
@@ -217,6 +228,8 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    "_supertool_doctor.py": 80.0,
+    "_supertool_gc.py": 80.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -364,7 +377,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))

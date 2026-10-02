@@ -16,6 +16,7 @@ it answered), unknown (could not run or parse, never folded into either).
 from __future__ import annotations
 
 import supertool
+import _supertool_doctor
 
 
 def _fake_version_proc(output, returncode=0):
@@ -44,7 +45,7 @@ def test_launcher_at_current_version_gets_no_stale_note(monkeypatch, tmp_path) -
         return _fake_version_proc("", returncode=1)
     monkeypatch.setattr(supertool.subprocess, "run", _fake_run)
 
-    sym = supertool._doctor_symlink()
+    sym = _supertool_doctor._doctor_symlink()
     assert sym["path_resolves_to_running_module"] is False
     assert sym.get("path_version_state") == "current"
 
@@ -78,7 +79,7 @@ def test_genuinely_stale_path_entry_still_warns_with_its_version(monkeypatch, tm
         return _fake_version_proc("", returncode=1)
     monkeypatch.setattr(supertool.subprocess, "run", _fake_run)
 
-    sym = supertool._doctor_symlink()
+    sym = _supertool_doctor._doctor_symlink()
     assert sym["path_resolves_to_running_module"] is False
     assert sym.get("path_version_state") == "stale"
     assert sym.get("path_version") == "0.1.0"
@@ -105,7 +106,7 @@ def test_path_entry_that_cannot_be_run_is_reported_as_unknown(monkeypatch, tmp_p
         raise OSError("no such file")
     monkeypatch.setattr(supertool.subprocess, "run", _boom)
 
-    sym = supertool._doctor_symlink()
+    sym = _supertool_doctor._doctor_symlink()
     assert sym["path_resolves_to_running_module"] is False
     assert sym.get("path_version_state") == "unknown"
     # #2611 self-review, second round: an unconditional fake here cannot
@@ -145,7 +146,7 @@ def test_a_dangling_symlink_does_not_claim_version_was_run(
         raise OSError("should not be reached for a dangling link")
     monkeypatch.setattr(supertool.subprocess, "run", _record)
 
-    sym = supertool._doctor_symlink()
+    sym = _supertool_doctor._doctor_symlink()
     assert sym["dangling"] is True
     # Never attempted, so there is no answer to report either way.
     assert sym["path_version_state"] is None
