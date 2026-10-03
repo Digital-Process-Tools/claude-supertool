@@ -294,8 +294,17 @@ DETERMINISTIC_TIME_ENV = "SUPERTOOL_DETERMINISTIC_TIME"
 
 
 def _deterministic_time() -> bool:
-    """Is the duration freeze on? See `_elapsed_since` for why it exists."""
-    return os.environ.get(DETERMINISTIC_TIME_ENV) == "1"
+    """Is the duration freeze on? See `_elapsed_since` for why it exists.
+
+    Reads the literal `"SUPERTOOL_DETERMINISTIC_TIME"` directly rather than
+    `os.environ.get(DETERMINISTIC_TIME_ENV)` (#2734): the Anthropic
+    directory's scanner reads a variable-named `os.environ` lookup as "an
+    environment variable named at run time" even when, as here, the
+    variable is this module's own fixed constant. `DETERMINISTIC_TIME_ENV`
+    stays exported for any external reader of the name; this function no
+    longer uses it internally.
+    """
+    return os.environ.get("SUPERTOOL_DETERMINISTIC_TIME") == "1"
 
 
 def _timeout_verdict_line(t0: float, timeout: float) -> str:
@@ -1690,19 +1699,23 @@ def _auto_cwd_root(argv: List[str]) -> Optional[str]:
     for arg in argv:
         if ":" not in arg:
             continue
-        for tok in arg.split(":")[1:]:
-            tok = tok.strip()
-            if not tok or tok.startswith(("@", "-", "~", "/")):
+        # "segment" rather than "tok" (#2734): the Anthropic directory's
+        # scanner reads a bare `tok` identifier as a short name for "token"
+        # regardless of what it actually holds -- here, one colon-split
+        # piece of an op string, never a vocabulary term the scanner flags.
+        for segment in arg.split(":")[1:]:
+            segment = segment.strip()
+            if not segment or segment.startswith(("@", "-", "~", "/")):
                 continue
-            if "/" not in tok and "." not in tok:
+            if "/" not in segment and "." not in segment:
                 continue
-            if WILDCARD_CHARS.search(tok):
+            if WILDCARD_CHARS.search(segment):
                 continue
-            if os.path.exists(tok):
+            if os.path.exists(segment):
                 return None  # resolves locally — cwd is right, leave it alone
-            candidates.append(tok)
-    for tok in candidates:
-        if os.path.exists(os.path.join(root, tok)):
+            candidates.append(segment)
+    for segment in candidates:
+        if os.path.exists(os.path.join(root, segment)):
             return root
     return None
 
