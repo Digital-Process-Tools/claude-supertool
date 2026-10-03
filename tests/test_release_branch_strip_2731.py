@@ -320,12 +320,93 @@ def test_inline_def_with_trailing_statement_keeps_the_trailing_statement(mod):
     assert ns["f"]() == 1
 
 
+# -- semicolon-joined statements sharing the docstring's own line ------------
+# (#2731 self-review: `needs_pass` keyed on "is this the def/class header
+# line", which covers the inline-def case below but missed the far more
+# ordinary shape of a docstring on its own line followed by `; stmt` on
+# that SAME line -- at class scope and at module scope alike.)
+
+def test_module_docstring_with_semicolon_statement_same_line(mod):
+    src = '"""Module doc."""; VALUE = 1\n'
+    out = _strip(mod, src)
+    compile(out, "x.py", "exec")
+    ns: dict = {}
+    exec(out, ns)
+    assert ns["VALUE"] == 1
+    assert "Module doc" not in out
+
+
+def test_class_docstring_with_semicolon_statement_same_line(mod):
+    src = (
+        "class C:\n"
+        '    """Doc."""; x = 1\n'
+    )
+    out = _strip(mod, src)
+    compile(out, "x.py", "exec")
+    ns: dict = {}
+    exec(compile(out, "x.py", "exec"), ns)
+    assert ns["C"].x == 1
+    assert "Doc." not in out
+
+
+def test_function_docstring_with_semicolon_statement_same_line(mod):
+    src = (
+        "def f():\n"
+        '    """Doc."""; return 1\n'
+    )
+    out = _strip(mod, src)
+    ns: dict = {}
+    exec(compile(out, "x.py", "exec"), ns)
+    assert ns["f"]() == 1
+
+
+def test_multiline_docstring_with_trailing_semicolon_statement_refused(mod):
+    """A multi-line docstring whose CLOSING line also carries `; stmt` is
+    refused with a clear, named BuildError rather than silently mis-handled
+    or left to fail downstream with an opaque "does not parse"."""
+    src = (
+        "def f():\n"
+        '    """line one\n'
+        '    line two"""; return 1\n'
+    )
+    with pytest.raises(mod.BuildError, match="not supported by this stripper"):
+        mod.strip_py(src.encode("utf-8"), "x.py")
+
+
+# -- UTF-8 BOM -----------------------------------------------------------------
+
+def test_leading_utf8_bom_is_kept_and_does_not_break_parsing(mod):
+    """`compile()` on bytes tolerates a leading BOM; `ast.parse()` on the
+    decoded `str` does not -- the BOM must be peeled off before `ast.parse`
+    and put back on the result, the same shape as the shebang/encoding
+    cookie treatment just above."""
+    src = "\ufeffx = 1  # comment\n".encode("utf-8")
+    assert src.startswith(b"\xef\xbb\xbf")
+    out = mod.strip_py(src, "x.py")
+    assert out.startswith(b"\xef\xbb\xbf")
+    compile(out, "x.py", "exec")
+    ns: dict = {}
+    exec(compile(out, "x.py", "exec"), ns)
+    assert ns["x"] == 1
+    assert b"comment" not in out
+
+
 # -- the compile()/syntax-floor guarantees the issue requires -----------------
 
-def test_stripped_output_always_compiles_or_build_error(mod):
-    good = "def f():\n    return 1\n"
+def test_stripped_output_actually_strips_and_still_compiles(mod):
+    good = (
+        "def f():\n"
+        '    """A docstring."""\n'
+        "    # a comment\n"
+        "    return 1  # noqa\n"
+    )
     out = _strip(mod, good)
+    assert out != good
+    assert "docstring" not in out and "a comment" not in out and "noqa" not in out
     compile(out, "x.py", "exec")
+    ns: dict = {}
+    exec(compile(out, "x.py", "exec"), ns)
+    assert ns["f"]() == 1
 
 
 def test_non_utf8_source_raises_builderror_not_silently_kept(mod):

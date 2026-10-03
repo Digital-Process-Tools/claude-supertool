@@ -116,7 +116,11 @@ jobs:
           cp -a "$out"/. "$equiv"/
           cp -a tests "$equiv"/tests
           cp pyproject.toml "$equiv"/pyproject.toml
-          python3 -m pip install --disable-pip-version-check pytest pytest-xdist
+          # ruff too: tests/test_part_loader_concatenated_ruff_2706.py skips
+          # its own real check without it on PATH, which would silently
+          # drop exactly the undefined-name check that matters most once
+          # docstrings are stripped out of the concatenated part bodies.
+          python3 -m pip install --disable-pip-version-check pytest pytest-xdist ruff
           cd "$equiv"
           # A slice, not the whole suite: the entry-point shim, the part loader,
           # read/grep/edit/dispatch/batch, and the raw-command guard and hooks,

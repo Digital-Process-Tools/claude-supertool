@@ -349,21 +349,38 @@ def _apply_span(lines: list[str], start_line: int, start_col: int,
     lines[end_line - 1] = (tail if tail.strip() else "") + nl1
 
 
-def _docstring_spans(tree: ast.Module, lines: list[str]
-                      ) -> list[tuple[int, int, int, int, bool, bool]]:
-    """(start_line, start_col, end_line, end_col, needs_pass, is_module) for
-    every module/class/function docstring -- the first statement of a body
-    that is a bare string-literal expression -- with columns already
-    converted from ast's byte offsets to character offsets against LINES.
+def _docstring_spans(tree: ast.Module, lines: list[str], path: str
+                      ) -> list[tuple[int, int, int, int, bool]]:
+    """(start_line, start_col, end_line, end_col, needs_pass) for every
+    module/class/function docstring -- the first statement of a body that
+    is a bare string-literal expression -- with columns already converted
+    from ast's byte offsets to character offsets against LINES.
 
-    NEEDS_PASS is true whenever blanking the docstring would leave a suite
-    with no statement at all: either it was the body's only statement, or
-    -- the case that looks like it should be covered by that same check but
-    is not -- the docstring sits on the SAME physical line as the `def`/
-    `class` header (`def f(): \"\"\"doc\"\"\"; return 1`), where the grammar
-    requires a statement immediately after the `:` regardless of what a
-    `;` adds afterwards; blanking without a `pass` there produces `def f():
-    ; return 1`, a `:` directly followed by `;`, which does not parse."""
+    NEEDS_PASS is true whenever blanking the docstring alone would leave a
+    bare `;` leading its own logical line, or a suite with no statement at
+    all. Two shapes, worked out from what actually follows the docstring's
+    own closing position, not from where the docstring started -- an
+    earlier version of this function keyed off "is this the compound
+    statement's header line", which covers `def f(): \"\"\"doc\"\"\"; return 1`
+    but MISSES the far more ordinary `\"\"\"doc\"\"\"; x = 1` sharing an
+    otherwise unremarkable line with the statement that follows it, module
+    scope included:
+
+    - a single physical line (start_line == end_line): if anything other
+      than whitespace follows the docstring on that line, it can only be
+      there via `;` (the sole grammar rule for two statements sharing a
+      line), so blanking without a `pass` first produces a line starting
+      with a bare `;`, which does not parse. `pass` goes right before it:
+      `pass; x = 1`, legal at any scope.
+    - the docstring is the body's only statement and nothing trails it on
+      its own line (module scope needs nothing -- an empty module is
+      legal; class/function scope needs `pass` or the suite is empty).
+
+    A multi-line docstring (start_line != end_line) whose CLOSING line
+    carries a trailing `; stmt` is a third shape this function refuses
+    rather than guesses at: the one thing we KNOW how to re-indent safely
+    is a bare `pass` on the span's own start line, and that does not make
+    `; stmt` on a different physical line any less of a bare-leading-`;`."""
     spans = []
     nodes: list[ast.AST] = [tree] + [
         n for n in ast.walk(tree)
@@ -385,11 +402,18 @@ def _docstring_spans(tree: ast.Module, lines: list[str]
         start_col = _byte_col_to_char(start_no_nl, first.col_offset)
         end_col = _byte_col_to_char(end_no_nl, first.end_col_offset)
         is_module = isinstance(node, ast.Module)
-        same_line_as_header = (not is_module
-                                and start_line == getattr(node, "lineno", -1))
-        needs_pass = (not is_module) and (len(body) == 1 or same_line_as_header)
-        spans.append((start_line, start_col, end_line, end_col,
-                      needs_pass, is_module))
+        tail = end_no_nl[end_col:]
+        if start_line == end_line:
+            needs_pass = bool(tail.strip()) or (not is_module and len(body) == 1)
+        else:
+            if tail.strip():
+                raise BuildError(
+                    f"{path}:{end_line}: a multi-line docstring closing on a line "
+                    f"that also carries another statement after `;` is not "
+                    f"supported by this stripper -- move the docstring onto its "
+                    f"own line(s), with nothing else sharing its closing line")
+            needs_pass = (not is_module) and len(body) == 1
+        spans.append((start_line, start_col, end_line, end_col, needs_pass))
     return spans
 
 
@@ -403,16 +427,21 @@ def strip_py(source: bytes, path: str) -> bytes:
     function or class whose only statement was its docstring gets a `pass`
     so it still parses; a module left with none is a legal empty file.
 
-    Left alone: the shebang and PEP 263 encoding cookie (lines 1-2), every
-    string literal that is not a bare docstring statement -- an f-string, a
-    `#` character inside any string, a multi-line string assigned to a name
+    Left alone: the shebang and PEP 263 encoding cookie (lines 1-2), a
+    leading UTF-8 BOM (`compile()` on bytes tolerates one; `ast.parse()` on
+    the decoded `str` does not -- stripped off before parsing, put back on
+    the result, same shape as the shebang/cookie treatment), every string
+    literal that is not a bare docstring statement -- an f-string, a `#`
+    character inside any string, a multi-line string assigned to a name
     rather than standing alone as a statement (`_shipped_reference.py`'s
     `_BUILTIN_OPS_JSON`) -- because `tokenize` never emits a COMMENT token
     for text inside a string, and `ast` only flags a bare string-expression
     that is the first statement of a module/class/function body.
     """
+    bom = source[:3] == b"\xef\xbb\xbf"
+    body_bytes = source[3:] if bom else source
     try:
-        text = source.decode("utf-8")
+        text = body_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise BuildError(f"{path}: not valid UTF-8, cannot strip: {exc}") from None
     try:
@@ -424,7 +453,7 @@ def strip_py(source: bytes, path: str) -> bytes:
     if not lines:
         return source
 
-    for start_line, start_col, end_line, end_col, needs_pass, _is_module in _docstring_spans(tree, lines):
+    for start_line, start_col, end_line, end_col, needs_pass in _docstring_spans(tree, lines, path):
         replacement = "pass" if needs_pass else ""
         _apply_span(lines, start_line, start_col, end_line, end_col, replacement)
 
@@ -445,6 +474,8 @@ def strip_py(source: bytes, path: str) -> bytes:
         _apply_span(lines, sr, sc, er, ec, "")
 
     result = "".join(lines).encode("utf-8")
+    if bom:
+        result = b"\xef\xbb\xbf" + result
     try:
         compile(result, path, "exec")
     except SyntaxError as exc:
