@@ -1,0 +1,10 @@
+{
+  "source": "github-pr-feed",
+  "events": [
+    {"key": "pr_opened",       "label": "A new PR appeared in the feed"},
+    {"key": "pr_merged",       "label": "A watched PR left the feed by merging"},
+    {"key": "pr_closed",       "label": "A watched PR left the feed by closing"},
+    {"key": "pr_left_feed",    "label": "A PR left the feed while still open (reassigned, or the filter changed)"},
+    {"key": "prs_unreachable", "label": "The population could not be established — a query that failed or a scope with an unknown token, not a GitHub that went quiet. Fires once per outage, not once per poll"}
+  ]
+}
