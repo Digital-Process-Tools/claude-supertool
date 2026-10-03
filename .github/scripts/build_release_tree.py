@@ -291,16 +291,28 @@ def inline_python_ladder(contents: dict[str, bytes], config: dict) -> list[str]:
     """Mutate CONTENTS (path -> utf-8 bytes, the same shape `build()` already
     holds) in place: inline the ladder's body into every consumer named by
     config["ladder_inline"], then drop the ladder file itself. Returns the
-    list of consumers actually inlined into -- empty if the config carries
-    no `ladder_inline` key or the ladder path is not in this tree (a config
-    problem for a build that has nothing to inline, not an error: a tree
-    that denied hooks/ entirely has nothing to do here either)."""
+    list of consumers actually inlined into -- empty only when the config
+    carries no `ladder_inline` key at all, which is the one case with
+    nothing to do. A config that NAMES a ladder path not present in this
+    tree is a different state -- a consumer may still carry the raw
+    `source`/`.` line with nothing left to inline -- and raises rather than
+    returning the same empty list, so the two states cannot be confused
+    (#2732 self-review)."""
     spec = config.get("ladder_inline")
     if not spec:
         return []
     ladder_path = spec["ladder"]
     if ladder_path not in contents:
-        return []
+        # Distinct from "nothing configured" (the `not spec` branch above):
+        # this config names a ladder to inline and it is not in this tree.
+        # Returning [] here as well would read identically to a genuine
+        # no-op, and a consumer that still carries its raw `source`/`.`
+        # line would ship that way with nothing saying so (#2732
+        # self-review).
+        raise LadderInlineError(
+            f"{ladder_path}: config/ladder_inline names this path and it is "
+            "not in this tree -- a consumer may still carry the raw "
+            "source/. line with nothing left to inline")
     ladder_body = contents[ladder_path].decode("utf-8").rstrip("\n") + "\n"
     inlined: list[str] = []
     for rel in spec.get("consumers", []):
@@ -344,11 +356,19 @@ def inline_python_ladder(contents: dict[str, bytes], config: dict) -> list[str]:
 def swap_release_readme(contents: dict[str, bytes], config: dict) -> bool:
     """Replace contents["README.md"] with contents[config["release_readme"]]
     and drop the release-only file from what ships under its own name.
-    Returns whether a swap happened -- False if the config names no
-    `release_readme` key or that path is not in this tree."""
+    Returns False only when the config carries no `release_readme` key at
+    all -- the one case with nothing to do. A config that NAMES a path not
+    present in this tree is a different state -- the full README, with its
+    security example and command text, would ship unreplaced and nothing
+    would say so -- and raises rather than returning the same False
+    (#2732 self-review, the same shape as `inline_python_ladder`'s)."""
     rel = config.get("release_readme")
-    if not rel or rel not in contents:
+    if not rel:
         return False
+    if rel not in contents:
+        raise BuildError(
+            f"{rel}: config/release_readme names this path and it is not "
+            "in this tree -- README.md would ship unreplaced")
     contents["README.md"] = contents.pop(rel)
     return True
 

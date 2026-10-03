@@ -292,6 +292,54 @@ def test_a_sourced_sibling_script_fails(tmp_path):
         result.offenders)
 
 
+def test_a_sourced_file_inside_a_loop_body_fails(tmp_path):
+    """#2732 self-review: `do . "$f"; done` is a realistic way to source a
+    sibling file per loop iteration, and the first draft of this regex
+    missed it (no `do` keyword in its alternation)."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\nfor f in "$d"/*.sh; do . "$f"; done\n',
+    })
+    result = _check(root)
+    assert any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_a_sourced_file_inside_command_substitution_fails(tmp_path):
+    """#2732 self-review: `$(. "$conf" && ...)` sources inside a subshell,
+    and the first draft missed the opening `(`."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\nOUT=$(. "$conf" && echo "$VAR")\n',
+    })
+    result = _check(root)
+    assert any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_a_sourced_file_inside_an_if_then_fails(tmp_path):
+    """#2732 self-review: `if . "$f"; then` -- the exact shape
+    hooks/session-start.sh used before #2732's build-time inlining -- and
+    the first draft missed the leading `if` keyword."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\nif . "$f" 2>/dev/null; then\n    true\nfi\n',
+    })
+    result = _check(root)
+    assert any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_running_a_relative_script_is_not_sourcing_it(tmp_path):
+    """Positive control for the `if`/dot overlap: `if ./build.sh; then` RUNS
+    a script, it does not source one -- `.` immediately followed by `/`
+    (no space) must not match, or every ordinary relative invocation would
+    fail this guard."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\nif ./build.sh; then\n    true\nfi\n',
+    })
+    result = _check(root)
+    assert not any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
 def test_source_as_a_word_inside_a_string_does_not_fail(tmp_path):
     """Positive control: a check that flagged the WORD `source` anywhere would
     pass every real build and fail on prose, which is the opposite defect."""

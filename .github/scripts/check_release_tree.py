@@ -558,7 +558,8 @@ def _check_images(files: dict, kinds: dict, off: list) -> None:
 # validator.md, playbook step 5) -- it is not the word "source" anywhere in
 # the text, only the actual shell builtin at command position.
 _SOURCES_ANOTHER_FILE = re.compile(
-    r"(?:^|[;&|]|\bthen\b|\belse\b)\s*(?:source|\.)\s+\S")
+    r"(?:^|[;&|(]|\bthen\b|\belse\b|\bdo\b|\belif\b|\bwhile\b|\buntil\b|\bif\b)"
+    r"\s*(?:source|\.)\s+\S")
 
 # UNPINNED_NPX: a typed `<<`, even inside quotes or a regex, is a hard block
 # in any shipped script. Not `<<<` (a here-string, explicitly exempted).

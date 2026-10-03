@@ -109,7 +109,7 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
   | `.supertool.example.json` | a copy-paste template referenced only from denied docs |
   | `CLAUDE.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md` | governance prose for contributors to this repository, not loaded by the plugin |
   | `pyproject.toml` | packaging metadata for the pip route, not read at runtime |
-  | `supertool-banner.webp` | the directory held a release-tree probe citing this asset (`UNREAD_ASSET_REFERENCED`, #2732); README's own link-rewriting turns its `<img src>` into an absolute URL on `master`, the same mechanism `docs/` links already use |
+  | `supertool-banner.webp` | the directory held a release-tree probe citing this asset (`UNREAD_ASSET_REFERENCED`, #2732). `README.release.md` (below) does not reference it at all, so this entry is defense-in-depth for whoever reads the full `README.md`'s own `<img src>` outside the release tree -- link-rewriting would turn it into an absolute URL on `master`, the same mechanism `docs/` links already use, if the full README ever shipped here |
 
   **Kept, on purpose, even though they look like dev config:**
   `_shipped_reference.py` is the fallback `_shipped_config()` reads once

@@ -534,6 +534,16 @@ def test_no_ladder_inline_key_is_a_noop():
     assert contents["hooks/pre-bash-guard.sh"].decode() == _GUARDED_CONSUMER
 
 
+def test_a_configured_ladder_missing_from_the_tree_refuses(tmp_path):
+    """#2732 self-review: a config naming a ladder not in this tree must
+    not render the same as 'nothing configured' -- a consumer could still
+    carry the raw source/. line with nothing left to inline it."""
+    mod = _load()
+    contents = {"hooks/pre-bash-guard.sh": _GUARDED_CONSUMER.encode()}
+    with pytest.raises(mod.BuildError):
+        mod.inline_python_ladder(contents, _ladder_config())
+
+
 def test_an_unrecognised_consumer_refuses_rather_than_ships_broken():
     """Positive control for the error path: a consumer whose source call
     site this step cannot find must stop the build, not silently ship a
@@ -560,7 +570,11 @@ def test_building_this_repository_head_inlines_the_real_ladder(tmp_path):
     for rel in ("hooks/pre-bash-guard.sh", "hooks/session-start.sh"):
         text = (out / rel).read_text(encoding="utf-8")
         assert "python-ladder" not in text, (rel, text)
-        assert "source" not in text.split("\n")[0:5] or True  # shebang line only
+        # Positive control: the inlined ladder's own functions/variables must
+        # actually be present, not merely absent of "python-ladder" text --
+        # a build that emptied the file would pass the line above too.
+        assert "supertool_python_each" in text, (rel, text)
+        assert "LADDER=" not in text, (rel, text)
         import subprocess
         r = subprocess.run(["bash", "-n", str(out / rel)], capture_output=True,
                            text=True, encoding="utf-8", errors="replace")
@@ -583,6 +597,17 @@ def test_no_release_readme_key_is_a_noop():
     contents = {"README.md": b"full readme"}
     assert mod.swap_release_readme(contents, {}) is False
     assert contents == {"README.md": b"full readme"}
+
+
+def test_a_configured_release_readme_missing_from_the_tree_refuses():
+    """#2732 self-review: a config naming a release_readme not in this tree
+    must not render the same as 'nothing configured' -- README.md would
+    ship unreplaced, full security example and all, with nothing saying
+    so."""
+    mod = _load()
+    contents = {"README.md": b"full readme"}
+    with pytest.raises(mod.BuildError):
+        mod.swap_release_readme(contents, {"release_readme": "README.release.md"})
 
 
 def test_building_this_repository_head_ships_the_release_readme(tmp_path):
