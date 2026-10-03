@@ -123,14 +123,36 @@ def check_shipped_rules(plugin: Path, env: dict, result: SmokeResult) -> None:
                             "this tree, skipped")
         return
     r = subprocess.run([sys.executable, str(selftest)], capture_output=True,
-                       text=True, env=env, check=False, timeout=60)
+                       text=True, encoding="utf-8", errors="replace",
+                       env=env, check=False, timeout=60)
     result.notes.append(f"shipped rules: guard-selftest.py exit {r.returncode}")
     result.notes.extend(f"    {line}" for line in r.stdout.splitlines())
-    if "not loaded" in r.stdout:
-        last = next((l for l in r.stdout.splitlines() if "not loaded" in l), "")
+    if not r.stdout.strip():
+        # A crash before the first print, or a `guard-selftest.py` that
+        # changed shape entirely, leaves nothing for either check below to
+        # match -- the same absence-read-as-presence #2729 itself was filed
+        # about, one layer up, if this were read as a clean report (found in
+        # review, #2729).
+        result.errors.append(
+            "shipped rules: guard-selftest.py exit " + str(r.returncode)
+            + " produced no output at all, so nothing here says whether "
+            "the shipped jit-context rule loaded in this built tree"
+            + (" -- stderr: " + r.stderr.strip()[-300:] if r.stderr.strip() else ""))
+        return
+    # `rule_inventory()`'s own import-failure line ("hooks/shipped_rules.py
+    # could not be imported...") carries no "not loaded" substring -- it is
+    # a different failure than any individual SHIPPED rule failing to load,
+    # and was missed by the first cut of this check (found in review,
+    # #2729). Scoped to this one line's own fixed prefix so it does not
+    # also fire on the unrelated raw-command-registry wrapper's own
+    # "state       : could not run" line, which names a real, expected
+    # state on a host with no bash and has nothing to do with this layer.
+    bad = [line for line in r.stdout.splitlines()
+          if "not loaded" in line or "rules       : could not run" in line]
+    if bad:
         result.errors.append(
             "shipped rules: guard-selftest.py reports a shipped jit-context "
-            "rule not loaded in this built tree -- " + last.strip())
+            "rule problem in this built tree -- " + "; ".join(l.strip() for l in bad))
 
 
 def hook_commands(tree: Path) -> list:

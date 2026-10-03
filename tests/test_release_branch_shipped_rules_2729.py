@@ -22,14 +22,20 @@ asserted only in a commit message no test will ever re-check.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD = REPO_ROOT / ".github" / "scripts" / "build_release_tree.py"
+SMOKE = REPO_ROOT / ".github" / "scripts" / "smoke_release_tree.py"
 CONFIG = REPO_ROOT / ".github" / "release-branch.json"
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="hook commands are bash")
 
 RULE_DIR_REL = ".claude/jit-context/tools/00-manual"
 INDEX_REL = RULE_DIR_REL + "/00-index.tsv"
@@ -214,3 +220,99 @@ def test_building_this_repository_head_ships_the_two_shipped_rule_files(tmp_path
     r = _run_guard_selftest(out, tmp_path)
     assert "supertool-no-cut.md : enforcing as deny" in r.stdout, r.stdout
     assert "not loaded" not in r.stdout
+
+
+# -- smoke_release_tree.py's own positive control ---------------------------
+#
+# The tests above all run hooks/guard-selftest.py as a standalone subprocess
+# and read ITS stdout. None of them calls smoke_release_tree.check_shipped_
+# rules() itself -- the function this issue actually adds to make a release
+# BUILD fail -- so a bug in that function's own string-matching could pass
+# every test above while still misreporting the build (found in review,
+# #2729: the first cut only matched "not loaded" and missed guard-selftest's
+# other failure shape, "rules       : could not run" when hooks/shipped_
+# rules.py itself cannot be imported, plus a third case neither matched --
+# the subprocess producing no output at all).
+
+def _stub_selftest(body: str) -> dict:
+    """A one-command hooks.json plus a stand-in hooks/guard-selftest.py and
+    hooks/pre-bash-guard.sh (smoke_release_tree.py needs hooks.json to run
+    at all; PreToolUse is this plugin's own minimal hook list, #2705)."""
+    return {
+        "hooks/hooks.json": json.dumps({"hooks": {"PreToolUse": [
+            {"hooks": [{"type": "command",
+                        "command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/noop.sh"'}]}]}}),
+        "hooks/noop.sh": "#!/bin/sh\nexit 0\n",
+        "hooks/guard-selftest.py": body,
+    }
+
+
+def _write_tree(tmp_path: Path, files: dict) -> Path:
+    root = tmp_path / "tree"
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    return root
+
+
+@posix_only
+def test_smoke_fails_when_guard_selftest_reports_not_loaded(tmp_path):
+    mod = _load(SMOKE, "smoke_release_tree_2729_a")
+    tree = _write_tree(tmp_path, _stub_selftest(
+        "import sys\nprint('  supertool-no-cut.md : not loaded')\nsys.exit(0)\n"))
+    result = mod.run_smoke(tree, validate="skip", linger_seconds=5)
+    assert not result.ok, result.report()
+    assert "not loaded" in result.report()
+
+
+@posix_only
+def test_smoke_passes_when_guard_selftest_reports_enforcing(tmp_path):
+    """Positive control for the one above: the same harness, a clean report."""
+    mod = _load(SMOKE, "smoke_release_tree_2729_b")
+    tree = _write_tree(tmp_path, _stub_selftest(
+        "import sys\nprint('  supertool-no-cut.md : enforcing as deny')\nsys.exit(0)\n"))
+    result = mod.run_smoke(tree, validate="skip", linger_seconds=5)
+    assert result.ok, result.report()
+
+
+@posix_only
+def test_smoke_fails_when_shipped_rules_cannot_be_imported(tmp_path):
+    """guard-selftest.py's OTHER failure shape for this layer: hooks/shipped_
+    rules.py itself missing or broken in the built tree. No "not loaded"
+    substring anywhere in this line -- the gap found in review."""
+    mod = _load(SMOKE, "smoke_release_tree_2729_c")
+    tree = _write_tree(tmp_path, _stub_selftest(
+        "import sys\n"
+        "print('  rules       : could not run - hooks/shipped_rules.py could "
+        "not be imported from X (No module named shipped_rules)')\n"
+        "sys.exit(0)\n"))
+    result = mod.run_smoke(tree, validate="skip", linger_seconds=5)
+    assert not result.ok, result.report()
+    assert "could not run" in result.report()
+
+
+@posix_only
+def test_smoke_fails_when_guard_selftest_produces_no_output(tmp_path):
+    """A crash before the first print leaves nothing for either substring
+    check to match -- the exact absence-read-as-presence shape #2729 is
+    about, one layer up (found in review)."""
+    mod = _load(SMOKE, "smoke_release_tree_2729_d")
+    tree = _write_tree(tmp_path, _stub_selftest("import sys\nsys.exit(1)\n"))
+    result = mod.run_smoke(tree, validate="skip", linger_seconds=5)
+    assert not result.ok, result.report()
+    assert "no output at all" in result.report()
+
+
+@posix_only
+def test_smoke_skips_the_check_when_guard_selftest_is_absent(tmp_path):
+    """A fork of this build script for a plugin with no shipped rules of its
+    own ships no hooks/guard-selftest.py at all -- that is a different state
+    from one that has the file and the rule not loading, and must not fail."""
+    mod = _load(SMOKE, "smoke_release_tree_2729_e")
+    files = _stub_selftest("")
+    del files["hooks/guard-selftest.py"]
+    tree = _write_tree(tmp_path, files)
+    result = mod.run_smoke(tree, validate="skip", linger_seconds=5)
+    assert result.ok, result.report()
+    assert "not in this tree, skipped" in result.report()
