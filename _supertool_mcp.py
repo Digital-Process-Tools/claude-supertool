@@ -1054,8 +1054,12 @@ _VALIDATOR_CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
 
 
 def _mcp_autospawn_allowed() -> bool:
-    """False when the caller declared it cannot wait for a cold daemon (#475)."""
-    raw = os.environ.get(_MCP_AUTOSPAWN_ENV)
+    """False when the caller declared it cannot wait for a cold daemon (#475).
+
+    Literal name, not the module constant (#2734) -- see _MCP_AUTOSPAWN_ENV's
+    own declaration for why.
+    """
+    raw = os.environ.get("SUPERTOOL_MCP_AUTOSPAWN")
     if raw is None:
         return True
     return raw.strip().lower() not in _MCP_AUTOSPAWN_FALSEY

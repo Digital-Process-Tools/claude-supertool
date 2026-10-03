@@ -668,7 +668,9 @@ def _literal_amend_allowed():
     Same env-over-nothing shape and the same off-vocabulary as the co-author
     trailer, so there is one convention in this file rather than two.
     """
-    raw = os.environ.get(_ALLOW_LITERAL_AMEND, "")
+    # Literal name, not the module constant (#2734) -- see
+    # _ALLOW_LITERAL_AMEND's own declaration for why.
+    raw = os.environ.get("SUPERTOOL_ALLOW_LITERAL_AMEND", "")
     return raw.strip().lower() not in _DISABLE_VALUES
 
 

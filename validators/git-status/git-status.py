@@ -119,7 +119,9 @@ def _budget() -> int:
     silently, and the only place that could report it is a channel this process
     does not own.
     """
-    raw = os.environ.get(TIMEOUT_ENV)
+    # Literal name, not the module constant (#2734) -- see TIMEOUT_ENV's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_GIT_TIMEOUT")
     if raw is None:
         return GIT_TIMEOUT_DEFAULT
     try:

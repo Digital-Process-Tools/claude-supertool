@@ -1352,7 +1352,9 @@ def interval_override() -> int | None:
     reads it at fork and again on every `reload`, so a changed export is
     picked up the same way a poller picks up a changed `INTERVAL` today.
     """
-    raw = os.environ.get(SUPERTOOL_WATCH_INTERVAL_ENV)
+    # Literal name, not the module constant (#2734) -- see
+    # SUPERTOOL_WATCH_INTERVAL_ENV's own declaration for why.
+    raw = os.environ.get("SUPERTOOL_WATCH_INTERVAL")
     if not raw:
         return None
     try:

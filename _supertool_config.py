@@ -1249,8 +1249,10 @@ def _mixed_tree_pair() -> Optional[Tuple[str, str]]:
 
 
 def _mixed_tree_allowed() -> bool:
-    """True when the caller has declared the mix deliberate via env."""
-    return (os.environ.get(_MIXED_TREE_ENV) or "").strip().lower() in (
+    """True when the caller has declared the mix deliberate (#2734: the
+    literal name, not the module constant -- see _MIXED_TREE_ENV's own
+    docstring for why)."""
+    return (os.environ.get("SUPERTOOL_ALLOW_MIXED_TREE") or "").strip().lower() in (
         "1", "true", "yes", "on")
 
 

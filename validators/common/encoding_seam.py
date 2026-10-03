@@ -62,7 +62,9 @@ def find_test_module(root: Path) -> Optional[Path]:
     A project that has not adopted this test file has not adopted this
     guard -- that is `skipped`, never a bare pass, in both callers.
     """
-    override = os.environ.get(ENV_TEST_MODULE, "").strip()
+    # Literal name, not the module constant (#2734) -- see ENV_TEST_MODULE's
+    # own declaration for why.
+    override = os.environ.get("SUPERTOOL_ENCODING_SEAM_TEST_MODULE", "").strip()
     if override:
         candidate = Path(override)
         return candidate if candidate.is_file() else None
@@ -94,9 +96,11 @@ def config_dir() -> "Tuple[Optional[Path], bool, str]":
     invoked directly, outside supertool's own validator wiring), in which
     case no scope claim is made either way.
     """
-    if CONFIG_DIR_ENV not in os.environ:
+    # Literal name, not the module constant (#2734) -- see CONFIG_DIR_ENV's
+    # own declaration for why.
+    if "SUPERTOOL_CONFIG_DIR" not in os.environ:
         return None, False, ""
-    raw = os.environ[CONFIG_DIR_ENV].strip()
+    raw = os.environ["SUPERTOOL_CONFIG_DIR"].strip()
     if not raw:
         return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
     try:

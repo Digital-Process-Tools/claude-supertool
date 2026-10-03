@@ -103,8 +103,13 @@ def bash_candidates(environ=None):
     shadowing a real one -- and `first_bash_that_runs_a_script` below spawns
     each candidate directly, with no further gate of its own.
     """
-    environ = os.environ if environ is None else environ
-    override = environ.get(_CANDIDATES_ENV)
+    # No alias of the whole mapping, and a literal name rather than the
+    # module constant (#2734): see _CANDIDATES_ENV's own declaration for
+    # why the name is fixed; the alias this replaced is the same shape
+    # that tripped _syntax_floor_interpreter in claude-supertool's own
+    # _supertool.py a round earlier.
+    override = (environ if environ is not None else os.environ).get(
+        "SUPERTOOL_SELFTEST_BASH_CANDIDATES")
     if override is not None:
         return [part for part in override.split(os.pathsep) if part]
     git_bin = "C:" + _BACKSLASH + "Program Files" + _BACKSLASH + "Git"

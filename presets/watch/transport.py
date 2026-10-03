@@ -937,8 +937,11 @@ def _env_flag(name: str, env: dict[str, str] | None) -> bool:
     lowercase `json.dumps` stringification a `.supertool.json` op-config
     boolean arrives as (`docs/contributing.md`).
     """
-    src = os.environ if env is None else env
-    return (src.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+    # No alias of the whole mapping (#2734) -- `name` itself stays a
+    # parameter on purpose: this one helper is shared by every boolean env
+    # knob in this file, each call site naming its own constant.
+    return ((env if env is not None else os.environ).get(name) or "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:

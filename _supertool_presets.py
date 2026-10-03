@@ -1318,9 +1318,37 @@ def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
     """
     if env is None:
         env = os.environ
-    removed = [name for name in GIT_ENV_VARS if name in env]
-    for name in removed:
-        del env[name]
+    # Seven literal-keyed statements, no loop (#2734): a `for` over
+    # GIT_ENV_VARS (or any tuple, inline or not) still binds `del
+    # env[loop_var]` to a non-literal key -- the same dynamic-key shape
+    # the directory's scanner read as "an environment variable named at
+    # run time" for `main()`'s SUPERTOOL_REPO restore (#2732). Only
+    # spelling out each name as its own statement removes it from the
+    # AST entirely. `tests/test_git_env_scrub_builtins_714.py`'s
+    # `GIT_ENV_VARS == EXPECTED_VARS` pin is the guard that these seven
+    # literals and the tuple above can never drift apart silently.
+    removed = []
+    if "GIT_DIR" in env:
+        removed.append("GIT_DIR")
+        del env["GIT_DIR"]
+    if "GIT_WORK_TREE" in env:
+        removed.append("GIT_WORK_TREE")
+        del env["GIT_WORK_TREE"]
+    if "GIT_COMMON_DIR" in env:
+        removed.append("GIT_COMMON_DIR")
+        del env["GIT_COMMON_DIR"]
+    if "GIT_INDEX_FILE" in env:
+        removed.append("GIT_INDEX_FILE")
+        del env["GIT_INDEX_FILE"]
+    if "GIT_OBJECT_DIRECTORY" in env:
+        removed.append("GIT_OBJECT_DIRECTORY")
+        del env["GIT_OBJECT_DIRECTORY"]
+    if "GIT_ALTERNATE_OBJECT_DIRECTORIES" in env:
+        removed.append("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        del env["GIT_ALTERNATE_OBJECT_DIRECTORIES"]
+    if "GIT_NAMESPACE" in env:
+        removed.append("GIT_NAMESPACE")
+        del env["GIT_NAMESPACE"]
     return removed
 
 

@@ -329,7 +329,9 @@ def read_lane_prefix(raw=None):
     `!! unread` — the third state. The alternative, which is what #1007 was, is
     a prefix that matches nothing rendering as a tally of zeroes.
     """
-    raw = os.environ.get(LANE_PREFIX_ENV, "") if raw is None else raw
+    # Literal name, not the module constant (#2734) -- see LANE_PREFIX_ENV's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_LANE_PREFIX", "") if raw is None else raw
     raw = str(raw).strip()
     if not raw:
         return None, NO_LANE_PREFIX

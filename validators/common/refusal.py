@@ -231,7 +231,9 @@ def required(tool: str) -> bool:
     The only thing it changes is what an adapter does when it has nothing to
     say.
     """
-    raw = os.environ.get(REQUIRE_VAR, "")
+    # Literal name, not the module constant (#2734) -- see REQUIRE_VAR's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_REQUIRE_VALIDATORS", "")
     if not raw.strip():
         return False
     names = [n.strip().lower()

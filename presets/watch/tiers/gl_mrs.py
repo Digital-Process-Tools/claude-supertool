@@ -980,7 +980,9 @@ def read_exclusions(raw: str | None = None) -> tuple[dict[str, dict[str, str]], 
     this function cannot understand yields no exclusions plus a complaint,
     which renders as the ordinary board it was trying to trim.
     """
-    raw = os.environ.get(EXCLUSIONS_ENV, "") if raw is None else raw
+    # Literal name, not the module constant (#2734) -- see EXCLUSIONS_ENV's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_RADAR_EXCLUSIONS", "") if raw is None else raw
     raw = raw.strip()
     if not raw:
         return {}, []

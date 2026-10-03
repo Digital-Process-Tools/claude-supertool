@@ -113,7 +113,9 @@ def autospawn_allowed() -> bool:
     but these helpers are also imported by long-lived ones and by tests that
     set the variable per case.
     """
-    raw = os.environ.get(AUTOSPAWN_ENV)
+    # Literal name, not the module constant (#2734) -- see AUTOSPAWN_ENV's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_MCP_AUTOSPAWN")
     if raw is None:
         return True
     return raw.strip().lower() not in AUTOSPAWN_FALSEY
@@ -533,7 +535,7 @@ def ensure_daemon(
         # after the work that print was reporting already happened.
         raise AutospawnSuppressed(
             f"no warm '{name}' daemon, and {AUTOSPAWN_ENV}="
-            f"{os.environ.get(AUTOSPAWN_ENV)!r} forbids starting one, so none "
+            f"{os.environ.get('SUPERTOOL_MCP_AUTOSPAWN')!r} forbids starting one, so none "
             f"was started. Warm it from a caller that can wait -- "
             f"supertool 'mcp_daemon:{name} --detach' -- or set "
             f"'mcp_autospawn': true on this validator if its timeout covers a "

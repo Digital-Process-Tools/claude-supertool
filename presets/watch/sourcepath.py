@@ -154,8 +154,9 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
     fork and an exec has no import-time moment that both processes share -- the
     same reason `transport.channel_key` reads `STATE_DIR` late.
     """
-    src = os.environ if env is None else env
-    raw = src.get(PATH_ENV) or ""
+    # No alias of the whole mapping, and a literal name rather than the
+    # module constant (#2734) -- see PATH_ENV's own declaration for why.
+    raw = (env if env is not None else os.environ).get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
 
     external: list[Path] = []
     refused: list[Refused] = []

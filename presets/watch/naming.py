@@ -167,13 +167,18 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
     separate call for the one side effect, because a module constant computed at
     import must not create directories as a side effect of somebody importing it.
     """
-    src = os.environ if env is None else env
+    # No alias of the whole mapping, and literal names rather than the
+    # module constants (#2734) -- see NAME_ENV/SOCK_ENV/STATE_DIR_ENV's own
+    # declarations for why; `env if env is not None else os.environ` picks
+    # the source without ever binding it to a name read with a non-literal
+    # key.
     # `or` rather than `in`, matching the two variables it sits above: an
     # operator who exports an empty string gets the default, not a refusal
     # about a name they did not set.
-    raw = (src.get(NAME_ENV) or "").strip()
-    explicit_sock = src.get(SOCK_ENV) or ""
-    explicit_state = src.get(STATE_DIR_ENV) or ""
+    _src = env if env is not None else os.environ
+    raw = (_src.get("SUPERTOOL_WATCH_NAME") or "").strip()
+    explicit_sock = _src.get("SUPERTOOL_WATCH_SOCK") or ""
+    explicit_state = _src.get("SUPERTOOL_WATCH_STATE_DIR") or ""
 
     notes: list[str] = []
     refusal = ""
