@@ -1318,9 +1318,37 @@ def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
 
     if env is None:
         env = os.environ
-    removed = [name for name in GIT_ENV_VARS if name in env]
-    for name in removed:
-        del env[name]
+
+
+
+
+
+
+
+
+
+    removed = []
+    if "GIT_DIR" in env:
+        removed.append("GIT_DIR")
+        del env["GIT_DIR"]
+    if "GIT_WORK_TREE" in env:
+        removed.append("GIT_WORK_TREE")
+        del env["GIT_WORK_TREE"]
+    if "GIT_COMMON_DIR" in env:
+        removed.append("GIT_COMMON_DIR")
+        del env["GIT_COMMON_DIR"]
+    if "GIT_INDEX_FILE" in env:
+        removed.append("GIT_INDEX_FILE")
+        del env["GIT_INDEX_FILE"]
+    if "GIT_OBJECT_DIRECTORY" in env:
+        removed.append("GIT_OBJECT_DIRECTORY")
+        del env["GIT_OBJECT_DIRECTORY"]
+    if "GIT_ALTERNATE_OBJECT_DIRECTORIES" in env:
+        removed.append("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        del env["GIT_ALTERNATE_OBJECT_DIRECTORIES"]
+    if "GIT_NAMESPACE" in env:
+        removed.append("GIT_NAMESPACE")
+        del env["GIT_NAMESPACE"]
     return removed
 
 

@@ -103,8 +103,13 @@ def bash_candidates(environ=None):
 
 
 
-    environ = os.environ if environ is None else environ
-    override = environ.get(_CANDIDATES_ENV)
+
+
+
+
+
+    override = (environ if environ is not None else os.environ).get(
+        "SUPERTOOL_SELFTEST_BASH_CANDIDATES")
     if override is not None:
         return [part for part in override.split(os.pathsep) if part]
     git_bin = "C:" + _BACKSLASH + "Program Files" + _BACKSLASH + "Git"

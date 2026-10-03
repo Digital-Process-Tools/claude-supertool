@@ -62,7 +62,9 @@ def find_test_module(root: Path) -> Optional[Path]:
 
 
 
-    override = os.environ.get(ENV_TEST_MODULE, "").strip()
+
+
+    override = os.environ.get("SUPERTOOL_ENCODING_SEAM_TEST_MODULE", "").strip()
     if override:
         candidate = Path(override)
         return candidate if candidate.is_file() else None
@@ -94,9 +96,11 @@ def config_dir() -> "Tuple[Optional[Path], bool, str]":
 
 
 
-    if CONFIG_DIR_ENV not in os.environ:
+
+
+    if "SUPERTOOL_CONFIG_DIR" not in os.environ:
         return None, False, ""
-    raw = os.environ[CONFIG_DIR_ENV].strip()
+    raw = os.environ["SUPERTOOL_CONFIG_DIR"].strip()
     if not raw:
         return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
     try:

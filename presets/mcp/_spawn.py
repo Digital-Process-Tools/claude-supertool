@@ -113,7 +113,9 @@ def autospawn_allowed() -> bool:
 
 
 
-    raw = os.environ.get(AUTOSPAWN_ENV)
+
+
+    raw = os.environ.get("SUPERTOOL_MCP_AUTOSPAWN")
     if raw is None:
         return True
     return raw.strip().lower() not in AUTOSPAWN_FALSEY
@@ -533,7 +535,7 @@ def ensure_daemon(
 
         raise AutospawnSuppressed(
             f"no warm '{name}' daemon, and {AUTOSPAWN_ENV}="
-            f"{os.environ.get(AUTOSPAWN_ENV)!r} forbids starting one, so none "
+            f"{os.environ.get('SUPERTOOL_MCP_AUTOSPAWN')!r} forbids starting one, so none "
             f"was started. Warm it from a caller that can wait -- "
             f"supertool 'mcp_daemon:{name} --detach' -- or set "
             f"'mcp_autospawn': true on this validator if its timeout covers a "

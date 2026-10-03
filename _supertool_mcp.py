@@ -1055,7 +1055,11 @@ _VALIDATOR_CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
 
 def _mcp_autospawn_allowed() -> bool:
 
-    raw = os.environ.get(_MCP_AUTOSPAWN_ENV)
+
+
+
+
+    raw = os.environ.get("SUPERTOOL_MCP_AUTOSPAWN")
     if raw is None:
         return True
     return raw.strip().lower() not in _MCP_AUTOSPAWN_FALSEY

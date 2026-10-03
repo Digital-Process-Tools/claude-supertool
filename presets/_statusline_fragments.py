@@ -40,7 +40,9 @@ _ENV_DIR = "SUPERTOOL_STATUSLINE_CACHE_DIR"
 
 def cache_dir() -> str:
 
-    override = os.environ.get(_ENV_DIR, "").strip()
+
+
+    override = os.environ.get("SUPERTOOL_STATUSLINE_CACHE_DIR", "").strip()
     if override:
         return override
     base = os.environ.get("XDG_CACHE_HOME", "").strip()

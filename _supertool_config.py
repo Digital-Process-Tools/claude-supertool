@@ -1250,7 +1250,9 @@ def _mixed_tree_pair() -> Optional[Tuple[str, str]]:
 
 def _mixed_tree_allowed() -> bool:
 
-    return (os.environ.get(_MIXED_TREE_ENV) or "").strip().lower() in (
+
+
+    return (os.environ.get("SUPERTOOL_ALLOW_MIXED_TREE") or "").strip().lower() in (
         "1", "true", "yes", "on")
 
 

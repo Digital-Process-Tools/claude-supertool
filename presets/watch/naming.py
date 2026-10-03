@@ -167,13 +167,18 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
 
 
 
-    src = os.environ if env is None else env
 
 
 
-    raw = (src.get(NAME_ENV) or "").strip()
-    explicit_sock = src.get(SOCK_ENV) or ""
-    explicit_state = src.get(STATE_DIR_ENV) or ""
+
+
+
+
+
+    _src = env if env is not None else os.environ
+    raw = (_src.get("SUPERTOOL_WATCH_NAME") or "").strip()
+    explicit_sock = _src.get("SUPERTOOL_WATCH_SOCK") or ""
+    explicit_state = _src.get("SUPERTOOL_WATCH_STATE_DIR") or ""
 
     notes: list[str] = []
     refusal = ""

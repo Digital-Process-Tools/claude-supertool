@@ -119,7 +119,9 @@ def _budget() -> int:
 
 
 
-    raw = os.environ.get(TIMEOUT_ENV)
+
+
+    raw = os.environ.get("SUPERTOOL_GIT_TIMEOUT")
     if raw is None:
         return GIT_TIMEOUT_DEFAULT
     try:

@@ -980,7 +980,9 @@ def read_exclusions(raw: str | None = None) -> tuple[dict[str, dict[str, str]], 
 
 
 
-    raw = os.environ.get(EXCLUSIONS_ENV, "") if raw is None else raw
+
+
+    raw = os.environ.get("SUPERTOOL_RADAR_EXCLUSIONS", "") if raw is None else raw
     raw = raw.strip()
     if not raw:
         return {}, []

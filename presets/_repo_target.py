@@ -78,7 +78,9 @@ def target(explicit: bool = False) -> str | None:
 
     if explicit:
         return explicit_target()
-    value = (os.environ.get(ENV_VAR) or "").strip()
+
+
+    value = (os.environ.get("SUPERTOOL_REPO") or "").strip()
     return value or None
 
 
@@ -91,7 +93,9 @@ def from_op() -> bool:
 
 
 
-    return os.environ.get(FROM_OP_ENV_VAR) == "1"
+
+
+    return os.environ.get("SUPERTOOL_REPO_FROM_OP") == "1"
 
 
 def explicit_target() -> str | None:

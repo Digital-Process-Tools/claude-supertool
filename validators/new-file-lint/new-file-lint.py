@@ -97,7 +97,9 @@ def _locations() -> tuple:
 
 
 
-    override = os.environ.get(ENV_LINT_SCRIPT, "").strip()
+
+
+    override = os.environ.get("SUPERTOOL_NEW_FILE_LINT_SCRIPT", "").strip()
     return (override,) if override else LINT_SCRIPT_LOCATIONS
 
 
@@ -133,9 +135,11 @@ def _config_dir() -> "tuple[Path | None, bool, str]":
 
 
 
-    if CONFIG_DIR_ENV not in os.environ:
+
+
+    if "SUPERTOOL_CONFIG_DIR" not in os.environ:
         return None, False, ""
-    raw = os.environ[CONFIG_DIR_ENV].strip()
+    raw = os.environ["SUPERTOOL_CONFIG_DIR"].strip()
     if not raw:
         return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
     try:
@@ -345,7 +349,9 @@ def main() -> None:
                      int((time.time() - start) * 1000)))
         return
 
-    override_set = bool(os.environ.get(ENV_LINT_SCRIPT, "").strip())
+
+
+    override_set = bool(os.environ.get("SUPERTOOL_NEW_FILE_LINT_SCRIPT", "").strip())
     if not override_set:
         config_dir, scope_known, scope_reason = _config_dir()
 

@@ -329,7 +329,9 @@ def read_lane_prefix(raw=None):
 
 
 
-    raw = os.environ.get(LANE_PREFIX_ENV, "") if raw is None else raw
+
+
+    raw = os.environ.get("SUPERTOOL_LANE_PREFIX", "") if raw is None else raw
     raw = str(raw).strip()
     if not raw:
         return None, NO_LANE_PREFIX

@@ -186,14 +186,24 @@ CR=$'\r'
 # `note` that actually carries text is unaffected by either change.
 _note() {
     _json_string "$1"
-    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"'"$JSON_STRING"'"}}'
+    # One printf, the whole JSON template as a single-quoted literal with a
+    # %s placeholder (#2734): the directory's scanner reads a bare quote
+    # character sitting next to the other kind of quote (closing a
+    # single-quoted segment right before a double-quoted one, or the
+    # reverse) as a shape it cannot follow past -- the string-concatenation
+    # idiom this replaced did exactly that at both ends of the variable.
+    # $JSON_STRING arrives as printf's own ARGUMENT, not as part of the
+    # format string, so a literal % or \ inside it is still never
+    # reinterpreted -- same behaviour as the old concatenation, confirmed
+    # by testing both forms against a value containing a literal %s.
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}' "$JSON_STRING"
     exit 0
 }
 
 # shellcheck disable=SC2329  # reached through `relay`, itself a callback
 _deny() {
     _json_string "$1"
-    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"'"$JSON_STRING"'"}}'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}' "$JSON_STRING"
     exit 0
 }
 

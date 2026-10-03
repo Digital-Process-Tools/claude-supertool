@@ -81,12 +81,16 @@ def _repo_root(start: str) -> str | None:
 
 
 def _changelog_fragment_glob() -> str:
-    override = os.environ.get(CHANGELOG_FRAGMENT_GLOB_ENV, "").strip()
+
+
+    override = os.environ.get("SUPERTOOL_MARKDOWNLINT_CHANGELOG_GLOB", "").strip()
     return override if override else CHANGELOG_FRAGMENT_GLOB_DEFAULT
 
 
 def _assembler_locations() -> tuple:
-    override = os.environ.get(CHANGELOG_ASSEMBLER_ENV, "").strip()
+
+
+    override = os.environ.get("SUPERTOOL_CHANGELOG_ASSEMBLER", "").strip()
     return (override,) if override else CHANGELOG_ASSEMBLER_LOCATIONS
 
 

@@ -672,7 +672,9 @@ def _read_only_declared() -> bool:
 
 
 
-    return (os.environ.get(_READ_ONLY_ENV) or "").strip().lower() in (
+
+
+    return (os.environ.get("SUPERTOOL_READ_ONLY") or "").strip().lower() in (
         "1", "true", "yes", "on")
 
 

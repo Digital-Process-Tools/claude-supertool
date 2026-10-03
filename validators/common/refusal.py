@@ -231,7 +231,9 @@ def required(tool: str) -> bool:
 
 
 
-    raw = os.environ.get(REQUIRE_VAR, "")
+
+
+    raw = os.environ.get("SUPERTOOL_REQUIRE_VALIDATORS", "")
     if not raw.strip():
         return False
     names = [n.strip().lower()

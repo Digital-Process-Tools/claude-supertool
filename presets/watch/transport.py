@@ -937,8 +937,11 @@ def _env_flag(name: str, env: dict[str, str] | None) -> bool:
 
 
 
-    src = os.environ if env is None else env
-    return (src.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+
+    return ((env if env is not None else os.environ).get(name) or "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:

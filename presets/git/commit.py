@@ -668,7 +668,9 @@ def _literal_amend_allowed():
 
 
 
-    raw = os.environ.get(_ALLOW_LITERAL_AMEND, "")
+
+
+    raw = os.environ.get("SUPERTOOL_ALLOW_LITERAL_AMEND", "")
     return raw.strip().lower() not in _DISABLE_VALUES
 
 

@@ -1352,7 +1352,9 @@ def interval_override() -> int | None:
 
 
 
-    raw = os.environ.get(SUPERTOOL_WATCH_INTERVAL_ENV)
+
+
+    raw = os.environ.get("SUPERTOOL_WATCH_INTERVAL")
     if not raw:
         return None
     try:
