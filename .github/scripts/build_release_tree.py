@@ -351,10 +351,19 @@ def _apply_span(lines: list[str], start_line: int, start_col: int,
 
 def _docstring_spans(tree: ast.Module, lines: list[str]
                       ) -> list[tuple[int, int, int, int, bool, bool]]:
-    """(start_line, start_col, end_line, end_col, only_statement, is_module)
-    for every module/class/function docstring -- the first statement of a
-    body that is a bare string-literal expression -- with columns already
-    converted from ast's byte offsets to character offsets against LINES."""
+    """(start_line, start_col, end_line, end_col, needs_pass, is_module) for
+    every module/class/function docstring -- the first statement of a body
+    that is a bare string-literal expression -- with columns already
+    converted from ast's byte offsets to character offsets against LINES.
+
+    NEEDS_PASS is true whenever blanking the docstring would leave a suite
+    with no statement at all: either it was the body's only statement, or
+    -- the case that looks like it should be covered by that same check but
+    is not -- the docstring sits on the SAME physical line as the `def`/
+    `class` header (`def f(): \"\"\"doc\"\"\"; return 1`), where the grammar
+    requires a statement immediately after the `:` regardless of what a
+    `;` adds afterwards; blanking without a `pass` there produces `def f():
+    ; return 1`, a `:` directly followed by `;`, which does not parse."""
     spans = []
     nodes: list[ast.AST] = [tree] + [
         n for n in ast.walk(tree)
@@ -375,8 +384,12 @@ def _docstring_spans(tree: ast.Module, lines: list[str]
         end_no_nl = end_no_nl[:len(end_no_nl) - len(_line_ending(end_no_nl))]
         start_col = _byte_col_to_char(start_no_nl, first.col_offset)
         end_col = _byte_col_to_char(end_no_nl, first.end_col_offset)
+        is_module = isinstance(node, ast.Module)
+        same_line_as_header = (not is_module
+                                and start_line == getattr(node, "lineno", -1))
+        needs_pass = (not is_module) and (len(body) == 1 or same_line_as_header)
         spans.append((start_line, start_col, end_line, end_col,
-                      len(body) == 1, isinstance(node, ast.Module)))
+                      needs_pass, is_module))
     return spans
 
 
@@ -411,8 +424,8 @@ def strip_py(source: bytes, path: str) -> bytes:
     if not lines:
         return source
 
-    for start_line, start_col, end_line, end_col, only, is_module in _docstring_spans(tree, lines):
-        replacement = "pass" if (only and not is_module) else ""
+    for start_line, start_col, end_line, end_col, needs_pass, _is_module in _docstring_spans(tree, lines):
+        replacement = "pass" if needs_pass else ""
         _apply_span(lines, start_line, start_col, end_line, end_col, replacement)
 
     stripped = "".join(lines)
