@@ -460,7 +460,7 @@ def _git_timeout() -> int:
     the runner, never a decision about the product. The shipped default does
     not move — pinned by test_the_suite_budget_does_not_move_the_product_default.
     """
-    return _env_int("SUPERTOOL_GIT_TIMEOUT", _GIT_TIMEOUT_DEFAULT, minimum=1)
+    return _env_int(os.environ.get("SUPERTOOL_GIT_TIMEOUT"), "SUPERTOOL_GIT_TIMEOUT", _GIT_TIMEOUT_DEFAULT, minimum=1)
 
 
 def _branch_reading() -> Tuple[str, str]:

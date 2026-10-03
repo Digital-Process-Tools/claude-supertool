@@ -1377,6 +1377,10 @@ RESET_GLOBALS = (
 #    They are read, never written. Resetting them would be harmless but says
 #    something untrue about their lifetime.
 RESET_EXEMPT_GLOBALS = (
+    # Literal-name readers for every SUPERTOOL_<OP>_<KEY> override (#2734).
+    # Built once at import, never mutated; each value is a lambda that reads
+    # os.environ at call time, so it holds no per-run state to reset.
+    "_OP_ENV_OVERRIDES",
     # The disable-sentinel vocabulary for the onboarding-op fallback (#2342),
     # same shape as _DISABLE_VALUES in presets/git/commit.py (out of this
     # sweep's reach, since it lives outside _supertool.py). Written once at

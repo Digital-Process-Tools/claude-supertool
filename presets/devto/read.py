@@ -113,7 +113,7 @@ def main(arg: str) -> None:
         c = request("GET", "/comments", api_key, query={"a_id": aid})
         if isinstance(c, list):
             comments = c
-    inline_n = env_int("SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
+    inline_n = env_int(os.environ.get("SUPERTOOL_INLINE_COMMENTS"), "SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
     me = get_username(api_key)
     print(render(article, comments, inline_n, me))
 

@@ -41,7 +41,7 @@ def parse_args(arg: str) -> tuple[str, int, str]:
     import re
     parts = re.split(r"[|:]", arg)
     tag = parts[0]
-    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
+    default_n = env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
     n = default_n
     sort = "recent"
     for p in parts[1:]:

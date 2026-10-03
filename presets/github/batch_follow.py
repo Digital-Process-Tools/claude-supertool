@@ -98,7 +98,7 @@ def main(arg: str) -> int:
         print(f"  SKIP {note}")
     ok = 0
     failed = 0
-    delay = env_float("SUPERTOOL_FOLLOW_DELAY", 1.0, minimum=0.0)
+    delay = env_float(os.environ.get("SUPERTOOL_FOLLOW_DELAY"), "SUPERTOOL_FOLLOW_DELAY", 1.0, minimum=0.0)
     for i, user in enumerate(users):
         if i > 0:
             time.sleep(delay)

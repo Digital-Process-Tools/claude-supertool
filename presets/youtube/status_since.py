@@ -33,6 +33,7 @@ hide the new comments on every other video in the same run.
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -65,7 +66,7 @@ def default_cutoff(now: "datetime | None" = None) -> str:
 def parse_args(arg: str) -> tuple[str, int]:
     """(cutoff_iso, n_videos)."""
     cutoff = arg.strip() if arg and arg.strip() else default_cutoff()
-    n = env_int("SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
+    n = env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
     return cutoff, min(n, 50)
 
 

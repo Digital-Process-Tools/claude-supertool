@@ -202,8 +202,11 @@ def test_session_start_hook_does_not_ask_for_the_descriptive_listing() -> None:
     # replaced the leading `python3 ` with a resolved candidate from the
     # shared ladder, and a predicate keyed on that word would now match
     # nothing - the `assert invocations` below is what caught it.
+    # #2734 spells the path out at the invocation sites instead of `$BIN`;
+    # either spelling is the same call.
     invocations = [ln for ln in hook.splitlines()
-                   if '"$BIN"' in ln and "'introduction'" in ln]
+                   if ('"$BIN"' in ln or '"${CLAUDE_PLUGIN_ROOT}/supertool.py"' in ln)
+                   and "'introduction'" in ln]
     assert invocations, "hook no longer invokes supertool for onboarding"
     assert all("ops:session" in ln for ln in invocations), invocations
     assert not any("ops-compact" in ln for ln in invocations), invocations

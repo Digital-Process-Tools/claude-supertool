@@ -18,6 +18,7 @@ Pins the load-bearing claims from the issue's design discussion:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -258,7 +259,7 @@ def test_int_env_accepts_a_float_shaped_json_number(monkeypatch):
     JSON) exports the literal string "300.0", and a bare `int("300.0")`
     raises and silently falls back to the default with no warning."""
     monkeypatch.setenv("SUPERTOOL_STALE_SECS", "300.0")
-    assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 300
+    assert statusline._int_value(os.environ.get("SUPERTOOL_STALE_SECS"), 999) == 300
 
 
 def test_int_env_falls_back_rather_than_crashing_on_an_infinite_value(monkeypatch):
@@ -270,11 +271,11 @@ def test_int_env_falls_back_rather_than_crashing_on_an_infinite_value(monkeypatc
     default -- exactly the failure mode #1850's per-segment isolation design
     exists to prevent, one call site earlier than that isolation reaches."""
     monkeypatch.setenv("SUPERTOOL_STALE_SECS", "inf")
-    assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 999
+    assert statusline._int_value(os.environ.get("SUPERTOOL_STALE_SECS"), 999) == 999
     monkeypatch.setenv("SUPERTOOL_STALE_SECS", "-inf")
-    assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 999
+    assert statusline._int_value(os.environ.get("SUPERTOOL_STALE_SECS"), 999) == 999
     monkeypatch.setenv("SUPERTOOL_STALE_SECS", "nan")
-    assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 999
+    assert statusline._int_value(os.environ.get("SUPERTOOL_STALE_SECS"), 999) == 999
 
 
 def test_read_stdin_json_never_blocks_on_a_tty(monkeypatch):

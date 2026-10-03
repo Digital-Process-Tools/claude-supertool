@@ -202,7 +202,7 @@ def _bump_counter(counter: List[int], field: str, by: int = 1) -> None:
 # Parsed at module scope, so a bad value here used to raise during *import* and
 # take down every op in the tool, most of which have nothing to do with dispatch
 # depth. The widest blast radius of the #654 class, for the smallest knob.
-_DISPATCH_MAX_DEPTH = _env_int("SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1)
+_DISPATCH_MAX_DEPTH = _env_int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH"), "SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1)
 
 
 def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:

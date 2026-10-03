@@ -145,8 +145,8 @@ def render(post: dict, inline_n: int, me: str = "") -> str:
 def main(arg: str) -> None:
     token = get_token()
     slug, post_id, host = parse_arg(arg)
-    inline_n = env_int("SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
-    scan_n = max(inline_n, env_int("SUPERTOOL_SCAN_COMMENTS", 50, minimum=0))
+    inline_n = env_int(os.environ.get("SUPERTOOL_INLINE_COMMENTS"), "SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
+    scan_n = max(inline_n, env_int(os.environ.get("SUPERTOOL_SCAN_COMMENTS"), "SUPERTOOL_SCAN_COMMENTS", 50, minimum=0))
     if post_id is not None:
         data = gql(ID_QUERY, {"id": post_id, "cFirst": scan_n}, token)
         post = data.get("post")

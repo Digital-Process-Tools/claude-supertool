@@ -151,95 +151,64 @@ def environ_hits(source):
     return hits
 
 
+#: The only exceptions left (#2734, sixth portal pass). The fifth pass's
+#: allowlist did not survive: the portal cited `_supertool_catalog.py:60`,
+#: its first "generic by-name reader" entry, because the validator has no
+#: notion of "genuinely needed" -- it names ONE read per scan and walks to
+#: the next. Every by-name reader now takes the VALUE, and each caller reads
+#: `os.environ.get("LITERAL")` itself.
+#:
+#: What remains is one group, named for what is actually known about it:
+#: UNKNOWN WHETHER THE VALIDATOR CITES THIS, NOT YET PROBED. Each builds a
+#: subprocess child's environment by copying the whole mapping and adding
+#: keys, which `subprocess` cannot express with `env=None` (inherit is
+#: all-or-nothing; adding one variable means passing a full mapping). The
+#: next portal validation says whether these hold; until then they are not
+#: "exempt", only "not yet known to be cited".
+UNPROBED_SUBPROCESS_ENV_BUILDERS = {
+    "_supertool_presets.py": {1643},
+    "_supertool_validate.py": {127, 926, 1878, 2140},
+    "hooks/guard-selftest.py": {173},
+    "presets/mcp/daemon.py": {395},
+    "presets/watch/transport.py": {1542},
+}
+
+
 def test_no_dynamic_environ_alias_read_anywhere_in_the_shipped_tree(tmp_path):
     """The AST check (non-literal key, with PER-SCOPE alias tracking), over
     every .py file the real build actually ships -- derived from the
-    deny-list, never hand-picked.
-
-    A fixed, named allowlist of the two "genuinely needed" shapes the
-    maintainer's own instruction exempted from forcing, rather than a
-    silent pass: a generic by-name knob reader (`_env_int`/`_env_float`-
-    shaped, called from several literal sites this scan cannot see
-    across) genuinely needs its `name`/`var`/`key` parameter dynamic, and
-    building a subprocess child's environment genuinely needs to start
-    from a copy of the whole mapping. Anything NOT on this list is a
-    hard failure -- so a sixth portal round naming a new file still has
-    somewhere to land loudly, and this allowlist is the one place
-    reviewing what is already excused costs one read, not a tree-wide
-    re-sweep.
-    """
-    exceptions = {
-        # Generic by-name knob readers (#2734): a shared helper, called
-        # from several literal sites, needs its own name parameter.
-        "_supertool_catalog.py": {60},
-        "_supertool_config.py": {1620, 1638, 1679, 1770},
-        "presets/_classify_render.py": {179},
-        "presets/_env.py": {72, 90},
-        "presets/dashboard/dashboard.py": {174},
-        "presets/git/diff.py": {135},
-        "presets/github/labels.py": {154},
-        "presets/statusline/statusline.py": {263, 288},
-        "validators/common/refusal.py": {127, 161},
-        # Wholesale environ copy/merge to build a subprocess child's own
-        # environment -- structurally necessary to spawn a child with a
-        # customised environment at all.
-        "_supertool_presets.py": {1643},
-        "_supertool_validate.py": {127, 926, 1878, 2140},
-        "formatters/php-cs-fixer/php-cs-fixer.py": {91},
-        "hooks/guard-selftest.py": {173},
-        "presets/mcp/daemon.py": {395},
-        "presets/watch/transport.py": {1542},
-    }
-
+    deny-list, never hand-picked. Anything not in
+    UNPROBED_SUBPROCESS_ENV_BUILDERS fails."""
     built = _build_tree(tmp_path)
     all_py = sorted(built.rglob("*.py"))
     assert all_py, "the build produced no .py files at all -- this test would pass on an empty tree"
     results = {}
     for f in all_py:
         hits = environ_hits(f.read_text(encoding="utf-8", errors="replace"))
-        rel = str(f.relative_to(built))
-        allowed_lines = exceptions.get(rel, set())
+        rel = f.relative_to(built).as_posix()
+        allowed_lines = UNPROBED_SUBPROCESS_ENV_BUILDERS.get(rel, set())
         unexpected = [h for h in hits if h[0] not in allowed_lines]
         if unexpected:
             results[rel] = unexpected
     if results:
         lines = "\n".join(f"  {path}: {hits}" for path, hits in sorted(results.items()))
-        pytest.fail("non-literal/aliased os.environ reads found, NOT on the "
-                     "documented exceptions list:\n" + lines)
+        pytest.fail("non-literal/aliased os.environ reads found, NOT in "
+                    "UNPROBED_SUBPROCESS_ENV_BUILDERS:\n" + lines)
 
 
 def test_the_exceptions_list_has_no_stale_entries(tmp_path) -> None:
-    """The allowlist above names an exact line per exception -- if a fix
-    moves or removes one, a stale entry would silently stop covering
-    anything (harmless) OR start covering a DIFFERENT, new hit at the
-    same line number by coincidence (not harmless). Assert every listed
-    line is still an actual hit."""
-    exceptions = {
-        "_supertool_catalog.py": {60},
-        "_supertool_config.py": {1620, 1638, 1679, 1770},
-        "presets/_classify_render.py": {179},
-        "presets/_env.py": {72, 90},
-        "presets/dashboard/dashboard.py": {174},
-        "presets/git/diff.py": {135},
-        "presets/github/labels.py": {154},
-        "presets/statusline/statusline.py": {263, 288},
-        "validators/common/refusal.py": {127, 161},
-        "_supertool_presets.py": {1643},
-        "_supertool_validate.py": {127, 926, 1878, 2140},
-        "formatters/php-cs-fixer/php-cs-fixer.py": {91},
-        "hooks/guard-selftest.py": {173},
-        "presets/mcp/daemon.py": {395},
-        "presets/watch/transport.py": {1542},
-    }
+    """Every listed line must still be an actual hit: a fix that moves or
+    removes one must also shrink the list, or a stale line number could
+    start excusing a different, coincidental hit."""
     built = _build_tree(tmp_path)
     stale = []
-    for rel, lines in exceptions.items():
+    for rel, lines in UNPROBED_SUBPROCESS_ENV_BUILDERS.items():
         f = built / rel
         if not f.is_file():
             stale.append(f"{rel}: file no longer ships")
             continue
         hit_lines = {h[0] for h in environ_hits(f.read_text(encoding="utf-8", errors="replace"))}
-        for line in lines:
+        for line in sorted(lines):
             if line not in hit_lines:
                 stale.append(f"{rel}:{line}: no longer a hit -- remove from the allowlist")
     assert not stale, "\n".join(stale)

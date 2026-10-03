@@ -259,8 +259,10 @@ def _unknown_segment_refusal(unknown: List[str]) -> str:
             f"(available: {known}) — refused rather than rendering it blank")
 
 
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
+def _float_value(raw: Optional[str], default: float) -> float:
+    """`raw` as a float, else `default`. Takes the VALUE; the caller reads
+    its own literal-named variable (#2734)."""
+    raw = (raw or "").strip()
     if not raw:
         return default
     try:
@@ -269,8 +271,8 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-def _int_env(name: str, default: int) -> int:
-    """`int(env)`, tolerating a float-shaped JSON number (self-review finding,
+def _int_value(raw: Optional[str], default: int) -> int:
+    """`int(raw)`, tolerating a float-shaped JSON number (self-review finding,
     #1850): `ops.<op>.<key>` reaches this subprocess through the core's
     generic env passthrough, which JSON-encodes a non-string value verbatim
     -- `"stale_secs": 300.0` is legal JSON and exports the literal string
@@ -284,8 +286,12 @@ def _int_env(name: str, default: int) -> int:
     per-segment isolation -- an exception here would abort the whole render
     instead of falling back, which is strictly worse than the bug this
     function exists to fix.
+
+    Takes the VALUE, not the variable's name (#2734): the caller reads
+    `os.environ.get("ITS_OWN_LITERAL")`, so no environment read here is
+    keyed by a variable.
     """
-    raw = os.environ.get(name, "").strip()
+    raw = (raw or "").strip()
     if not raw:
         return default
     try:
@@ -328,8 +334,8 @@ def main() -> int:
     ctx = _Ctx(
         stdin=stdin_data,
         workspace_dir=workspace_dir,
-        stale_secs=_int_env("SUPERTOOL_STALE_SECS", 300),
-        git_budget=_float_env("SUPERTOOL_GIT_BUDGET_SECS", 1.5),
+        stale_secs=_int_value(os.environ.get("SUPERTOOL_STALE_SECS"), 300),
+        git_budget=_float_value(os.environ.get("SUPERTOOL_GIT_BUDGET_SECS"), 1.5),
     )
     item_sep = os.environ.get("SUPERTOOL_ITEM_SEP") or " · "
     group_sep = os.environ.get("SUPERTOOL_GROUP_SEP") or " | "

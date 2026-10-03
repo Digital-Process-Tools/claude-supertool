@@ -120,8 +120,14 @@ DEFAULT_FORBIDDEN_PATHS = [
 ]
 
 
-def _json_env(key: str) -> tuple[list, str]:
-    """Read a JSON-list config value from SUPERTOOL_<KEY> — three states, not two.
+def _json_rules(raw: "str | None") -> tuple[list, str]:
+    """Parse a JSON-list config value — three states, not two.
+
+    Takes the VALUE (#2734): each caller reads its own literal-named
+    `SUPERTOOL_*` variable, so no environment read here is keyed by a
+    variable. The four rule sets are a fixed list in `main()`, never named
+    by configuration, so no lookup table is needed -- the call sites are
+    the table.
 
     Returns `(rules, why_not_loaded)`. An empty `why` means there was nothing to
     load, which is an answer. A non-empty `why` means a value was configured and
@@ -132,7 +138,7 @@ def _json_env(key: str) -> tuple[list, str]:
     therefore disabled a guard silently, and the run it disabled still printed
     the affirmative clean verdict.
     """
-    raw = os.environ.get(key, "")
+    raw = raw or ""
     if not raw.strip():
         return [], ""
     try:
@@ -447,10 +453,10 @@ def main() -> int:
     # Policy from .supertool.json (env), on top of the shipped defaults. Each
     # read carries why it did not load, so a broken value is a finding rather
     # than silently zero rules.
-    red_flags_extra, red_why = _json_env("SUPERTOOL_RED_FLAGS_EXTRA")
-    forbidden_extra, forbidden_why = _json_env("SUPERTOOL_FORBIDDEN_PATHS")
-    pairing, pairing_why = _json_env("SUPERTOOL_TEST_PAIRING")
-    hints_cfg, hints_why = _json_env("SUPERTOOL_HINTS")
+    red_flags_extra, red_why = _json_rules(os.environ.get("SUPERTOOL_RED_FLAGS_EXTRA"))
+    forbidden_extra, forbidden_why = _json_rules(os.environ.get("SUPERTOOL_FORBIDDEN_PATHS"))
+    pairing, pairing_why = _json_rules(os.environ.get("SUPERTOOL_TEST_PAIRING"))
+    hints_cfg, hints_why = _json_rules(os.environ.get("SUPERTOOL_HINTS"))
     red_flags = DEFAULT_RED_FLAGS + red_flags_extra
     forbidden = DEFAULT_FORBIDDEN_PATHS + forbidden_extra
     unloaded = [(k, w) for k, w in (

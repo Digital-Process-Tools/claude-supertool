@@ -1340,7 +1340,7 @@ class MCPClient:
                 raise MCPServerError(
                     "MCP daemon requires socket.AF_UNIX — not available on this platform"
                 )
-            budget = _env_float("SUPERTOOL_MCP_CONNECT_TIMEOUT",
+            budget = _env_float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT"), "SUPERTOOL_MCP_CONNECT_TIMEOUT",
                                 float(self._CONNECT_TIMEOUT_SECONDS), minimum=0.0)
             # Explicit socket_path (tests, externally managed daemons) → no one
             # else will spawn it. Single-shot connect, fail fast on miss.

@@ -65,9 +65,9 @@ def _get_config() -> dict[str, int]:
     # with nothing said. `env_int` keeps the floors as validated minimums and
     # says which knob it could not honour and what it used instead (#654).
     return {
-        "enrich_workers": env_int("SUPERTOOL_ENRICH_WORKERS", ENRICH_WORKERS, minimum=1),
-        "enrich_cap": env_int("SUPERTOOL_ENRICH_CAP", ENRICH_CAP, minimum=0),
-        "per_page": env_int("SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE, minimum=1),
+        "enrich_workers": env_int(os.environ.get("SUPERTOOL_ENRICH_WORKERS"), "SUPERTOOL_ENRICH_WORKERS", ENRICH_WORKERS, minimum=1),
+        "enrich_cap": env_int(os.environ.get("SUPERTOOL_ENRICH_CAP"), "SUPERTOOL_ENRICH_CAP", ENRICH_CAP, minimum=0),
+        "per_page": env_int(os.environ.get("SUPERTOOL_PER_PAGE"), "SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE, minimum=1),
     }
 
 # state=X maps to a glab list flag. opened is the glab default (no flag).

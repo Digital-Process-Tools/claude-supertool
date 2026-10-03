@@ -13,6 +13,7 @@ cheaper than search.list's 100.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -32,7 +33,7 @@ def parse_args(arg: str) -> tuple[str, int]:
         sys.exit(2)
     parts = arg.split("|")
     channel = parts[0]
-    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
+    default_n = env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
     n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else default_n
     return channel, min(n, 50)
 

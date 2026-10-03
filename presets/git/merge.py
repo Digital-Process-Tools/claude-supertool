@@ -148,7 +148,7 @@ def main() -> int:
     if ref.startswith("-"):
         print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}")
         return 1
-    preview = env_int("SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
+    preview = env_int(os.environ.get("SUPERTOOL_PREVIEW_LINES"), "SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
 
     if _git(["rev-parse", "--verify", "--quiet", ref]).returncode != 0:
         print(f"ERROR: ref {ref!r} not found. Try `git fetch` first.")

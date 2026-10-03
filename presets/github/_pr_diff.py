@@ -449,9 +449,9 @@ def render(files: list[dict] | None, *, header: list[str],
     decision, so it refuses and names the cause it was handed.
     """
     if max_files is None:
-        max_files = env_int("GH_PR_DIFF_MAX_FILES", MAX_FILES, minimum=1)
+        max_files = env_int(os.environ.get("GH_PR_DIFF_MAX_FILES"), "GH_PR_DIFF_MAX_FILES", MAX_FILES, minimum=1)
     if max_bytes is None:
-        max_bytes = env_int("GH_PR_DIFF_MAX_BYTES", MAX_BYTES, minimum=1)
+        max_bytes = env_int(os.environ.get("GH_PR_DIFF_MAX_BYTES"), "GH_PR_DIFF_MAX_BYTES", MAX_BYTES, minimum=1)
 
     if files is None:
         out = list(header)

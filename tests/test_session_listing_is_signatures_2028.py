@@ -33,8 +33,12 @@ def test_the_hook_asks_for_the_session_listing() -> None:
     # Keyed on the op arguments, not on `"$BIN"` alone: the wrapper-symlink
     # setup above the onboarding call also names `$BIN`, and a predicate that
     # matched those would assert about lines that print no listing at all.
+    # #2734 spells the path out (`"${CLAUDE_PLUGIN_ROOT}/supertool.py"`) at
+    # the invocation sites instead of going through `$BIN`; either spelling
+    # is the same call.
     invocations = [ln for ln in text.splitlines()
-                   if '"$BIN"' in ln and "'introduction'" in ln]
+                   if ('"$BIN"' in ln or '"${CLAUDE_PLUGIN_ROOT}/supertool.py"' in ln)
+                   and "'introduction'" in ln]
     assert invocations, "no supertool onboarding call found in the hook"
     # The comment above it discusses the roster at length and should — what
     # must not happen is the *call* naming it, because then two places decide

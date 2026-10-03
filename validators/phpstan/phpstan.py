@@ -58,7 +58,7 @@ def refusal_line(text: str) -> str:
     """
     for line in split_lines(text or ""):
         stripped = line.strip()
-        if stripped and is_refusal(stripped, SKIP_PATTERNS_ENV):
+        if stripped and is_refusal(stripped, extra_patterns=os.environ.get("PHPSTAN_SKIP_PATTERNS", "")):
             return stripped
     return first_line(text)
 
@@ -96,7 +96,7 @@ def report_lines(stdout: str) -> list:
     rest = []
     for line in split_lines(stdout or ""):
         stripped = line.strip()
-        if stripped and not is_refusal(stripped, SKIP_PATTERNS_ENV):
+        if stripped and not is_refusal(stripped, extra_patterns=os.environ.get("PHPSTAN_SKIP_PATTERNS", "")):
             rest.append(stripped)
     return rest
 
@@ -227,7 +227,7 @@ def main() -> None:
         # bootstrap noise converts an unreadable report into "there was nothing
         # to read", which never rolls back and never renders red.
         unread = report_lines(r.stdout or "")
-        if not unread and is_refusal(combined, SKIP_PATTERNS_ENV):
+        if not unread and is_refusal(combined, extra_patterns=os.environ.get("PHPSTAN_SKIP_PATTERNS", "")):
             reason = refusal_line(combined) or "phpstan declined to analyse"
             emit(skipped("phpstan", file, reason, dur))
             return

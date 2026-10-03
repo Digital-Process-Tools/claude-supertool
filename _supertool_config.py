@@ -1603,8 +1603,17 @@ def _env_notice(text: str) -> None:
     sys.stdout.flush()
 
 
-def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int:
-    """Read `name` as an int, or say why it could not be and what is in force.
+def _env_int(raw: "Optional[str]", name: str, default: int, *,
+             minimum: "Optional[int]" = None) -> int:
+    """Parse `raw` (the value of `name`) as an int, or say why it could not
+    be and what is in force.
+
+    Takes the VALUE, not the name (#2734): each caller reads
+    `os.environ.get("ITS_OWN_LITERAL")` itself and passes it here, so no
+    environment read in this tree is keyed by a variable. `name` is only
+    used to word the notice. `raw` comes first so an old-style call
+    `_env_int("NAME", 5)` fails loudly (missing `default`) instead of
+    parsing the variable's name as its value.
 
     Deliberately duplicated from `presets/_env.py` rather than imported.
     `supertool.py` is a single self-contained file — importing a preset helper
@@ -1617,7 +1626,6 @@ def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int
     `minimum` is a validated floor, not a clamp — see `presets/_env.py` for why
     a negative is refused rather than quietly rounded up.
     """
-    raw = os.environ.get(name)
     if raw is None:
         return default
     try:
@@ -1633,9 +1641,10 @@ def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int
     return value
 
 
-def _env_float(name: str, default: float, *, minimum: "Optional[float]" = None) -> float:
-    """`_env_int` for the knobs measured in seconds. Same contract."""
-    raw = os.environ.get(name)
+def _env_float(raw: "Optional[str]", name: str, default: float, *,
+               minimum: "Optional[float]" = None) -> float:
+    """`_env_int` for the knobs measured in seconds. Same contract: the
+    caller reads the literal-named variable and passes its value (#2734)."""
     if raw is None:
         return default
     try:
@@ -1653,6 +1662,54 @@ def _env_float(name: str, default: float, *, minimum: "Optional[float]" = None) 
                     f"- ignoring it and using {default}.")
         return default
     return value
+
+
+#: Every `SUPERTOOL_<OP>_<KEY>` override a builtin op actually reads, each
+#: spelled out as a literal (#2734). The name used to be assembled at run
+#: time -- `os.environ.get(f"SUPERTOOL_{op}_{key}")` -- and the directory's
+#: validator cites exactly that shape ("an environment variable named at
+#: run time"), one call site per scan. A lambda per entry keeps each read
+#: lazy, so a lookup still costs one environment read, not twenty.
+#:
+#: `tests/test_op_env_override_table_2734.py` derives every `(op, key)`
+#: pair the tree passes to `_get_op_int`/`_get_op_bool` from the AST and
+#: fails on one missing here, so a new knob cannot ship unreadable.
+_OP_ENV_OVERRIDES = {
+    ("around", "max_bytes"): lambda: os.environ.get("SUPERTOOL_AROUND_MAX_BYTES"),
+    ("batch", "max_ops"): lambda: os.environ.get("SUPERTOOL_BATCH_MAX_OPS"),
+    ("glob", "max_results"): lambda: os.environ.get("SUPERTOOL_GLOB_MAX_RESULTS"),
+    ("grep", "count_ceiling"): lambda: os.environ.get("SUPERTOOL_GREP_COUNT_CEILING"),
+    ("grep", "count_truncated"): lambda: os.environ.get("SUPERTOOL_GREP_COUNT_TRUNCATED"),
+    ("grep", "max_line_chars"): lambda: os.environ.get("SUPERTOOL_GREP_MAX_LINE_CHARS"),
+    ("grep", "max_results"): lambda: os.environ.get("SUPERTOOL_GREP_MAX_RESULTS"),
+    ("grep_around", "max_bytes"): lambda: os.environ.get("SUPERTOOL_GREP_AROUND_MAX_BYTES"),
+    ("head", "char_window"): lambda: os.environ.get("SUPERTOOL_HEAD_CHAR_WINDOW"),
+    ("read", "abstract"): lambda: os.environ.get("SUPERTOOL_READ_ABSTRACT"),
+    ("read", "abstract_threshold_bytes"): lambda: os.environ.get("SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES"),
+    ("read", "elide"): lambda: os.environ.get("SUPERTOOL_READ_ELIDE"),
+    ("read", "elide_window_seconds"): lambda: os.environ.get("SUPERTOOL_READ_ELIDE_WINDOW_SECONDS"),
+    ("read", "git_timeout_seconds"): lambda: os.environ.get("SUPERTOOL_READ_GIT_TIMEOUT_SECONDS"),
+    ("read", "max_autoread_lines"): lambda: os.environ.get("SUPERTOOL_READ_MAX_AUTOREAD_LINES"),
+    ("read", "max_bytes"): lambda: os.environ.get("SUPERTOOL_READ_MAX_BYTES"),
+    ("read", "max_lines"): lambda: os.environ.get("SUPERTOOL_READ_MAX_LINES"),
+    ("read", "php_abstract"): lambda: os.environ.get("SUPERTOOL_READ_PHP_ABSTRACT"),
+    ("tail", "char_window"): lambda: os.environ.get("SUPERTOOL_TAIL_CHAR_WINDOW"),
+}
+
+
+def _op_env_override(op_name: str, key: str) -> "tuple[str, Optional[str]]":
+    """(the variable's name, its value or None) for one builtin-op knob.
+
+    An `(op, key)` with no entry above raises rather than reading as unset:
+    "nobody set it" and "this build cannot read it" must not render alike,
+    and the AST test keeps the table complete before anything ships."""
+    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
+    reader = _OP_ENV_OVERRIDES.get((op_name, key))
+    if reader is None:
+        raise KeyError(
+            f"no literal reader for {env_key} -- add ({op_name!r}, {key!r}) "
+            f"to _OP_ENV_OVERRIDES (#2734)")
+    return env_key, reader()
 
 
 def _get_op_int(op_name: str, key: str, default: int) -> int:
@@ -1675,8 +1732,7 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
     misconfiguration — but it is now announced through the same notice. A
     switch belongs on `_get_op_bool`, where `0` means off, not here.
     """
-    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
-    env_val = os.environ.get(env_key)
+    env_key, env_val = _op_env_override(op_name, key)
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     # A `builtin-ops.<op>` entry that is not a table is `_merge_presets`'s
@@ -1766,8 +1822,7 @@ def _get_op_bool(op_name: str, key: str, default: bool) -> bool:
     that is set but unreadable is announced with the state actually in force,
     rather than silently becoming the default.
     """
-    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
-    env_val = os.environ.get(env_key)
+    env_key, env_val = _op_env_override(op_name, key)
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     val = op_cfg.get(key) if isinstance(op_cfg, dict) else None

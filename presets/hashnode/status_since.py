@@ -187,8 +187,8 @@ def main(arg: str) -> None:
     now = _now_iso()
     token = get_token()
     pub_id = get_publication_id()
-    post_first = env_int("SUPERTOOL_STATUS_POSTS", 10, minimum=1)
-    c_first = env_int("SUPERTOOL_STATUS_COMMENTS", 20, minimum=1)
+    post_first = env_int(os.environ.get("SUPERTOOL_STATUS_POSTS"), "SUPERTOOL_STATUS_POSTS", 10, minimum=1)
+    c_first = env_int(os.environ.get("SUPERTOOL_STATUS_COMMENTS"), "SUPERTOOL_STATUS_COMMENTS", 20, minimum=1)
     data = gql(QUERY, {"publicationId": pub_id, "postFirst": post_first, "cFirst": c_first}, token)
     pub = data.get("publication") or {}
     me = get_username(token)

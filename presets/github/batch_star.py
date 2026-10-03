@@ -97,7 +97,7 @@ def main(arg: str) -> int:
         print(f"  SKIP {note}")
     ok = 0
     failed = 0
-    delay = env_float("SUPERTOOL_STAR_DELAY", 1.0, minimum=0.0)
+    delay = env_float(os.environ.get("SUPERTOOL_STAR_DELAY"), "SUPERTOOL_STAR_DELAY", 1.0, minimum=0.0)
     for i, repo in enumerate(repos):
         if i > 0:
             time.sleep(delay)
