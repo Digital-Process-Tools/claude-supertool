@@ -46,7 +46,14 @@ if "_load_part" not in globals():
         "supertool.py, or `import _supertool` instead."
     )
 
-def _onboarding_text(config_key: str, env_var: str, default: str) -> str:
+def _onboarding_text(config_key: str, default: str, *,
+                     env_value: "Optional[str]") -> str:
+
+
+
+
+
+
 
 
 
@@ -57,7 +64,7 @@ def _onboarding_text(config_key: str, env_var: str, default: str) -> str:
 
 
     config = _load_config()
-    raw = os.environ.get(env_var)
+    raw = env_value
     if raw is None:
         raw = config.get(config_key)
     if raw is None:
@@ -72,7 +79,8 @@ def op_introduction() -> str:
 
 
     intro = _onboarding_text(
-        "introduction", "SUPERTOOL_INTRODUCTION", _DEFAULT_INTRODUCTION)
+        "introduction", _DEFAULT_INTRODUCTION,
+        env_value=os.environ.get("SUPERTOOL_INTRODUCTION"))
     if not intro:
         return "No introduction configured in .supertool.json\n"
     return str(intro) + "\n\n"
@@ -82,7 +90,8 @@ def op_output_format() -> str:
 
 
     fmt = _onboarding_text(
-        "output-format", "SUPERTOOL_OUTPUT_FORMAT", _DEFAULT_OUTPUT_FORMAT)
+        "output-format", _DEFAULT_OUTPUT_FORMAT,
+        env_value=os.environ.get("SUPERTOOL_OUTPUT_FORMAT"))
     if not fmt:
         return "No output-format configured in .supertool.json\n"
     return str(fmt) + "\n\n"

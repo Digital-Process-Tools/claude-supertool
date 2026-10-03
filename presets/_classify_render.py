@@ -170,13 +170,17 @@ _SCANNER_CLEAN_LINE = (
 )
 
 
-def level_from_env(var: str = "SUPERTOOL_CLASSIFY",
-                    default: str = LEVEL_FULL) -> str:
+def level_from_env(*, default: str = LEVEL_FULL) -> str:
 
 
 
 
-    raw = os.environ.get(var)
+
+
+
+
+
+    raw = os.environ.get("SUPERTOOL_CLASSIFY")
     if raw is None:
         return default
     raw = raw.strip().lower()

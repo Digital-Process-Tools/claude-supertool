@@ -110,7 +110,7 @@ def _git_timeout(default: int | None = None) -> int:
 
 
     base = _GIT_TIMEOUT_DEFAULT if default is None else default
-    return env_int("SUPERTOOL_GIT_TIMEOUT", base, minimum=1)
+    return env_int(os.environ.get("SUPERTOOL_GIT_TIMEOUT"), "SUPERTOOL_GIT_TIMEOUT", base, minimum=1)
 
 
 def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
@@ -865,7 +865,7 @@ def main() -> int:
 
 
                 now = time.time()
-                window = env_int("SUPERTOOL_WORKTREE_ACTIVE_WINDOW",
+                window = env_int(os.environ.get("SUPERTOOL_WORKTREE_ACTIVE_WINDOW"), "SUPERTOOL_WORKTREE_ACTIVE_WINDOW",
                                  ACTIVE_WINDOW_DEFAULT, minimum=1)
                 root = _worktree_root()
                 timed = [_untracked_age(root, l[3:], now) for l in untracked]

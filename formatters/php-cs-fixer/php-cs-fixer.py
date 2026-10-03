@@ -88,11 +88,12 @@ def main() -> None:
         cmd += ["--config", phpcsfixer_config]
     cmd.append(file)
 
-    env = os.environ.copy()
-
     try:
 
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, encoding="utf-8", errors="replace")
+
+
+
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         emit({
             "tool": "php-cs-fixer", "file": file, "ok": False, "count": 1,

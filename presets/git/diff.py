@@ -120,7 +120,7 @@ DEFAULT_FORBIDDEN_PATHS = [
 ]
 
 
-def _json_env(key: str) -> tuple[list, str]:
+def _json_rules(raw: "str | None") -> tuple[list, str]:
 
 
 
@@ -132,7 +132,13 @@ def _json_env(key: str) -> tuple[list, str]:
 
 
 
-    raw = os.environ.get(key, "")
+
+
+
+
+
+
+    raw = raw or ""
     if not raw.strip():
         return [], ""
     try:
@@ -447,10 +453,10 @@ def main() -> int:
 
 
 
-    red_flags_extra, red_why = _json_env("SUPERTOOL_RED_FLAGS_EXTRA")
-    forbidden_extra, forbidden_why = _json_env("SUPERTOOL_FORBIDDEN_PATHS")
-    pairing, pairing_why = _json_env("SUPERTOOL_TEST_PAIRING")
-    hints_cfg, hints_why = _json_env("SUPERTOOL_HINTS")
+    red_flags_extra, red_why = _json_rules(os.environ.get("SUPERTOOL_RED_FLAGS_EXTRA"))
+    forbidden_extra, forbidden_why = _json_rules(os.environ.get("SUPERTOOL_FORBIDDEN_PATHS"))
+    pairing, pairing_why = _json_rules(os.environ.get("SUPERTOOL_TEST_PAIRING"))
+    hints_cfg, hints_why = _json_rules(os.environ.get("SUPERTOOL_HINTS"))
     red_flags = DEFAULT_RED_FLAGS + red_flags_extra
     forbidden = DEFAULT_FORBIDDEN_PATHS + forbidden_extra
     unloaded = [(k, w) for k, w in (

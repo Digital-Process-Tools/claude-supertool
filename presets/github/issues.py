@@ -182,8 +182,8 @@ _LIST_FIELDS = (
 def _get_config() -> dict[str, int]:
 
     return {
-        "per_page": env_int("SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE, minimum=1),
-        "chunk": env_int("SUPERTOOL_ISSUE_CHUNK", CHUNK, minimum=1),
+        "per_page": env_int(os.environ.get("SUPERTOOL_PER_PAGE"), "SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE, minimum=1),
+        "chunk": env_int(os.environ.get("SUPERTOOL_ISSUE_CHUNK"), "SUPERTOOL_ISSUE_CHUNK", CHUNK, minimum=1),
     }
 
 

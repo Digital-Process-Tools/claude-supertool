@@ -196,7 +196,7 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
 
 
 def is_refusal(msg: str) -> bool:
-    return _refusal.is_refusal(msg, SKIP_PATTERNS_ENV)
+    return _refusal.is_refusal(msg, extra_patterns=os.environ.get("PHPSTAN_MCP_SKIP_PATTERNS", ""))
 
 
 def skipped(file_path: str, reason: str, dur_ms: int) -> dict:
@@ -261,7 +261,7 @@ def main(argv: list[str]) -> int:
         return 2
     file_path = argv[1]
     t0 = time.monotonic()
-    out_of_scope = _refusal.outside_roots(file_path, PATHS_ENV)
+    out_of_scope = _refusal.outside_roots(file_path, PATHS_ENV, os.environ.get("PHPSTAN_MCP_PATHS", ""))
     if out_of_scope:
         print(json.dumps(skipped(file_path, out_of_scope,
                                  int((time.monotonic() - t0) * 1000))))

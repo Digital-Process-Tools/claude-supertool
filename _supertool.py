@@ -645,7 +645,7 @@ def _lint_timeout() -> int:
 
 
 
-    return _env_int("SUPERTOOL_LINT_TIMEOUT", _LINT_TIMEOUT_DEFAULT, minimum=1)
+    return _env_int(os.environ.get("SUPERTOOL_LINT_TIMEOUT"), "SUPERTOOL_LINT_TIMEOUT", _LINT_TIMEOUT_DEFAULT, minimum=1)
 
 
 def _lint_declined(tool: str, reason: str) -> str:

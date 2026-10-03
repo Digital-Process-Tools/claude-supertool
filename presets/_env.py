@@ -31,7 +31,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from typing import Optional
 
@@ -56,7 +55,8 @@ def _notice(text: str) -> None:
     sys.stdout.flush()
 
 
-def env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
+def env_int(raw: Optional[str], name: str, default: int, *,
+            minimum: Optional[int] = None) -> int:
 
 
 
@@ -69,7 +69,15 @@ def env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
 
 
 
-    raw = os.environ.get(name)
+
+
+
+
+
+
+
+
+
     if raw is None:
         return default
     try:
@@ -85,9 +93,10 @@ def env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
     return value
 
 
-def env_float(name: str, default: float, *, minimum: Optional[float] = None) -> float:
+def env_float(raw: Optional[str], name: str, default: float, *,
+              minimum: Optional[float] = None) -> float:
 
-    raw = os.environ.get(name)
+
     if raw is None:
         return default
     try:

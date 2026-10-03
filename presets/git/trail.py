@@ -52,9 +52,9 @@ def main() -> int:
 
     pattern = sys.argv[1]
     path = sys.argv[2] if len(sys.argv) > 2 else ""
-    max_commits = env_int("SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
-    context = env_int("SUPERTOOL_CONTEXT", DEFAULT_CONTEXT, minimum=0)
-    detail_cap = env_int("SUPERTOOL_TRAIL_DETAIL_CAP", DEFAULT_DETAIL_CAP, minimum=0)
+    max_commits = env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
+    context = env_int(os.environ.get("SUPERTOOL_CONTEXT"), "SUPERTOOL_CONTEXT", DEFAULT_CONTEXT, minimum=0)
+    detail_cap = env_int(os.environ.get("SUPERTOOL_TRAIL_DETAIL_CAP"), "SUPERTOOL_TRAIL_DETAIL_CAP", DEFAULT_DETAIL_CAP, minimum=0)
 
     print(f"# git-trail: {pattern!r}" + (f" in {path}" if path else ""))
 

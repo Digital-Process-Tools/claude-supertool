@@ -252,7 +252,7 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
 
 
 
-        if _refusal.is_refusal(str(structured["error"]), SKIP_PATTERNS_ENV):
+        if _refusal.is_refusal(str(structured["error"]), extra_patterns=os.environ.get("PHPMD_MCP_SKIP_PATTERNS", "")):
             if not has_report:
                 return _refusal.skipped("phpmd-mcp", file_path,
                                         str(structured["error"]), duration_ms)

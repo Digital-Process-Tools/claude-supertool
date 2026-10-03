@@ -202,7 +202,7 @@ def _bump_counter(counter: List[int], field: str, by: int = 1) -> None:
 
 
 
-_DISPATCH_MAX_DEPTH = _env_int("SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1)
+_DISPATCH_MAX_DEPTH = _env_int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH"), "SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1)
 
 
 def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:

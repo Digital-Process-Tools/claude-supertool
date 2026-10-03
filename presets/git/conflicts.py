@@ -183,7 +183,7 @@ def _detect_state() -> str:
 
 def main() -> int:
     use_utf8_stdout()
-    preview = env_int("SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
+    preview = env_int(os.environ.get("SUPERTOOL_PREVIEW_LINES"), "SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
 
     inside, why = probe_repo(_git)
     if inside is None:

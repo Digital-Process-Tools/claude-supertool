@@ -1603,7 +1603,8 @@ def _env_notice(text: str) -> None:
     sys.stdout.flush()
 
 
-def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int:
+def _env_int(raw: "Optional[str]", name: str, default: int, *,
+             minimum: "Optional[int]" = None) -> int:
 
 
 
@@ -1617,7 +1618,14 @@ def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int
 
 
 
-    raw = os.environ.get(name)
+
+
+
+
+
+
+
+
     if raw is None:
         return default
     try:
@@ -1633,9 +1641,10 @@ def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int
     return value
 
 
-def _env_float(name: str, default: float, *, minimum: "Optional[float]" = None) -> float:
+def _env_float(raw: "Optional[str]", name: str, default: float, *,
+               minimum: "Optional[float]" = None) -> float:
 
-    raw = os.environ.get(name)
+
     if raw is None:
         return default
     try:
@@ -1653,6 +1662,54 @@ def _env_float(name: str, default: float, *, minimum: "Optional[float]" = None) 
                     f"- ignoring it and using {default}.")
         return default
     return value
+
+
+
+
+
+
+
+
+
+
+
+
+_OP_ENV_OVERRIDES = {
+    ("around", "max_bytes"): lambda: os.environ.get("SUPERTOOL_AROUND_MAX_BYTES"),
+    ("batch", "max_ops"): lambda: os.environ.get("SUPERTOOL_BATCH_MAX_OPS"),
+    ("glob", "max_results"): lambda: os.environ.get("SUPERTOOL_GLOB_MAX_RESULTS"),
+    ("grep", "count_ceiling"): lambda: os.environ.get("SUPERTOOL_GREP_COUNT_CEILING"),
+    ("grep", "count_truncated"): lambda: os.environ.get("SUPERTOOL_GREP_COUNT_TRUNCATED"),
+    ("grep", "max_line_chars"): lambda: os.environ.get("SUPERTOOL_GREP_MAX_LINE_CHARS"),
+    ("grep", "max_results"): lambda: os.environ.get("SUPERTOOL_GREP_MAX_RESULTS"),
+    ("grep_around", "max_bytes"): lambda: os.environ.get("SUPERTOOL_GREP_AROUND_MAX_BYTES"),
+    ("head", "char_window"): lambda: os.environ.get("SUPERTOOL_HEAD_CHAR_WINDOW"),
+    ("read", "abstract"): lambda: os.environ.get("SUPERTOOL_READ_ABSTRACT"),
+    ("read", "abstract_threshold_bytes"): lambda: os.environ.get("SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES"),
+    ("read", "elide"): lambda: os.environ.get("SUPERTOOL_READ_ELIDE"),
+    ("read", "elide_window_seconds"): lambda: os.environ.get("SUPERTOOL_READ_ELIDE_WINDOW_SECONDS"),
+    ("read", "git_timeout_seconds"): lambda: os.environ.get("SUPERTOOL_READ_GIT_TIMEOUT_SECONDS"),
+    ("read", "max_autoread_lines"): lambda: os.environ.get("SUPERTOOL_READ_MAX_AUTOREAD_LINES"),
+    ("read", "max_bytes"): lambda: os.environ.get("SUPERTOOL_READ_MAX_BYTES"),
+    ("read", "max_lines"): lambda: os.environ.get("SUPERTOOL_READ_MAX_LINES"),
+    ("read", "php_abstract"): lambda: os.environ.get("SUPERTOOL_READ_PHP_ABSTRACT"),
+    ("tail", "char_window"): lambda: os.environ.get("SUPERTOOL_TAIL_CHAR_WINDOW"),
+}
+
+
+def _op_env_override(op_name: str, key: str) -> "tuple[str, Optional[str]]":
+
+
+
+
+
+    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
+    reader = _OP_ENV_OVERRIDES.get((op_name, key))
+    if reader is None:
+        raise KeyError(
+            f"no literal reader for {env_key} -- add ({op_name!r}, {key!r}) "
+            f"to _OP_ENV_OVERRIDES (#2734)")
+    return env_key, reader()
 
 
 def _get_op_int(op_name: str, key: str, default: int) -> int:
@@ -1675,8 +1732,7 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
 
 
 
-    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
-    env_val = os.environ.get(env_key)
+    env_key, env_val = _op_env_override(op_name, key)
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
 
@@ -1766,8 +1822,7 @@ def _get_op_bool(op_name: str, key: str, default: bool) -> bool:
 
 
 
-    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
-    env_val = os.environ.get(env_key)
+    env_key, env_val = _op_env_override(op_name, key)
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     val = op_cfg.get(key) if isinstance(op_cfg, dict) else None

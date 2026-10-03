@@ -460,7 +460,7 @@ def _git_timeout() -> int:
 
 
 
-    return _env_int("SUPERTOOL_GIT_TIMEOUT", _GIT_TIMEOUT_DEFAULT, minimum=1)
+    return _env_int(os.environ.get("SUPERTOOL_GIT_TIMEOUT"), "SUPERTOOL_GIT_TIMEOUT", _GIT_TIMEOUT_DEFAULT, minimum=1)
 
 
 def _branch_reading() -> Tuple[str, str]:

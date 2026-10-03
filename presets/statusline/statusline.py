@@ -259,8 +259,10 @@ def _unknown_segment_refusal(unknown: List[str]) -> str:
             f"(available: {known}) — refused rather than rendering it blank")
 
 
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
+def _float_value(raw: Optional[str], default: float) -> float:
+
+
+    raw = (raw or "").strip()
     if not raw:
         return default
     try:
@@ -269,7 +271,7 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-def _int_env(name: str, default: int) -> int:
+def _int_value(raw: Optional[str], default: int) -> int:
 
 
 
@@ -285,7 +287,11 @@ def _int_env(name: str, default: int) -> int:
 
 
 
-    raw = os.environ.get(name, "").strip()
+
+
+
+
+    raw = (raw or "").strip()
     if not raw:
         return default
     try:
@@ -328,8 +334,8 @@ def main() -> int:
     ctx = _Ctx(
         stdin=stdin_data,
         workspace_dir=workspace_dir,
-        stale_secs=_int_env("SUPERTOOL_STALE_SECS", 300),
-        git_budget=_float_env("SUPERTOOL_GIT_BUDGET_SECS", 1.5),
+        stale_secs=_int_value(os.environ.get("SUPERTOOL_STALE_SECS"), 300),
+        git_budget=_float_value(os.environ.get("SUPERTOOL_GIT_BUDGET_SECS"), 1.5),
     )
     item_sep = os.environ.get("SUPERTOOL_ITEM_SEP") or " · "
     group_sep = os.environ.get("SUPERTOOL_GROUP_SEP") or " | "

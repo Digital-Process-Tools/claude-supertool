@@ -150,8 +150,11 @@ SEARCH_WORKERS = 4
 _QUERY_UNSAFE = re.compile('["\r\n]')
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "")
+def _positive_int(raw: "str | None", default: int) -> int:
+
+
+    if raw is None:
+        raw = ""
     try:
         n = int(str(raw).strip())
     except (TypeError, ValueError):
@@ -529,7 +532,7 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
               f"Rename them, or narrow the prefix past them.")
         return 1
 
-    cap = _env_int("GH_LABELS_TALLY_MAX", DEFAULT_TALLY_MAX)
+    cap = _positive_int(os.environ.get("GH_LABELS_TALLY_MAX"), DEFAULT_TALLY_MAX)
     if len(members) > cap:
         calls = len(members) * SEARCH_CALLS_PER_LABEL + NONE_BUCKET_CALLS
         print(f"ERROR: {len(members)} labels start with "
@@ -550,7 +553,7 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
 
 
 
-    issue_cap = _env_int("GH_LABELS_ISSUE_CAP", DEFAULT_ISSUE_CAP)
+    issue_cap = _positive_int(os.environ.get("GH_LABELS_ISSUE_CAP"), DEFAULT_ISSUE_CAP)
     open_rows, rows_capped = fetch_open_issue_rows(issue_cap)
     opens = open_counts(open_rows, members)
 
@@ -674,7 +677,7 @@ def main() -> int:
               "successfully and it is empty — this is not a failed read.")
         return 0
 
-    cap = _env_int("GH_LABELS_ISSUE_CAP", DEFAULT_ISSUE_CAP)
+    cap = _positive_int(os.environ.get("GH_LABELS_ISSUE_CAP"), DEFAULT_ISSUE_CAP)
     counts, capped, n_issues = fetch_counts(cap)
 
     by_name = {str(r.get("name") or "?"): r for r in rows}

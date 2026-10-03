@@ -44,7 +44,7 @@ def main() -> int:
 
     branch = sys.argv[1]
     base = _resolve_base(sys.argv[2] if len(sys.argv) > 2 else "")
-    max_commits = env_int("SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
+    max_commits = env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
 
 
     for ref in (branch, base):

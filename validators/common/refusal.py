@@ -107,7 +107,13 @@ def daemon_transport_reason(has_uds: bool | None = None) -> str | None:
             "validators such as phplint are unaffected")
 
 
-def is_refusal(msg: str, env_var: str = "") -> bool:
+def is_refusal(msg: str, *, extra_patterns: "str | None" = "") -> bool:
+
+
+
+
+
+
 
 
 
@@ -122,14 +128,14 @@ def is_refusal(msg: str, env_var: str = "") -> bool:
 
 
     patterns = list(REFUSAL_PATTERNS)
-    if env_var:
+    if extra_patterns:
         patterns += [p.strip().lower()
-                     for p in os.environ.get(env_var, "").split(",") if p.strip()]
+                     for p in extra_patterns.split(",") if p.strip()]
     lowered = (msg or "").lower()
     return any(p in lowered for p in patterns)
 
 
-def outside_roots(file_path: str, env_var: str) -> str | None:
+def outside_roots(file_path: str, env_var: str, raw: "str | None") -> str | None:
 
 
 
@@ -158,7 +164,12 @@ def outside_roots(file_path: str, env_var: str) -> str | None:
 
 
 
-    raw = os.environ.get(env_var, "")
+
+
+
+
+
+    raw = raw or ""
     if not raw.strip():
         return None
     entries = [e.strip() for part in raw.split(os.pathsep) for e in part.split(",")]

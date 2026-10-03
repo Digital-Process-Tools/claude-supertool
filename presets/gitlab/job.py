@@ -96,14 +96,14 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
 def _get_config() -> dict:
 
     return {
-        "lines": env_int("SUPERTOOL_LINES", 80, minimum=1),
+        "lines": env_int(os.environ.get("SUPERTOOL_LINES"), "SUPERTOOL_LINES", 80, minimum=1),
         "error_patterns": os.environ.get(
             "SUPERTOOL_ERROR_PATTERNS",
 
 
             "ERROR,FAILURES!,Fatal,Failed asserting,🪪,notSubtype,argument.type,return.type"
         ).split(","),
-        "error_context": env_int("SUPERTOOL_ERROR_CONTEXT", 8, minimum=0),
+        "error_context": env_int(os.environ.get("SUPERTOOL_ERROR_CONTEXT"), "SUPERTOOL_ERROR_CONTEXT", 8, minimum=0),
         "job_patterns": _parse_job_patterns(os.environ.get("SUPERTOOL_JOB_PATTERNS", "")),
     }
 
@@ -316,7 +316,7 @@ def _print_unmatched_failure(
 
 
 
-    tail_n = env_int("GL_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
+    tail_n = env_int(os.environ.get("GL_JOB_UNMATCHED_TAIL_LINES"), "GL_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
     if discounted:
         print("\n" + BOILERPLATE_ONLY_HEADER)
     else:
@@ -551,7 +551,7 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int,
 
 
 
-    cause_before = env_int("GL_JOB_CAUSE_CONTEXT_BEFORE", 2, minimum=0)
+    cause_before = env_int(os.environ.get("GL_JOB_CAUSE_CONTEXT_BEFORE"), "GL_JOB_CAUSE_CONTEXT_BEFORE", 2, minimum=0)
     for i in _cause_lines(lines):
         for j in range(max(0, i - cause_before), min(len(lines), i + context + 1)):
             matches.add(j)
@@ -562,8 +562,8 @@ def _find_error_sections(lines: list[str], patterns: list[str], context: int,
     dropped, touched = _expand_phpunit_blocks(
         lines,
         matches,
-        env_int("GL_JOB_PHPUNIT_BLOCK_MAX_LINES", 500, minimum=1),
-        env_int("GL_JOB_PHPUNIT_TOTAL_MAX_LINES", 2000, minimum=1),
+        env_int(os.environ.get("GL_JOB_PHPUNIT_BLOCK_MAX_LINES"), "GL_JOB_PHPUNIT_BLOCK_MAX_LINES", 500, minimum=1),
+        env_int(os.environ.get("GL_JOB_PHPUNIT_TOTAL_MAX_LINES"), "GL_JOB_PHPUNIT_TOTAL_MAX_LINES", 2000, minimum=1),
     )
 
     result: list[tuple[int, str]] = []
@@ -852,7 +852,7 @@ def print_artifact(job_id: str, path: str) -> int:
 
 
 
-    cap = env_int("GL_JOB_ARTIFACT_MAX_BYTES", 65536, minimum=1)
+    cap = env_int(os.environ.get("GL_JOB_ARTIFACT_MAX_BYTES"), "GL_JOB_ARTIFACT_MAX_BYTES", 65536, minimum=1)
     if len(data) > cap:
         print(
             f"ERROR: {path!r} is {_human_size(len(data))}, over this op's "
@@ -990,7 +990,7 @@ def _first_phpunit_failure(text: str) -> str:
 
 
 
-MAX_TRACE_IDS = env_int("GL_JOB_TRACE_MAX_IDS", 6, minimum=1)
+MAX_TRACE_IDS = env_int(os.environ.get("GL_JOB_TRACE_MAX_IDS"), "GL_JOB_TRACE_MAX_IDS", 6, minimum=1)
 
 
 def write_traces(job_ids: list[str]) -> int:
@@ -1475,7 +1475,7 @@ def main() -> int:
 
 
 
-        cap = env_int("GL_JOB_RAW_MAX_LINES", 5000, minimum=1)
+        cap = env_int(os.environ.get("GL_JOB_RAW_MAX_LINES"), "GL_JOB_RAW_MAX_LINES", 5000, minimum=1)
         shown = lines[start - 1:end]
         if len(shown) > cap:
             kept = shown[:cap]
@@ -1528,7 +1528,7 @@ def main() -> int:
             return 0
         match_count = sum(1 for line in lines if rx.search(line))
         _emit_grep_hits(lines, sorted(hits), rx, match_count,
-                        env_int("GL_JOB_GREP_MAX_BYTES", 65536, minimum=1),
+                        env_int(os.environ.get("GL_JOB_GREP_MAX_BYTES"), "GL_JOB_GREP_MAX_BYTES", 65536, minimum=1),
                         "GL_JOB_GREP_MAX_BYTES", shown_pattern, ctx)
         return 0
 
