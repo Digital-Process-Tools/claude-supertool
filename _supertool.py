@@ -145,7 +145,7 @@ from datetime import datetime  # noqa: F401 -- only use left in this file is ins
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple  # noqa: F401 -- MutableMapping has no direct use in this file after #2706 moved its two call sites into _supertool_presets.py, which execs into this module's own globals() and still needs the name bound here; Sequence used only by _supertool_edit.py (#2706), sharing this module's own globals()
 
-VERSION = "0.64.0"
+VERSION = "0.65.0"
 
 # ---------------------------------------------------------------------------
 # Part loader (#2706)
