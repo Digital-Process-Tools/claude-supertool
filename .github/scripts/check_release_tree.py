@@ -359,6 +359,8 @@ def check_tree(root: Path, budget: dict, exceptions: dict | None = None) -> Chec
     _check_front_matter(files, off)
     _check_images(files, kinds, off)
     _check_launchers(files, kinds, off)
+    _check_sourced_scripts(files, kinds, off)
+    _check_typed_heredocs(files, kinds, off)
     if "package.json" in files:
         locks = [lf for lf in LOCKFILES if lf in files]
         if locks:
@@ -549,6 +551,49 @@ def _check_images(files: dict, kinds: dict, off: list) -> None:
                     off.append(f"{img}: bundled image referenced from {rel}")
             elif rel.lower().endswith(".md") and any(_in_code(text, n) for n in needles):
                 off.append(f"{img}: path written in code (backticks or a code block) in {rel}")
+
+
+# #2732: COMMAND_SCRIPT_NOT_FOLLOWED's confirmed cause is a shipped script
+# that `source`s/`.`s another file (claude-jit-context's docs/directory-
+# validator.md, playbook step 5) -- it is not the word "source" anywhere in
+# the text, only the actual shell builtin at command position.
+_SOURCES_ANOTHER_FILE = re.compile(
+    r"(?:^|[;&|(]|\bthen\b|\belse\b|\bdo\b|\belif\b|\bwhile\b|\buntil\b|\bif\b)"
+    r"\s*(?:source|\.)\s+\S")
+
+# UNPINNED_NPX: a typed `<<`, even inside quotes or a regex, is a hard block
+# in any shipped script. Not `<<<` (a here-string, explicitly exempted).
+_LT = chr(60)
+_TYPED_HEREDOC = re.compile(r"(?<!" + _LT + r")" + _LT + _LT + r"(?!" + _LT + r")")
+
+
+def _check_sourced_scripts(files: dict, kinds: dict, off: list) -> None:
+    for rel, data in sorted(files.items()):
+        if rel.split("/")[0] not in ("hooks", "hooks.d", "scripts"):
+            continue
+        if kinds.get(rel) != "text" or posixpath.splitext(rel)[1] not in (".sh", ".py"):
+            continue
+        text = data.decode("utf-8")
+        for n, line in enumerate(text.splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            if _SOURCES_ANOTHER_FILE.search(line):
+                off.append(f"{rel}:{n}: sources another file -- "
+                           f"{line.strip()[:80]}")
+
+
+def _check_typed_heredocs(files: dict, kinds: dict, off: list) -> None:
+    for rel, data in sorted(files.items()):
+        if rel.split("/")[0] not in ("hooks", "hooks.d", "scripts"):
+            continue
+        if kinds.get(rel) != "text" or posixpath.splitext(rel)[1] not in (".sh", ".py"):
+            continue
+        text = data.decode("utf-8")
+        for n, line in enumerate(text.splitlines(), 1):
+            if _TYPED_HEREDOC.search(line):
+                off.append(f"{rel}:{n}: typed heredoc operator (<<) -- "
+                           f"{line.strip()[:80]}")
 
 
 def _check_launchers(files: dict, kinds: dict, off: list) -> None:

@@ -108,7 +108,7 @@ def _fetch(run_id: str) -> tuple[dict[str, Any] | None, str]:
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out looking up run #{run_id}"
     except FileNotFoundError:
-        return None, "ERROR: gh not found — install from https://cli.github.com"
+        return None, "ERROR: gh not found — install the GitHub CLI"
     except OSError as e:
         return None, f"ERROR: gh could not run for run #{run_id}: {e}"
     if r.returncode != 0:

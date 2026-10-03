@@ -63,7 +63,7 @@ def _glab_api(endpoint: str, pipeline_id: str) -> tuple[dict | list | None, str]
     try:
         r = _glab_api_cli(endpoint)
     except FileNotFoundError:
-        return None, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+        return None, "ERROR: glab not found — install the GitLab CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: glab timed out looking up pipeline #{pipeline_id}"
     except (OSError, subprocess.SubprocessError) as e:

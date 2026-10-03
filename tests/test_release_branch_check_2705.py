@@ -275,3 +275,127 @@ def test_cli_exceptions_come_from_the_config_too(tmp_path):
     r = _cli(root, "--config", str(cfg))
     assert r.returncode == 0, (r.stdout, r.stderr)
     assert "REVIEW _supertool.py" in r.stdout and "2706" in r.stdout
+
+
+# -- #2732: no shipped script sources another, no typed heredoc operator --------
+
+def test_a_sourced_sibling_script_fails(tmp_path):
+    """COMMAND_SCRIPT_NOT_FOLLOWED's confirmed cause: a shipped script that
+    `source`s/`.`s another file (claude-jit-context's own
+    docs/directory-validator.md, playbook step 5)."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\n. "$(dirname "$0")/lib.sh"\necho ok\n',
+        "hooks/lib.sh": b"#!/bin/bash\nfoo() { echo bar; }\n",
+    })
+    result = _check(root)
+    assert any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_a_sourced_file_inside_a_loop_body_fails(tmp_path):
+    """#2732 self-review: `do . "$f"; done` is a realistic way to source a
+    sibling file per loop iteration, and the first draft of this regex
+    missed it (no `do` keyword in its alternation)."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\nfor f in "$d"/*.sh; do . "$f"; done\n',
+    })
+    result = _check(root)
+    assert any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_a_sourced_file_inside_command_substitution_fails(tmp_path):
+    """#2732 self-review: `$(. "$conf" && ...)` sources inside a subshell,
+    and the first draft missed the opening `(`."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\nOUT=$(. "$conf" && echo "$VAR")\n',
+    })
+    result = _check(root)
+    assert any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_a_sourced_file_inside_an_if_then_fails(tmp_path):
+    """#2732 self-review: `if . "$f"; then` -- the exact shape
+    hooks/session-start.sh used before #2732's build-time inlining -- and
+    the first draft missed the leading `if` keyword."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\nif . "$f" 2>/dev/null; then\n    true\nfi\n',
+    })
+    result = _check(root)
+    assert any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_running_a_relative_script_is_not_sourcing_it(tmp_path):
+    """Positive control for the `if`/dot overlap: `if ./build.sh; then` RUNS
+    a script, it does not source one -- `.` immediately followed by `/`
+    (no space) must not match, or every ordinary relative invocation would
+    fail this guard."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\nif ./build.sh; then\n    true\nfi\n',
+    })
+    result = _check(root)
+    assert not any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_source_as_a_word_inside_a_string_does_not_fail(tmp_path):
+    """Positive control: a check that flagged the WORD `source` anywhere would
+    pass every real build and fail on prose, which is the opposite defect."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\necho "the source of this decision is #1625"\n',
+    })
+    result = _check(root)
+    assert not any("hooks/guard.sh" in o and "sources" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_a_typed_heredoc_operator_fails(tmp_path):
+    """UNPINNED_NPX's own wording: a typed `<<`, even inside quotes or a
+    regex, is a hard block in any shipped script."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\ncat <<EOF\nhi\nEOF\n',
+    })
+    result = _check(root)
+    assert any("hooks/guard.sh" in o and "heredoc" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_a_herestring_does_not_fail(tmp_path):
+    """Positive control: `<<<` is a here-string, explicitly exempted by the
+    directory's own write-up -- a check that flagged it too would hold every
+    script using the common `cmd <<<"$var"` idiom."""
+    root = _tree(tmp_path, {
+        "hooks/guard.sh": b'#!/bin/bash\ngrep foo <<<"$bar"\n',
+    })
+    result = _check(root)
+    assert not any("hooks/guard.sh" in o and "heredoc" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_an_image_referenced_from_a_hook_script_fails(tmp_path):
+    """#2732 item 5c: the banner (or any image) shipping while referenced by
+    code. `_check_images` already implements this row ('a bundled image is
+    not referenced from commands/, hooks/ or scripts/') -- no new guard was
+    needed, only a test pinning it, since none existed."""
+    root = _tree(tmp_path, {
+        "docs/logo.png": PNG,
+        "hooks/guard.sh": b'#!/bin/bash\necho docs/logo.png\n',
+    })
+    result = _check(root)
+    assert any("docs/logo.png" in o and "referenced from" in o for o in result.offenders), (
+        result.offenders)
+
+
+def test_an_image_referenced_only_from_prose_does_not_fail(tmp_path):
+    """Positive control: README.md's own `<img src="...">` -- a markdown/HTML
+    reference outside commands/hooks/scripts and outside a code span -- is
+    the ordinary, allowed way to show a logo."""
+    root = _tree(tmp_path, {
+        "docs/logo.png": PNG,
+        "README.md": ('# x\n\n<img src="docs/logo.png">\n\n'
+                       + " ".join(["word"] * 40) + "\n").encode(),
+    })
+    result = _check(root)
+    assert not any("docs/logo.png" in o for o in result.offenders), result.offenders

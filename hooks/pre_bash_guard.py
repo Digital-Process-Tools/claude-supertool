@@ -29,7 +29,8 @@ and an absence.
 `hooks.json` used to match `Bash` alone, so wherever the PowerShell tool is
 enabled — Claude then treats PowerShell as the primary shell and routes shell
 commands through it — this hook never ran, and a hook that never runs is
-indistinguishable at the call site from one that ran and approved. The matcher
+indistinguishable at the call site from one that ran and raised no objection.
+The matcher
 is now `Bash|PowerShell`, and the answer for PowerShell is `undecided`: the
 tokeniser below is POSIX, PowerShell quoting, escaping and its backtick
 continuation are not, and a mis-tokenised command produces a false DENY whose
@@ -267,7 +268,7 @@ WIRE_PREFIX = "supertool-guard-v1 "
 #: wrapper's own genuine no-op --
 #: `{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}`, nothing else in
 #: the document, nothing in the transcript. `$VIRTUAL_ENV/bin/python3` is
-#: tried before every versioned interpreter (`hooks/python-ladder.sh`), so a
+#: tried before every versioned interpreter (the shared interpreter ladder), so a
 #: rung there that never runs this file at all -- it can just print
 #: `supertool-guard-v1 silent` and exit 0 -- used to end the walk right
 #: there, and a real interpreter further down the ladder, the one that would
@@ -278,8 +279,9 @@ WIRE_PREFIX = "supertool-guard-v1 "
 #: `hooks/pre-bash-guard.sh` no longer recognises `silent` as an answer at
 #: all -- it is treated exactly like a candidate whose output does not match
 #: this wire protocol, so the walk continues to the next rung instead of
-#: stopping. That closes the gap the same way #1625 closed it for `allow`:
-#: not by trusting the verb less, but by removing it from what a rung can
+#: stopping. That closes the gap the same way #1625 closed it for a forged
+#: verdict other than deny: not by trusting the verb less, but by removing it
+#: from what a rung can
 #: assert.
 #:
 #: **`note` with a truly empty body was the same gap wearing a real verb's
@@ -330,7 +332,7 @@ def _say(verb: str, text: str = "") -> None:
     box. A text-mode `sys.stdout` translates a line feed into CR LF there,
     which would put a carriage return on the end of every verb and leave the
     wrapper reading `deny` plus a control character — a dialect it does not
-    know, so every deny on Windows would become a disclosed allow. A text-mode
+    know, so every deny on Windows would become a disclosed pass-through. A text-mode
     write also encodes with the console code page, so a non-ASCII path inside
     a refusal could raise `UnicodeEncodeError` on the one platform where
     `$VIRTUAL_ENV` is most often the only rung there is. Neither was reachable
@@ -383,7 +385,7 @@ def _undecided(reason: str) -> None:
     _say("note",
          "supertool raw-command guard did not run on this command: "
          + reason
-         + ". The command was allowed - this is a statement about the "
+         + ". The command proceeded - this is a statement about the "
            "guard, not about the command.")
 
 
@@ -426,7 +428,7 @@ def main() -> int:
             shipped = ("note",
                        "supertool's shipped rule layer raised "
                        + type(exc).__name__ + ": " + str(exc)
-                       + ". The command was allowed - this is a statement "
+                       + ". The command proceeded - this is a statement "
                          "about the rule layer, not about the command.")
 
     # Before the import, because the import is the cost (#1377). Ordered

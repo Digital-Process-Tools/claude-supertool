@@ -457,7 +457,7 @@ def main() -> int:
     try:
         result = _glab(["issue", "view", number, "--output", "json"])
     except FileNotFoundError:
-        print("ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli")
+        print("ERROR: glab not found — install the GitLab CLI")
         return 1
     except subprocess.TimeoutExpired:
         print("ERROR: glab timed out")

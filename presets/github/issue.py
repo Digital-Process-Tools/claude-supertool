@@ -620,7 +620,7 @@ def main() -> int:
             "number,title,state,labels,milestone,assignees,author,url,body,comments"
         ])
     except FileNotFoundError:
-        print("ERROR: gh not found — install from https://cli.github.com")
+        print("ERROR: gh not found — install the GitHub CLI")
         return 1
     except subprocess.TimeoutExpired:
         print("ERROR: gh timed out")

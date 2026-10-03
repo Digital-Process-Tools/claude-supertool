@@ -125,7 +125,7 @@ def _gh_json(args: list[str], stdin: str | None = None,
                                  input=stdin, timeout=timeout, encoding="utf-8",
                                  errors="replace")
     except FileNotFoundError:
-        return (None, "gh not found -- install from https://cli.github.com")
+        return (None, "gh not found -- install the GitHub CLI")
     except subprocess.TimeoutExpired:
         return (None, "gh timed out")
     except OSError as e:
@@ -485,7 +485,7 @@ def main() -> int:
         try:
             result = _gh(cmd, timeout=30)
         except FileNotFoundError:
-            print("ERROR: gh not found — install from https://cli.github.com")
+            print("ERROR: gh not found — install the GitHub CLI")
             return 1
         except subprocess.TimeoutExpired:
             print("ERROR: gh timed out")

@@ -112,7 +112,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     if kind == "old_gh_no_escape_flag":
         return (f"ERROR: this gh CLI does not support --allow-escape-sequences, "
                 f"so {resource} #{identifier} cannot be read (its log contains "
-                f"terminal escape sequences). Upgrade gh (https://cli.github.com) "
+                f"terminal escape sequences). Upgrade gh "
                 f"and retry.")
     # The remote host wrote this text — flattened, never relayed raw (#1606).
     return (f"ERROR: gh failed for {resource} #{identifier}: "
@@ -900,7 +900,7 @@ def _job_run_id(job_id: str) -> tuple[str, str]:
             capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        return "", "ERROR: gh not found — install from https://cli.github.com"
+        return "", "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return "", f"ERROR: gh timed out fetching job #{job_id}"
     if result.returncode != 0:
@@ -956,7 +956,7 @@ def _run_artifacts(run_id: str) -> tuple["list[dict] | None", str]:
             capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        return None, "ERROR: gh not found — install from https://cli.github.com"
+        return None, "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out listing artifacts for run #{run_id}"
     if result.returncode != 0:
@@ -1076,7 +1076,7 @@ def _fetch_artifact_zip(artifact_id: object) -> tuple["bytes | None", str]:
             capture_output=True, timeout=60,
         )
     except FileNotFoundError:
-        return None, "ERROR: gh not found — install from https://cli.github.com"
+        return None, "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out downloading artifact #{artifact_id}"
     if proc.returncode != 0:
@@ -1383,7 +1383,7 @@ def main() -> int:
             capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("ERROR: gh not found — install from https://cli.github.com")
+        print("ERROR: gh not found — install the GitHub CLI")
         return 1
     except subprocess.TimeoutExpired:
         print("ERROR: gh timed out (log)")

@@ -43,9 +43,9 @@ def get_api_key() -> str:
     if not val:
         sys.stderr.write(
             "ERROR: YouTube API key not found. Set YOUTUBE_API_KEY env var, "
-            "or write to ~/.config/youtube/api_key. Create one at "
-            "https://console.cloud.google.com/apis/credentials (enable the "
-            "YouTube Data API v3 on the project first).\n"
+            "or write to ~/.config/youtube/api_key. Create one in the "
+            "Google Cloud Console's credentials page (enable the YouTube "
+            "Data API v3 on the project first).\n"
         )
         sys.exit(2)
     return val

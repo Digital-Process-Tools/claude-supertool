@@ -1227,7 +1227,7 @@ def _repo_identity():
     try:
         r = _gh(argv)
     except FileNotFoundError:
-        return "", "", "ERROR: gh not found — install from https://cli.github.com"
+        return "", "", "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return "", "", "ERROR: gh timed out resolving the repository"
     if r.returncode != 0:
@@ -1257,7 +1257,7 @@ def _head_commit(ref: str):
     try:
         r = _gh(["gh", "api", _repo_target.api_path(f"commits/{ref}")])
     except FileNotFoundError:
-        return "", None, "ERROR: gh not found — install from https://cli.github.com"
+        return "", None, "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return "", None, f"ERROR: gh timed out resolving ref {ref!r}"
     if r.returncode != 0:
@@ -1307,7 +1307,7 @@ def _run_list(ref: str, sha: str = ""):
                  "workflowName,headSha,databaseId,status,conclusion,event,"
                  "createdAt,attempt"] + _repo_target.gh_args())
     except FileNotFoundError:
-        return None, "ERROR: gh not found — install from https://cli.github.com"
+        return None, "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out listing runs for {ref!r}"
     if r.returncode != 0:

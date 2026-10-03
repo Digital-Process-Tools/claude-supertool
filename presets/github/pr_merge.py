@@ -603,7 +603,7 @@ def _gh_json(args: List[str], timeout: int = 30) -> tuple[object, str]:
     try:
         r = _gh(args, timeout=timeout)
     except FileNotFoundError:
-        return (None, "gh not found — install from https://cli.github.com")
+        return (None, "gh not found — install the GitHub CLI")
     except subprocess.TimeoutExpired:
         return (None, "gh timed out")
     except OSError as e:

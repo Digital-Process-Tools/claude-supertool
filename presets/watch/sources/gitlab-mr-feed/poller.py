@@ -164,8 +164,7 @@ def fetch_population(scope: str) -> tuple[dict[str, dict[str, str]] | None, str]
         try:
             result = mrs._run(mrs._build_list_cmd(filters, cfg["per_page"]))
         except FileNotFoundError:
-            return None, ("ERROR: glab not found — install from "
-                          "https://gitlab.com/gitlab-org/cli")
+            return None, "ERROR: glab not found — install the GitLab CLI"
         except subprocess.TimeoutExpired:
             # A `SubprocessError`, not an `OSError`, so the old arm did not
             # hold it and a slow GitLab killed the tick out of `poll()`

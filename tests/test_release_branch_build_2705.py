@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -28,6 +29,58 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "build_release_tree.py"
 CONFIG = REPO_ROOT / ".github" / "release-branch.json"
+
+_BS = chr(92)
+_BASH_PROBE = "supertool-bash-ok"
+
+
+def _bash_candidates():
+    """Where a bash that actually runs scripts might be, most likely first
+    (same list tests/test_guard_interpreter_ladder_1390.py resolves
+    through, #1399/#1390): PATH first, then the two Git-for-Windows
+    locations, then the POSIX ones."""
+    git_bin = "C:" + _BS + "Program Files" + _BS + "Git" + _BS
+    return [shutil.which("bash"),
+            git_bin + "bin" + _BS + "bash.exe",
+            git_bin + "usr" + _BS + "bin" + _BS + "bash.exe",
+            "/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"]
+
+
+def _first_bash_that_runs_a_script():
+    """A bash chosen by what it does, not by what it is called -- #2732's
+    own new tests hit the same shape #1390 already fixed on windows-latest.
+    shutil.which("bash") answers "a file
+    named bash is on PATH", which on windows-latest is satisfied by the
+    System32 WSL launcher stub -- a program that is not a shell, cannot
+    open a script, and writes a UTF-16LE refusal instead. Each candidate is
+    asked to print a known string; the one that actually does is returned,
+    and that exact path is what gets spawned later -- subprocess.run with a
+    bare "bash" on Windows re-searches PATH through CreateProcess, which
+    need not agree with shutil.which, so probing one executable and
+    spawning the bare name proves nothing about the one that runs.
+
+    Returns None, never a platform name, when nothing on this host
+    qualifies: tests/test_symlink_capability_1143.py is the precedent for
+    why a skip must be gated on a capability probe, not on os.name."""
+    for candidate in _bash_candidates():
+        if not candidate:
+            continue
+        try:
+            proc = subprocess.run(
+                [candidate, "-c", "printf %s " + _BASH_PROBE],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0 and proc.stdout.strip() == _BASH_PROBE:
+            return candidate
+    return None
+
+
+#: Resolved once at collection time rather than per-test: three tests below
+#: each need it, and re-probing three times would triple the spawn cost for
+#: the same answer.
+BASH = _first_bash_that_runs_a_script()
 
 SLUG = "Example-Org/example-plugin"
 RAW = "https://raw.githubusercontent.com/Example-Org/example-plugin/main/"
@@ -331,8 +384,15 @@ def test_the_committed_config_parses_and_names_the_brief_deny_list():
                   "outbound/", "trap.d/", "changelog.d/", "CLAUDE.md",
                   "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md",
                   "pyproject.toml", ".oss.json", ".supertool.json",
-                  ".supertool.example.json"):
+                  ".supertool.example.json", "supertool-banner.webp",
+                  "notifiers/claude-channel/README.md",
+                  "notifiers/claude-channel/install.sh",
+                  "notifiers/cursor-witness/"):
         assert entry in cfg["deny"], entry
+    # Positive control: the MCP server's own command script, the thing
+    # .mcp.json actually runs, must not be denied by the directory sweep
+    # above -- only the human-facing setup docs beside it are.
+    assert "notifiers/claude-channel/" not in cfg["deny"]
     # Positive control: nothing the plugin runs is denied.
     for runtime in ("hooks/", "presets/", "validators/", "formatters/", "notifiers/",
                     ".claude-plugin/"):
@@ -402,3 +462,229 @@ def test_cli_fails_loudly_on_an_unknown_ref(tmp_path):
     )
     assert r.returncode != 0
     assert "v9.9.9" in r.stderr
+
+
+def test_the_banner_is_denied_and_the_readme_reference_rewritten(tmp_path):
+    """#2732: the Anthropic directory held a release-tree probe on
+    UNREAD_ASSET_REFERENCED, citing supertool-banner.webp. The fix is to not
+    ship it at all -- denying it lets the existing link-rewriting machinery
+    turn README.md's `<img src="supertool-banner.webp">` into an absolute
+    raw.githubusercontent.com URL on the default branch, the same mechanism
+    already proven generically above for docs/logo.png."""
+    mod = _load()
+    cfg = mod.load_config(CONFIG)
+    assert "supertool-banner.webp" in cfg["deny"], cfg["deny"]
+    out = tmp_path / "out"
+    report = mod.build(REPO_ROOT, "HEAD", out, cfg)
+    assert "supertool-banner.webp" in report["removed"], report["removed"]
+    assert not (out / "supertool-banner.webp").exists()
+    # Not asserted here: the rewritten-URL mechanism itself. This build also
+    # swaps README.release.md in for README.md (#2732's other step), so the
+    # shipped README no longer carries the original <img src> to rewrite at
+    # all -- see test_a_denied_image_referenced_by_readme_is_rewritten below
+    # for that mechanism in isolation, decoupled from the readme swap.
+
+
+def test_a_denied_image_referenced_by_readme_is_rewritten(tmp_path):
+    """The banner-denial mechanism in isolation: a synthetic repo whose
+    README references a denied image, with no readme swap configured --
+    the same generic path the real repo's docs/logo.png case already
+    proves, applied to a root-level webp via an <img> tag."""
+    repo = _make_repo(tmp_path, extra={
+        "banner.webp": "fake webp\n",
+        "README.md": '<img src="banner.webp" width="900">\n\n' + README,
+    })
+    cfg = _config(deny=_config()["deny"] + ["banner.webp"])
+    out = _build(tmp_path, repo, cfg)
+    assert not (out / "banner.webp").exists()
+    readme = (out / "README.md").read_text(encoding="utf-8")
+    assert 'src="banner.webp"' not in readme, readme
+    assert ('src="https://raw.githubusercontent.com/Example-Org/'
+            'example-plugin/main/banner.webp"') in readme, readme
+
+
+# -- #2732: inline hooks/python-ladder.sh rather than source it -----------------
+
+_LADDER = (
+    'SUPERTOOL_LADDER_PROBE=1\n'
+    'supertool_python_identifies() { return 1; }\n'
+    'supertool_python_each() { "$1" fake; }\n'
+)
+
+_GUARDED_CONSUMER = (
+    '#!/bin/bash\n'
+    'echo before\n'
+    'LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"\n'
+    '# shellcheck source=hooks/python-ladder.sh\n'
+    '. "$LADDER" 2>/dev/null || decline "the shared interpreter ladder could not be sourced"\n'
+    'echo after\n'
+)
+
+_IF_CONSUMER = (
+    '#!/bin/bash\n'
+    'LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"\n'
+    'echo setup\n'
+    '# shellcheck source=hooks/python-ladder.sh\n'
+    'if . "$LADDER" 2>/dev/null; then\n'
+    '    supertool_python_each onboard\n'
+    '    echo ran\n'
+    'else\n'
+    '    echo "> could not source hooks/python-ladder.sh"\n'
+    'fi\n'
+    'exit 0\n'
+)
+
+
+def _ladder_config() -> dict:
+    return {"ladder_inline": {
+        "ladder": "hooks/python-ladder.sh",
+        "consumers": ["hooks/pre-bash-guard.sh", "hooks/session-start.sh"],
+    }}
+
+
+def test_the_ladder_is_inlined_into_the_guarded_consumer():
+    mod = _load()
+    contents = {
+        "hooks/python-ladder.sh": _LADDER.encode(),
+        "hooks/pre-bash-guard.sh": _GUARDED_CONSUMER.encode(),
+    }
+    inlined = mod.inline_python_ladder(
+        contents, {"ladder_inline": {"ladder": "hooks/python-ladder.sh",
+                                      "consumers": ["hooks/pre-bash-guard.sh"]}})
+    assert inlined == ["hooks/pre-bash-guard.sh"]
+    assert "hooks/python-ladder.sh" not in contents
+    text = contents["hooks/pre-bash-guard.sh"].decode()
+    assert "LADDER=" not in text
+    assert "python-ladder.sh" not in text
+    assert "supertool_python_identifies" in text
+    assert "echo before" in text and "echo after" in text
+    if BASH is None:
+        pytest.skip("no bash that actually runs a script was found on this host")
+    # Behaviour-preserving: a bash parse of the inlined script still
+    # succeeds and defines the ladder's own functions.
+    r = subprocess.run([BASH, "-n", "-c", text], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_ladder_is_inlined_into_the_if_then_else_consumer():
+    mod = _load()
+    contents = {
+        "hooks/python-ladder.sh": _LADDER.encode(),
+        "hooks/session-start.sh": _IF_CONSUMER.encode(),
+    }
+    inlined = mod.inline_python_ladder(
+        contents, {"ladder_inline": {"ladder": "hooks/python-ladder.sh",
+                                      "consumers": ["hooks/session-start.sh"]}})
+    assert inlined == ["hooks/session-start.sh"]
+    text = contents["hooks/session-start.sh"].decode()
+    assert "python-ladder.sh" not in text
+    assert "could not source" not in text
+    assert "echo setup" in text and "supertool_python_each onboard" in text
+    assert "echo ran" in text
+    if BASH is None:
+        pytest.skip("no bash that actually runs a script was found on this host")
+    r = subprocess.run([BASH, "-n", "-c", text], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    assert r.returncode == 0, r.stderr
+
+
+def test_no_ladder_inline_key_is_a_noop():
+    mod = _load()
+    contents = {"hooks/pre-bash-guard.sh": _GUARDED_CONSUMER.encode()}
+    assert mod.inline_python_ladder(contents, {}) == []
+    assert contents["hooks/pre-bash-guard.sh"].decode() == _GUARDED_CONSUMER
+
+
+def test_a_configured_ladder_missing_from_the_tree_refuses(tmp_path):
+    """#2732 self-review: a config naming a ladder not in this tree must
+    not render the same as 'nothing configured' -- a consumer could still
+    carry the raw source/. line with nothing left to inline it."""
+    mod = _load()
+    contents = {"hooks/pre-bash-guard.sh": _GUARDED_CONSUMER.encode()}
+    with pytest.raises(mod.BuildError):
+        mod.inline_python_ladder(contents, _ladder_config())
+
+
+def test_an_unrecognised_consumer_refuses_rather_than_ships_broken():
+    """Positive control for the error path: a consumer whose source call
+    site this step cannot find must stop the build, not silently ship a
+    hook with the ladder's functions undefined."""
+    mod = _load()
+    contents = {
+        "hooks/python-ladder.sh": _LADDER.encode(),
+        "hooks/pre-bash-guard.sh": b"#!/bin/bash\necho no ladder reference here\n",
+    }
+    with pytest.raises(mod.BuildError):
+        mod.inline_python_ladder(contents, _ladder_config())
+
+
+def test_building_this_repository_head_inlines_the_real_ladder(tmp_path):
+    """Integration: the real deny-list and the real ladder/consumers against
+    the real tree -- not a synthetic fixture."""
+    mod = _load()
+    cfg = mod.load_config(CONFIG)
+    out = tmp_path / "out"
+    report = mod.build(REPO_ROOT, "HEAD", out, cfg)
+    assert sorted(report["ladder_inlined"]) == [
+        "hooks/pre-bash-guard.sh", "hooks/session-start.sh"]
+    assert not (out / "hooks" / "python-ladder.sh").exists()
+    for rel in ("hooks/pre-bash-guard.sh", "hooks/session-start.sh"):
+        text = (out / rel).read_text(encoding="utf-8")
+        assert "python-ladder" not in text, (rel, text)
+        # Positive control: the inlined ladder's own functions/variables must
+        # actually be present, not merely absent of "python-ladder" text --
+        # a build that emptied the file would pass the line above too.
+        assert "supertool_python_each" in text, (rel, text)
+        assert "LADDER=" not in text, (rel, text)
+        if BASH is None:
+            pytest.skip("no bash that actually runs a script was found on this host")
+        r = subprocess.run([BASH, "-n", str(out / rel)], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        assert r.returncode == 0, (rel, r.stderr)
+
+
+# -- #2732: README.release.md swapped in for README.md at build time -----------
+
+def test_the_release_readme_is_swapped_in():
+    mod = _load()
+    contents = {"README.md": b"full readme, long and detailed",
+                "README.release.md": b"short release readme"}
+    swapped = mod.swap_release_readme(contents, {"release_readme": "README.release.md"})
+    assert swapped is True
+    assert contents == {"README.md": b"short release readme"}
+
+
+def test_no_release_readme_key_is_a_noop():
+    mod = _load()
+    contents = {"README.md": b"full readme"}
+    assert mod.swap_release_readme(contents, {}) is False
+    assert contents == {"README.md": b"full readme"}
+
+
+def test_a_configured_release_readme_missing_from_the_tree_refuses():
+    """#2732 self-review: a config naming a release_readme not in this tree
+    must not render the same as 'nothing configured' -- README.md would
+    ship unreplaced, full security example and all, with nothing saying
+    so."""
+    mod = _load()
+    contents = {"README.md": b"full readme"}
+    with pytest.raises(mod.BuildError):
+        mod.swap_release_readme(contents, {"release_readme": "README.release.md"})
+
+
+def test_building_this_repository_head_ships_the_release_readme(tmp_path):
+    """Integration: the real README.release.md against the real tree."""
+    mod = _load()
+    cfg = mod.load_config(CONFIG)
+    out = tmp_path / "out"
+    report = mod.build(REPO_ROOT, "HEAD", out, cfg)
+    assert report["readme_swapped"] is True
+    assert not (out / "README.release.md").exists()
+    shipped = (out / "README.md").read_text(encoding="utf-8")
+    full = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert shipped != full
+    assert "supertool-banner.webp" not in shipped
+    assert "authorized_keys" not in shipped
+    for word in ("curl", "wget", "printenv"):
+        assert word not in shipped.lower(), (word, shipped)
