@@ -12,7 +12,11 @@ everything; this script produces the tree a `release` branch carries:
    edit cannot leak into a release.
 2. The config's deny-list is dropped. Deny, not allow: a path forgotten here ships
    and is caught loudly by check_release_tree.py; a path forgotten in an allow-list
-   would vanish from every user's install with no error anywhere.
+   would vanish from every user's install with no error anywhere. The config's
+   `keep` list is a narrow exception to that: exact paths (never a prefix) that
+   ship even though a deny entry also matches them -- the one case so far is the
+   two files hooks/shipped_rules.py reads at runtime out of the denied `.claude/`
+   tree for the shipped jit-context guard rule (#2729).
 3. CHANGELOG.md is cut to its latest RELEASED section (an `[Unreleased]` heading is
    skipped even when it has entries), its link definition, and a link to the full
    file on the default branch.
@@ -72,6 +76,14 @@ def is_denied(path: str, deny: list[str]) -> bool:
         elif path == entry:
             return True
     return False
+
+
+def is_kept(path: str, keep: list[str]) -> bool:
+    """Is PATH one of the config's exact carve-outs, winning over a denied
+    prefix (#2729)? Exact match only -- a prefix here would reopen the same
+    "a path forgotten in an allow-list vanishes silently" risk `_deny_why`
+    already rejects for the deny-list itself, just on the other side."""
+    return path in keep
 
 
 # -- git --------------------------------------------------------------------------
@@ -251,10 +263,11 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
         raise BuildError(f"ref {ref!r} does not resolve to a commit in {repo}") from None
 
     deny = list(config.get("deny", []))
+    keep = list(config.get("keep", []))
     entries = _ls_tree(repo, commit)
     kept, removed = [], []
     for mode, sha, path in entries:
-        if is_denied(path, deny):
+        if is_denied(path, deny) and not is_kept(path, keep):
             removed.append(path)
             continue
         if mode == "160000":
@@ -320,8 +333,9 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
             os.chmod(dest, 0o755 if mode == "100755" else 0o644)
 
     unused = [e for e in deny if not any(is_denied(p, [e]) for _, _, p in entries)]
+    unused_keep = [e for e in keep if not any(p == e for _, _, p in entries)]
     return {"ref": ref, "commit": commit, "kept": len(kept), "removed": removed,
-            "rewritten": rewritten, "unused_deny": unused}
+            "rewritten": rewritten, "unused_deny": unused, "unused_keep": unused_keep}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -349,6 +363,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  rewrote {n} link(s) in {path}")
     for entry in report["unused_deny"]:
         print(f"  note: deny entry {entry!r} matched nothing at this ref")
+    for entry in report["unused_keep"]:
+        print(f"  note: keep entry {entry!r} matched nothing at this ref "
+              f"(#2729) -- the carve-out it names may have moved or been removed")
     return 0
 
 

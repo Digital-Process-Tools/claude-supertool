@@ -25,6 +25,11 @@
     "pyproject.toml"
   ],
   "_kept_why": "_shipped_reference.py is NOT denied: it is the fallback _shipped_config() reads when .supertool.json is absent beside _supertool.py (the pip-install route, #1783) -- and this release tree denies .supertool.json, so the fallback is load-bearing here. .mcp.json ships because it registers the claude-channel notifier the plugin manifest declares.",
+  "_keep_why": "Exact-path carve-out that wins over a denied prefix (#2729). hooks/shipped_rules.py reads these two files at runtime from $CLAUDE_PLUGIN_ROOT for the one shipped jit-context guard rule (supertool-no-cut.md); .claude/ denies the whole directory they live in, so a release install shipped the rule disabled with nothing saying so. shipped_rules.py's own docstring: the rule files are not copied, the same bytes the jit hooks read in this checkout are what a plugin install reads too -- so the fix is to let exactly these two through rather than relocate the source and keep a second copy in sync by hand. Nothing else under .claude/ ships; is_kept() is exact-path only, no prefix.",
+  "keep": [
+    ".claude/jit-context/tools/00-manual/00-index.tsv",
+    ".claude/jit-context/tools/00-manual/supertool-no-cut.md"
+  ],
   "_budget_why": "max_file_bytes and max_files are the directory's own rules (pre-submission checklist, 'Files in the plugin folder'); images and fonts are exempt from the per-file limit. max_total_bytes is this repository's own ceiling, set from the measured slim tree (6.4 MiB after the CHANGELOG cut) with headroom.",
   "budget": {
     "max_file_bytes": 262144,
