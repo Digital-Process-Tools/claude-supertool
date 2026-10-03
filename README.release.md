@@ -19,7 +19,7 @@ GitLab and Claude Code's own session log; presets add more per project.
 
 ```
 /plugin marketplace add Digital-Process-Tools/claude-marketplace
-/plugin install supertool@dpt-plugins
+/plugin install supertool-cli@dpt-plugins
 ```
 
 ## A few of the operations
