@@ -2,7 +2,7 @@
 """Smoke-test a built release tree before it is published (#2705, ported from
 claude-remember#851).
 
-Two parts:
+Three parts:
 
 1. `claude plugin validate --strict TREE` -- the same validator the directory
    documents. `--validate auto` skips it, out loud, when no `claude` CLI is on
@@ -11,6 +11,10 @@ Two parts:
    minimal JSON payload for its event on stdin (session_id, transcript_path,
    cwd, hook_event_name, plus source/prompt/tool_*/reason as the event has
    them). Each hook must exit 0.
+3. If this tree carries hooks/guard-selftest.py, it is run once against the
+   tree's own copy and must not report any SHIPPED jit-context rule as "not
+   loaded" (#2729) -- a hook exiting 0 says nothing about whether the rule
+   layer it is supposed to enforce actually loaded.
 
 Isolation -- nothing here may touch real memory or the tree that ships:
 
@@ -93,6 +97,40 @@ class SmokeResult:
         lines.extend(f"FAIL {e}" for e in self.errors)
         lines.append("smoke: OK" if self.ok else "smoke: FAILED")
         return "\n".join(lines)
+
+
+def check_shipped_rules(plugin: Path, env: dict, result: SmokeResult) -> None:
+    """Does this tree's copy of hooks/guard-selftest.py report every SHIPPED
+    jit-context rule as loaded (#2729)?
+
+    `.github/release-branch.json` denies the whole `.claude/` tree, which is
+    where hooks/shipped_rules.py reads the shipped rule's index and body at
+    runtime -- a deny-list with no carve-out ships the guard disabled, with
+    nothing in `check_release_tree.py`'s pre-submission checklist or the hook
+    loop above catching it, because both already exit 0 for a hook that runs
+    and quietly enforces nothing. `guard-selftest.py` is the one existing
+    instrument that already says "not loaded" for exactly this (#1698); this
+    only makes a release build fail when it does.
+
+    Skipped, not failed, when this tree carries no hooks/guard-selftest.py at
+    all -- a fork of this build script for a plugin with no shipped rules of
+    its own ships no such file, and that is a different, unremarkable state
+    from one that has the file and the rule.
+    """
+    selftest = plugin / "hooks" / "guard-selftest.py"
+    if not selftest.is_file():
+        result.notes.append("shipped rules: hooks/guard-selftest.py not in "
+                            "this tree, skipped")
+        return
+    r = subprocess.run([sys.executable, str(selftest)], capture_output=True,
+                       text=True, env=env, check=False, timeout=60)
+    result.notes.append(f"shipped rules: guard-selftest.py exit {r.returncode}")
+    result.notes.extend(f"    {line}" for line in r.stdout.splitlines())
+    if "not loaded" in r.stdout:
+        last = next((l for l in r.stdout.splitlines() if "not loaded" in l), "")
+        result.errors.append(
+            "shipped rules: guard-selftest.py reports a shipped jit-context "
+            "rule not loaded in this built tree -- " + last.strip())
 
 
 def hook_commands(tree: Path) -> list:
@@ -283,6 +321,8 @@ def _run_smoke_body(tree: Path, work: Path, validate: str, claude_bin: str | Non
         result.hooks.append(HookRun(event, command, rc, time.monotonic() - start, out, err))
 
     _reap(pgids, str(work), linger_seconds, result)
+
+    check_shipped_rules(plugin, env, result)
 
     calls = work / "fake-calls.log"
     if calls.exists():

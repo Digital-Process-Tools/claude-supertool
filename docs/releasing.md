@@ -102,7 +102,7 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
   | --- | --- |
   | `tests/`, `docs/` | not read by the running plugin |
   | `.github/`, `.githooks/` | CI and local git-hook tooling |
-  | `.claude/`, `.oss/` | this checkout's own jit-context rules and maintainer-loop state, not shipped plugin code |
+  | `.claude/`, `.oss/` | mostly this checkout's own jit-context rules and maintainer-loop state, not shipped plugin code -- except the two files named below |
   | `changelog.d/`, `trap.d/`, `outbound/` | pending-fragment / lesson / draft directories the maintainer loop writes to, not runtime inputs |
   | `.editorconfig`, `.markdownlint.json` | editor/linter config for this checkout, read by no op |
   | `.oss.json`, `.supertool.json` | this repository's own dev config -- a user's install reads *their* `.supertool.json`, never this repo's |
@@ -117,6 +117,16 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
   here. `.mcp.json` registers the `claude-channel` notifier the plugin manifest
   declares, and `hooks/`, `presets/`, `validators/`, `formatters/`, `notifiers/`,
   `.claude-plugin/`, `_supertool.py` and `supertool.py` are the plugin itself.
+
+  **Carved out of the `.claude/` deny by the config's `keep` list, exact paths
+  only (#2729):** `.claude/jit-context/tools/00-manual/00-index.tsv` and
+  `supertool-no-cut.md` in the same directory. `hooks/shipped_rules.py` reads
+  both at runtime, from `$CLAUDE_PLUGIN_ROOT`, for the one shipped jit-context
+  guard rule -- denying the whole directory shipped that rule disabled, with
+  nothing saying so. `is_kept()` in `build_release_tree.py` is exact-match
+  only; nothing else under `.claude/` ships. `smoke_release_tree.py` now fails
+  the build if `hooks/guard-selftest.py` reports the rule "not loaded" in the
+  tree it just built.
 - **It cuts `CHANGELOG.md`** to the latest released `## [x.y.z]` section, skipping
   `[Unreleased]` even when it has entries, plus that section's link and a link to the
   full file on `master`.
