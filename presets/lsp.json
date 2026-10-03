@@ -1,0 +1,31 @@
+{
+  "description": "Documentation for the five LSP-family built-ins. The entries are under `builtin-ops`, not `ops`, because this preset documents ops it does not define: they dispatch from core and run whether or not it is loaded. Loading it is what makes `ops`, `ops:full` and `help:OP` answer for them. Four of the five reach a language server through the `mcp` block, so a repo with none configured can leave this unlisted and keep the bytes.",
+  "requires": "an LSP server declared in .supertool.json's mcp block (docs/mcp-integration.md)",
+  "builtin-ops": {
+    "workspace": {
+      "syntax": "workspace:PATH",
+      "description": "One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests. Opt-in (heavy). Use for first-touch on unfamiliar files.",
+      "example": "workspace:src/app/Module.py"
+    },
+    "resolve": {
+      "syntax": "resolve:SYMBOL[:FROM_FILE]",
+      "description": "Symbol → file. LSP via mcp.tools.resolve when configured, else heuristic glob.",
+      "example": "resolve:MCPClient:tests/test_mcp_client.py"
+    },
+    "diag": {
+      "syntax": "diag:FILE",
+      "description": "LSP errors/warnings for FILE.",
+      "example": "diag:supertool.py"
+    },
+    "hover": {
+      "syntax": "hover:SYMBOL:FILE",
+      "description": "LSP hover: type + docs for SYMBOL.",
+      "example": "hover:MCPClient:supertool.py"
+    },
+    "rename": {
+      "syntax": "rename:OLD:NEW:FILE",
+      "description": "LSP workspace rename. Safer than sed.",
+      "example": "rename:oldName:newName:supertool.py"
+    }
+  }
+}

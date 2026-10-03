@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+
+
+
+
+
+
+from __future__ import annotations
+
+import os
+import sys
+
+
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))  
+
+from _git_common import _git, use_utf8_stdout  
+from _env import env_int  
+import _untrusted  
+
+DEFAULT_BASE = "master"
+DEFAULT_MAX_COMMITS = 30
+
+
+def _resolve_base(arg: str) -> str:
+
+    if arg:
+        return arg
+    for c in ("master", "main"):
+        if _git(["rev-parse", "--verify", "--quiet", c]).returncode == 0:
+            return c
+    return DEFAULT_BASE
+
+
+def main() -> int:
+    use_utf8_stdout()
+    if len(sys.argv) < 2:
+        print("ERROR: usage: diverge.py BRANCH [BASE]")
+        print("  BRANCH — branch to inspect (or 'HEAD')")
+        print("  BASE   — defaults to master, fallback main")
+        return 1
+
+    branch = sys.argv[1]
+    base = _resolve_base(sys.argv[2] if len(sys.argv) > 2 else "")
+    max_commits = env_int("SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
+
+
+    for ref in (branch, base):
+        if _git(["rev-parse", "--verify", "--quiet", ref]).returncode != 0:
+            print(f"ERROR: ref {ref!r} not found. Did you fetch?")
+            return 1
+
+    print(f"# git-diverge: {branch} vs {base}")
+
+
+    ab = _git(["rev-list", "--left-right", "--count", f"{base}...{branch}"])
+    if ab.returncode != 0:
+        print(f"ERROR: {ab.stderr.strip()}")
+        return 1
+    parts = ab.stdout.strip().split()
+    if len(parts) != 2:
+        print("ERROR: unexpected rev-list output")
+        return 1
+    behind, ahead = int(parts[0]), int(parts[1])
+    print(f"Ahead: {ahead}, Behind: {behind}")
+
+    if ahead == 0 and behind == 0:
+        print("Branches identical.")
+        return 0
+    if ahead and behind:
+        print(f"Next: ./supertool 'git-merge:{base}' (merge) or git rebase {base} (rebase)")
+    elif behind and not ahead:
+        print(f"Next: git reset --hard {base} (or fast-forward via merge)")
+
+
+    mb_res = _git(["merge-base", base, branch])
+    if mb_res.returncode == 0:
+        print(f"Merge-base: {mb_res.stdout.strip()[:12]}")
+
+
+    if ahead:
+        log = _git(["log", f"-{max_commits}", f"{base}..{branch}",
+                    "--format=%h %ad %an | %s", "--date=short"])
+        if log.returncode == 0 and log.stdout.strip():
+
+
+
+
+            shown = [_untrusted.visible(ln)
+                     for ln in _untrusted.split_lines(log.stdout.strip())]
+            print(f"\n## Commits in {branch} not in {base} ({len(shown)} of {ahead})")
+            for line in shown:
+                print(f"  {line}")
+            if ahead > len(shown):
+                print(f"  … {ahead - len(shown)} more")
+
+
+    if ahead:
+        ns = _git(["diff", "--name-status", f"{base}...{branch}"])
+        if ns.returncode == 0 and ns.stdout.strip():
+            files = ns.stdout.strip().splitlines()
+            print(f"\n## Files changed ({len(files)})")
+            for line in files[:50]:
+                print(f"  {line}")
+            if len(files) > 50:
+                print(f"  … {len(files) - 50} more")
+
+
+        stat = _git(["diff", "--shortstat", f"{base}...{branch}"])
+        if stat.returncode == 0 and stat.stdout.strip():
+            print(f"\n{stat.stdout.strip()}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
