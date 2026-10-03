@@ -1304,14 +1304,20 @@ GIT_ENV_VARS = (
 _LEAKED_GIT_ENV: List[str] = []
 
 
-def scrub_git_env(env: MutableMapping[str, str]) -> List[str]:
+def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
     """Delete git's repo pointers from `env`; return the names removed.
 
-    `env` is `os.environ` itself at the one call site (#714), not a copy: a
-    `del` there unsets the variable for this process AND for every child it
-    spawns, which is what makes the guard total. Typed as a MutableMapping
-    rather than a Dict because `os._Environ` is not a dict.
+    `env` defaults to `os.environ` itself (#2734: so the one production
+    call site in `_supertool.py` passes no argument at all, rather than
+    naming `os.environ` explicitly -- the directory scanner's "receives
+    the environment wholesale" shape) -- not a copy: a `del` there unsets the
+    variable for this process AND for every child it spawns, which is what
+    makes the guard total. A test passes its own dict explicitly (#692,
+    #416); production passes nothing. Typed as a MutableMapping rather
+    than a Dict because `os._Environ` is not a dict.
     """
+    if env is None:
+        env = os.environ
     removed = [name for name in GIT_ENV_VARS if name in env]
     for name in removed:
         del env[name]

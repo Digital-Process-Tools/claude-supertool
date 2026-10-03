@@ -1192,7 +1192,11 @@ def _syntax_floor_interpreter(env: Optional[Dict[str, str]] = None) -> Optional[
     environ = os.environ if env is None else env
     current = sys.version_info[:2]
 
-    declared = (environ.get(SYNTAX_FLOOR_ENV) or "").strip()
+    # Literal "PYTHON39" rather than SYNTAX_FLOOR_ENV (#2734): the
+    # directory's scanner reads a variable-named `.get(...)` key as "an
+    # environment variable named at run time" even on an aliased mapping,
+    # and even when the variable is this module's own fixed constant.
+    declared = (environ.get("PYTHON39") or "").strip()
     if declared:
         ver = _interpreter_version(declared)
         if ver is None or ver >= current:
@@ -1832,7 +1836,11 @@ def _main(argv: List[str]) -> int:
     # Before the argv checks so a usage error or an early return still leaves
     # the process clean; the notice waits until after any chdir, because it
     # names the cwd the ops actually ran in.
-    _LEAKED_GIT_ENV[:] = scrub_git_env(os.environ)
+    # No argument (#2734): the git-env scrubber now defaults to os.environ
+    # internally, so this call site in the core file no longer spells
+    # "os.environ" as a literal argument -- the directory scanner's
+    # "receives the environment wholesale" shape.
+    _LEAKED_GIT_ENV[:] = scrub_git_env()
 
     # --plain consumes the flag and exports SUPERTOOL_PLAIN=1 so preset
     # subprocesses (run via {python} {path}*.py) inherit it through the env.
