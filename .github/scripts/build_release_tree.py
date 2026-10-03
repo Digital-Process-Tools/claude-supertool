@@ -23,6 +23,15 @@ everything; this script produces the tree a `release` branch carries:
 4. Relative links and images in every shipped `.md` file that point at a path the
    deny-list removed are rewritten to absolute URLs on the default branch:
    raw.githubusercontent.com for images, github.com/.../blob for everything else.
+5. Every shipped `.py` file has its comments and docstrings stripped (#2731),
+   using `tokenize` for comments and `ast` only to locate docstring-statement
+   positions -- never `ast.unparse`, which reformats code rather than cutting
+   it. A removed line becomes a blank line, so a traceback into the shipped
+   file still names the right source line; a function or class whose only
+   statement was its docstring gets a `pass` so it keeps parsing. See
+   `strip_py()` below for what stays: shebangs, encoding cookies, every
+   string literal that is not a bare docstring statement (an f-string, a
+   `#` character inside any string, a multi-line string assigned to a name).
 
 Usage:
     build_release_tree.py --ref v0.36.0 --out /tmp/release-tree [--repo .]
@@ -35,12 +44,15 @@ deny-list and budget, so another repository can reuse this file unchanged.
 from __future__ import annotations
 
 import argparse
+import ast
+import io
 import json
 import os
 import posixpath
 import re
 import subprocess
 import sys
+import tokenize
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -251,6 +263,226 @@ def rewrite_links(text: str, md_path: str, should_rewrite: Callable[[str], str |
     return "".join(out), count
 
 
+# -- Python stripping (#2731) ------------------------------------------------------
+
+_SHEBANG = re.compile(r"^#!")
+_CODING_COOKIE = re.compile(r"coding[:=]\s*([-\w.]+)")
+
+
+def _line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    return ""
+
+
+def _py_splitlines(text: str) -> list[str]:
+    """Split TEXT into physical lines the way CPython's own parser counts
+    them for `ast`/`tokenize` line numbers: `\\r\\n`, `\\r` and `\\n` each end
+    exactly one line, and nothing else does. `str.splitlines()` additionally
+    breaks on U+2028, U+2029, `\\v`, `\\f`, `\\x1c`-`\\x1e` and `\\x85` -- none of
+    which the parser treats as a line terminator -- so using it here silently
+    misaligns every later line number against a file containing one of
+    those (confirmed: presets/_declared_workflows.py:408 carries a U+2028
+    inside a string, and `str.splitlines()` miscounted it by one line,
+    corrupting an unrelated docstring's span and producing a tokenize error
+    two hundred lines away from the real cause)."""
+    lines = []
+    i, n, start = 0, len(text), 0
+    while i < n:
+        c = text[i]
+        if c == "\r":
+            i += 2 if (i + 1 < n and text[i + 1] == "\n") else 1
+            lines.append(text[start:i])
+            start = i
+        elif c == "\n":
+            i += 1
+            lines.append(text[start:i])
+            start = i
+        else:
+            i += 1
+    if start < n:
+        lines.append(text[start:n])
+    return lines
+
+
+def _byte_col_to_char(line_no_newline: str, byte_col: int) -> int:
+    """ast's col_offset/end_col_offset are UTF-8 BYTE offsets into the
+    physical line, not character offsets -- confirmed on this interpreter:
+    `ast.parse('x = "\\u65e5\\u672c\\u8a9e"').body[0].end_col_offset` is 15, not
+    the 9 characters actually on that line. Indexing a decoded `str` with the
+    raw value would slice mid-character on any non-ASCII line (this repo's
+    comments and docstrings use em-dashes and arrows throughout). tokenize's
+    own token positions are character offsets already and need no such
+    conversion -- only the ast-derived docstring spans do."""
+    encoded = line_no_newline.encode("utf-8")
+    return len(encoded[:byte_col].decode("utf-8", errors="strict"))
+
+
+def _apply_span(lines: list[str], start_line: int, start_col: int,
+                 end_line: int, end_col: int, replacement: str) -> None:
+    """Replace the character range [start_line:start_col, end_line:end_col]
+    (1-indexed line, 0-indexed column, both already char offsets) with
+    REPLACEMENT, keeping whatever text sits before the span on its first
+    line or after it on its last line (a docstring sharing a physical line
+    with other code via `def f(): "doc"` or a trailing `; stmt`), and
+    leaving the line count and every line ending unchanged."""
+    if start_line == end_line:
+        line = lines[start_line - 1]
+        nl = _line_ending(line)
+        body = line[:len(line) - len(nl)] if nl else line
+        content = body[:start_col] + replacement + body[end_col:]
+        lines[start_line - 1] = (content if content.strip() else "") + nl
+        return
+    first = lines[start_line - 1]
+    nl0 = _line_ending(first)
+    body0 = first[:len(first) - len(nl0)] if nl0 else first
+    head = body0[:start_col] + replacement
+    lines[start_line - 1] = (head if head.strip() else "") + nl0
+    for ln in range(start_line + 1, end_line):
+        lines[ln - 1] = _line_ending(lines[ln - 1]) or "\n"
+    last = lines[end_line - 1]
+    nl1 = _line_ending(last)
+    body1 = last[:len(last) - len(nl1)] if nl1 else last
+    tail = body1[end_col:]
+    lines[end_line - 1] = (tail if tail.strip() else "") + nl1
+
+
+def _docstring_spans(tree: ast.Module, lines: list[str], path: str
+                      ) -> list[tuple[int, int, int, int, bool]]:
+    """(start_line, start_col, end_line, end_col, needs_pass) for every
+    module/class/function docstring -- the first statement of a body that
+    is a bare string-literal expression -- with columns already converted
+    from ast's byte offsets to character offsets against LINES.
+
+    NEEDS_PASS is true whenever blanking the docstring alone would leave a
+    bare `;` leading its own logical line, or a suite with no statement at
+    all. Two shapes, worked out from what actually follows the docstring's
+    own closing position, not from where the docstring started -- an
+    earlier version of this function keyed off "is this the compound
+    statement's header line", which covers `def f(): \"\"\"doc\"\"\"; return 1`
+    but MISSES the far more ordinary `\"\"\"doc\"\"\"; x = 1` sharing an
+    otherwise unremarkable line with the statement that follows it, module
+    scope included:
+
+    - a single physical line (start_line == end_line): if anything other
+      than whitespace follows the docstring on that line, it can only be
+      there via `;` (the sole grammar rule for two statements sharing a
+      line), so blanking without a `pass` first produces a line starting
+      with a bare `;`, which does not parse. `pass` goes right before it:
+      `pass; x = 1`, legal at any scope.
+    - the docstring is the body's only statement and nothing trails it on
+      its own line (module scope needs nothing -- an empty module is
+      legal; class/function scope needs `pass` or the suite is empty).
+
+    A multi-line docstring (start_line != end_line) whose CLOSING line
+    carries a trailing `; stmt` is a third shape this function refuses
+    rather than guesses at: the one thing we KNOW how to re-indent safely
+    is a bare `pass` on the span's own start line, and that does not make
+    `; stmt` on a different physical line any less of a bare-leading-`;`."""
+    spans = []
+    nodes: list[ast.AST] = [tree] + [
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    for node in nodes:
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if not (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            continue
+        start_line, end_line = first.lineno, first.end_lineno
+        start_no_nl = lines[start_line - 1]
+        start_no_nl = start_no_nl[:len(start_no_nl) - len(_line_ending(start_no_nl))]
+        end_no_nl = lines[end_line - 1]
+        end_no_nl = end_no_nl[:len(end_no_nl) - len(_line_ending(end_no_nl))]
+        start_col = _byte_col_to_char(start_no_nl, first.col_offset)
+        end_col = _byte_col_to_char(end_no_nl, first.end_col_offset)
+        is_module = isinstance(node, ast.Module)
+        tail = end_no_nl[end_col:]
+        if start_line == end_line:
+            needs_pass = bool(tail.strip()) or (not is_module and len(body) == 1)
+        else:
+            if tail.strip():
+                raise BuildError(
+                    f"{path}:{end_line}: a multi-line docstring closing on a line "
+                    f"that also carries another statement after `;` is not "
+                    f"supported by this stripper -- move the docstring onto its "
+                    f"own line(s), with nothing else sharing its closing line")
+            needs_pass = (not is_module) and len(body) == 1
+        spans.append((start_line, start_col, end_line, end_col, needs_pass))
+    return spans
+
+
+def strip_py(source: bytes, path: str) -> bytes:
+    """Strip comments and docstrings from PATH's Python source for the
+    release tree (#2731). `tokenize` finds comments; `ast` only locates
+    docstring-statement positions, never regenerates source the way
+    `ast.unparse` would (which reformats code rather than cutting it).
+    Every removed line becomes a blank line of the same count, so a
+    traceback into the shipped file still names the right source line. A
+    function or class whose only statement was its docstring gets a `pass`
+    so it still parses; a module left with none is a legal empty file.
+
+    Left alone: the shebang and PEP 263 encoding cookie (lines 1-2), a
+    leading UTF-8 BOM (`compile()` on bytes tolerates one; `ast.parse()` on
+    the decoded `str` does not -- stripped off before parsing, put back on
+    the result, same shape as the shebang/cookie treatment), every string
+    literal that is not a bare docstring statement -- an f-string, a `#`
+    character inside any string, a multi-line string assigned to a name
+    rather than standing alone as a statement (`_shipped_reference.py`'s
+    `_BUILTIN_OPS_JSON`) -- because `tokenize` never emits a COMMENT token
+    for text inside a string, and `ast` only flags a bare string-expression
+    that is the first statement of a module/class/function body.
+    """
+    bom = source[:3] == b"\xef\xbb\xbf"
+    body_bytes = source[3:] if bom else source
+    try:
+        text = body_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BuildError(f"{path}: not valid UTF-8, cannot strip: {exc}") from None
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        raise BuildError(f"{path}: does not parse, cannot strip: {exc}") from None
+
+    lines = _py_splitlines(text)
+    if not lines:
+        return source
+
+    for start_line, start_col, end_line, end_col, needs_pass in _docstring_spans(tree, lines, path):
+        replacement = "pass" if needs_pass else ""
+        _apply_span(lines, start_line, start_col, end_line, end_col, replacement)
+
+    stripped = "".join(lines)
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(stripped).readline))
+    except (tokenize.TokenError, SyntaxError, IndentationError) as exc:
+        raise BuildError(f"{path}: could not tokenize after docstring removal: {exc}") from None
+
+    for tok in tokens:
+        if tok.type != tokenize.COMMENT:
+            continue
+        (sr, sc), (er, ec) = tok.start, tok.end
+        if sr != er:
+            continue  # a COMMENT token never spans lines -- defensive only
+        if sr <= 2 and (_SHEBANG.match(tok.string) or _CODING_COOKIE.search(tok.string)):
+            continue  # shebang / PEP 263 encoding cookie -- kept verbatim
+        _apply_span(lines, sr, sc, er, ec, "")
+
+    result = "".join(lines).encode("utf-8")
+    if bom:
+        result = b"\xef\xbb\xbf" + result
+    try:
+        compile(result, path, "exec")
+    except SyntaxError as exc:
+        raise BuildError(f"{path}: stripped source no longer compiles: {exc}") from None
+    return result
+
+
 # -- build ------------------------------------------------------------------------
 
 def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
@@ -324,6 +556,17 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
                 contents[path] = new.encode("utf-8")
                 rewritten[path] = n
 
+    stripped_before = stripped_after = 0
+    if config.get("strip_py", True):
+        for path in sorted(contents):
+            if not path.lower().endswith(".py"):
+                continue
+            before = contents[path]
+            after = strip_py(before, path)
+            stripped_before += len(before)
+            stripped_after += len(after)
+            contents[path] = after
+
     out.mkdir(parents=True, exist_ok=True)
     for mode, _sha, path in kept:
         dest = out / path
@@ -335,7 +578,8 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
     unused = [e for e in deny if not any(is_denied(p, [e]) for _, _, p in entries)]
     unused_keep = [e for e in keep if not any(p == e for _, _, p in entries)]
     return {"ref": ref, "commit": commit, "kept": len(kept), "removed": removed,
-            "rewritten": rewritten, "unused_deny": unused, "unused_keep": unused_keep}
+            "rewritten": rewritten, "unused_deny": unused, "unused_keep": unused_keep,
+            "stripped_before_bytes": stripped_before, "stripped_after_bytes": stripped_after}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -359,6 +603,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"built {report['ref']} ({report['commit']}): {report['kept']} files kept, "
           f"{len(report['removed'])} removed by the deny-list")
+    before, after = report.get("stripped_before_bytes", 0), report.get("stripped_after_bytes", 0)
+    if before:
+        print(f"  stripped comments/docstrings: {before} -> {after} bytes of .py "
+              f"({before - after} bytes removed, #2731)")
     for path, n in sorted(report["rewritten"].items()):
         print(f"  rewrote {n} link(s) in {path}")
     for entry in report["unused_deny"]:
