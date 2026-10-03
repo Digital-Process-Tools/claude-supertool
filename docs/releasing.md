@@ -78,6 +78,18 @@ cannot accept them while a listing is with a reviewer -- which this one is. Unti
 that switch happens, `release` can exist and be checked locally, but the directory
 keeps scanning whatever branch it is still tracking.
 
+**Validating a budget-affecting change before it reaches `release`.** The
+directory's own submission form can validate any branch, not only the one a
+listing is tracked against (`owner/repo@branch`, without clicking Next on
+the result). Before trusting a change to `build_release_tree.py` or
+`.github/release-branch.json` to actually fix what it claims to -- #2731's
+own stripping, or the next thing that touches the budget -- push the built
+tree to a throwaway `release-preview` branch (never `release` itself: that
+branch is written only by `publish`, from a tag) and validate
+`owner/repo@release-preview` in the form first. This is a manual check, run
+ad hoc before a change like that ships, not a step the automated release
+sequence above performs on every tag.
+
 **No scan of the slim `release` tree exists yet.** Everything below about file
 counts and sizes is measured locally (`check_release_tree.py` / `smoke_release_tree.py`
 against a tree built from the latest tag); there is no portal "Versions" tab entry
@@ -134,24 +146,54 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
   (README's `docs/` links) to absolute URLs on `master`: `raw.githubusercontent.com`
   for images, `github.com/.../blob/master` for everything else. Links to files that
   still ship are left alone.
+- **Every shipped `.py` file has its comments and docstrings stripped**
+  ([#2731](https://github.com/Digital-Process-Tools/claude-supertool/issues/2731)):
+  `strip_py()` in `build_release_tree.py` uses `tokenize` to drop comment
+  tokens and `ast` only to locate a module/class/function's leading
+  docstring statement -- never `ast.unparse`, which reformats code rather
+  than cutting it. A removed line becomes a blank line of the same count,
+  so a traceback into the shipped file still names the right source line; a
+  function or class whose only statement was its docstring gets a `pass` so
+  it keeps parsing. Left alone: the shebang and encoding cookie, and every
+  string literal that is not a bare docstring statement -- an f-string, a
+  `#` inside any string, `_shipped_reference.py`'s `_BUILTIN_OPS_JSON`.
+  Every stripped file is `compile()`d during the build itself; `verify`
+  additionally runs a slice of this repo's own test suite against the
+  stripped tree (below), and `check_release_tree.py`'s `total_bytes` and
+  `smoke_release_tree.py`'s hook/shipped-rules checks run against the
+  stripped tree too, not a separate unstripped copy.
+  `config.get("strip_py", True)` can turn this off for a repository reusing
+  this script that does not want it.
 
-Built from `v0.64.0` (2026-10-02): **336 files, 6.5 MB**, down from 1,726 files and
-24.6 MB.
+Built from `v0.65.1`/HEAD (2026-10-03): **353 files, 3,495,927 bytes**, down from
+**353 files, 6,887,694 bytes** before stripping (6,329,308 of those bytes were
+`.py`; stripping took that to 2,937,541) and from 1,726 files / 24.6 MB on
+`master`. This is the size the Anthropic directory's submission form had
+started timing out on (`VALIDATION_INCOMPLETE` / the request simply not
+answering) once the plugin's own `.py` payload crossed roughly 6.3 MB.
 
-### The `_supertool.py` exception
+## Proving the stripped tree behaves like the source
 
-`_supertool.py` is 1.7 MB -- the tool itself, so it cannot be denied. It is a
-declared, issue-referenced exception in `.github/release-branch.json`'s
-`exceptions` list, naming [#2706](https://github.com/Digital-Process-Tools/claude-supertool/issues/2706)
-(splitting the file). `check_release_tree.py` reports a declared exception as a
-`REVIEW` line rather than a `FAIL`:
+`tests/test_release_branch_strip_2731.py` proves `strip_py()` itself against
+tricky inputs (docstring-only bodies that need a `pass`, nested functions, a
+`#` inside a string or an f-string, line continuation, a trailing `# noqa`
+with the code kept, a multi-line string assigned to a name rather than
+standing alone as a docstring, the UTF-8 byte-vs-character column offset
+`ast` uses, and the U+2028 line-separator character that `str.splitlines()`
+treats as a line break but `ast`/`tokenize` do not).
 
-```
-REVIEW _supertool.py: 1740853 bytes, over the 256 KiB limit for non-image files -- declared exception (#2706): the tool itself, ...
-```
-
-Any other file over `max_file_bytes` still fails. Declaring a path here is not a
-second deny-list; it is a visible, tracked exception for exactly one file.
+That is not the same claim as "the built tree runs like the source does".
+`release-branch.yml`'s `verify` job proves the second claim directly: after
+the smoke test, it copies `tests/` and `pyproject.toml` alongside the just-
+built (stripped) tree into a scratch directory, installs `pytest` and
+`pytest-xdist`, and runs a slice of the suite there -- the entry-point shim,
+the part loader, `read`/`grep`/`edit`/`dispatch`/`batch`, and the
+raw-command guard and its hooks -- with `import supertool` resolving to the
+*stripped* module, not the checkout's. Two tests are deselected because they
+assert something about the checkout's own dev tooling (a `.github/` file
+this tree denies on purpose), not about runtime behaviour, so they cannot
+pass pointed at a built tree. This step runs in `verify`, the read-only job,
+before `publish` ever sees the tree.
 
 ## When the workflow fails
 
@@ -176,12 +218,15 @@ python3 .github/scripts/check_release_tree.py /tmp/release-tree
 python3 .github/scripts/smoke_release_tree.py /tmp/release-tree   # needs bash; validate needs `claude`
 ```
 
-`check_release_tree.py` prints `REVIEW` lines both for the declared `_supertool.py`
-exception and for code that reads a credential from the environment or a config file
-(`presets/_secrets.py`, the `devto`/`hashnode`/`slack`/`youtube` presets' own API-key
-handling, and so on). Neither ever fails the check. The credential lines are a
-starting list for what `README.md` should disclose, not a prediction of what the
-portal will flag.
+`check_release_tree.py` prints `REVIEW` lines for code that reads a credential
+from the environment or a config file (`presets/_secrets.py`, the
+`devto`/`hashnode`/`slack`/`youtube` presets' own API-key handling, and so
+on); it never fails the check. These are a starting list for what
+`README.md` should disclose, not a prediction of what the portal will flag.
+There is no declared `exceptions` entry at the moment -- `_supertool.py`'s
+own entry was removed once #2706/#2725 split it under `max_file_bytes`
+again; `exceptions` in `.github/release-branch.json` stays available for
+the next file that needs one.
 
 ## Reusing this in another repository
 
