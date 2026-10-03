@@ -110,6 +110,8 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
   | `CLAUDE.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md` | governance prose for contributors to this repository, not loaded by the plugin |
   | `pyproject.toml` | packaging metadata for the pip route, not read at runtime |
   | `supertool-banner.webp` | the directory held a release-tree probe citing this asset (`UNREAD_ASSET_REFERENCED`, #2732). `README.release.md` (below) does not reference it at all, so this entry is defense-in-depth for whoever reads the full `README.md`'s own `<img src>` outside the release tree -- link-rewriting would turn it into an absolute URL on `master`, the same mechanism `docs/` links already use, if the full README ever shipped here |
+  | `notifiers/claude-channel/README.md`, `notifiers/claude-channel/install.sh` | human-facing setup docs -- the MCP server is registered and started by `.mcp.json`'s own command, never by `install.sh`, and neither is read at runtime (#2732) |
+  | `notifiers/cursor-witness/` | a VS Code extension this repository's own dev-only `.supertool.json` wires in as a notifier; `.supertool.json` is already denied above and `_shipped_reference.py` (the fallback a plugin install actually reads) never wires it in, so a plugin install never activates it (#2732) |
 
   **Kept, on purpose, even though they look like dev config:**
   `_shipped_reference.py` is the fallback `_shipped_config()` reads once
