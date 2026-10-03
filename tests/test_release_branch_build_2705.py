@@ -331,8 +331,15 @@ def test_the_committed_config_parses_and_names_the_brief_deny_list():
                   "outbound/", "trap.d/", "changelog.d/", "CLAUDE.md",
                   "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md",
                   "pyproject.toml", ".oss.json", ".supertool.json",
-                  ".supertool.example.json"):
+                  ".supertool.example.json", "supertool-banner.webp",
+                  "notifiers/claude-channel/README.md",
+                  "notifiers/claude-channel/install.sh",
+                  "notifiers/cursor-witness/"):
         assert entry in cfg["deny"], entry
+    # Positive control: the MCP server's own command script, the thing
+    # .mcp.json actually runs, must not be denied by the directory sweep
+    # above -- only the human-facing setup docs beside it are.
+    assert "notifiers/claude-channel/" not in cfg["deny"]
     # Positive control: nothing the plugin runs is denied.
     for runtime in ("hooks/", "presets/", "validators/", "formatters/", "notifiers/",
                     ".claude-plugin/"):

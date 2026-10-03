@@ -141,7 +141,7 @@ def _gh(args: list[str], timeout: int = TIMEOUT) -> GhCall:
         r = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
                            encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return GhCall(False, error="gh not found — install from https://cli.github.com")
+        return GhCall(False, error="gh not found — install the GitHub CLI")
     except subprocess.TimeoutExpired:
         return GhCall(False, error=f"gh timed out after {timeout}s")
     if r.returncode != 0:

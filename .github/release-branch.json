@@ -23,7 +23,10 @@
     "CONTRIBUTING.md",
     "SECURITY.md",
     "pyproject.toml",
-    "supertool-banner.webp"
+    "supertool-banner.webp",
+    "notifiers/claude-channel/README.md",
+    "notifiers/claude-channel/install.sh",
+    "notifiers/cursor-witness/"
   ],
   "_kept_why": "_shipped_reference.py is NOT denied: it is the fallback _shipped_config() reads when .supertool.json is absent beside _supertool.py (the pip-install route, #1783) -- and this release tree denies .supertool.json, so the fallback is load-bearing here. .mcp.json ships because it registers the claude-channel notifier the plugin manifest declares.",
   "_keep_why": "Exact-path carve-out that wins over a denied prefix (#2729). hooks/shipped_rules.py reads these two files at runtime from $CLAUDE_PLUGIN_ROOT for the one shipped jit-context guard rule (supertool-no-cut.md); .claude/ denies the whole directory they live in, so a release install shipped the rule disabled with nothing saying so. shipped_rules.py's own docstring: the rule files are not copied, the same bytes the jit hooks read in this checkout are what a plugin install reads too -- so the fix is to let exactly these two through rather than relocate the source and keep a second copy in sync by hand. Nothing else under .claude/ ships; is_kept() is exact-path only, no prefix.",
@@ -47,5 +50,6 @@
     "consumers": ["hooks/pre-bash-guard.sh", "hooks/session-start.sh"]
   },
   "_release_readme_why": "#2732: MCP_FORWARDS_CREDENTIAL_ENV's text-only half -- the full README's security section and command examples read as credential-handling/attack text to the directory's scanner. README.release.md is a short, variable-free, URL-free (one real link excepted) description swapped in for README.md at build time; the full README never ships to the directory at all.",
-  "release_readme": "README.release.md"
+  "release_readme": "README.release.md",
+  "_notifiers_deny_why": "#2732, from a second validator pass on the full tree. notifiers/claude-channel/README.md and install.sh are human-facing setup docs for a human running them by hand -- the MCP server itself is registered and started by .mcp.json's own command, never by install.sh, and neither file is read at runtime. notifiers/cursor-witness/ is a VS Code extension this repository's own .supertool.json wires in as a dev-only notifier for working on supertool itself; .supertool.json is already denied above and _shipped_reference.py (the fallback a plugin install actually reads) never wires cursor-witness in, so a plugin install never activates it -- the whole directory, icon.png included, ships to no purpose."
 }

@@ -245,7 +245,7 @@ def fetch_population(scope: str) -> tuple[dict[str, dict[str, Any]] | None, str]
         try:
             result = _gh(["api", path])
         except FileNotFoundError:
-            return None, "ERROR: gh not found — install from https://cli.github.com"
+            return None, "ERROR: gh not found — install the GitHub CLI"
         except subprocess.TimeoutExpired:
             return None, f"ERROR: gh timed out listing issues for scope {scope!r}"
         except (OSError, subprocess.SubprocessError) as err:

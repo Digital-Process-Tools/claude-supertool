@@ -554,7 +554,7 @@ def fetch_run(run_id: str, attempt: int | None) -> tuple[dict | None, str]:
             encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        return None, "ERROR: gh not found — install from https://cli.github.com"
+        return None, "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return None, "ERROR: gh timed out"
 

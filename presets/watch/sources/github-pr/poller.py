@@ -199,7 +199,7 @@ def _fetch(number: str) -> tuple[dict[str, Any] | None, str]:
     try:
         r = _gh(["pr", "view", number, "--json", _VIEW_FIELDS])
     except FileNotFoundError:
-        return None, "ERROR: gh not found — install from https://cli.github.com"
+        return None, "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out looking up PR #{number}"
     except (OSError, subprocess.SubprocessError) as e:

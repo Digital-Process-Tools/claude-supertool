@@ -158,7 +158,7 @@ def _api(endpoint: str, paginate: bool = False, timeout: int = 20):
             encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        return None, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+        return None, "ERROR: glab not found — install the GitLab CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: glab timed out reading {endpoint}"
 

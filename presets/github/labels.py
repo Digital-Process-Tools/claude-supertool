@@ -198,7 +198,7 @@ def fetch_labels() -> tuple[list[dict] | None, str]:
         r = _gh(["gh", "api", "--paginate",
                  _repo_target.api_path("labels?per_page=100")])
     except FileNotFoundError:
-        return None, "ERROR: gh not found — install from https://cli.github.com"
+        return None, "ERROR: gh not found — install the GitHub CLI"
     except (subprocess.TimeoutExpired, OSError) as exc:
         return None, f"ERROR: gh failed reading labels: {type(exc).__name__}"
     if r.returncode != 0:

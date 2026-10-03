@@ -272,7 +272,7 @@ def fetch_population(scope: str) -> tuple[dict[str, dict[str, str]] | None, str]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
                                 encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return None, "ERROR: gh not found -- install from https://cli.github.com"
+        return None, "ERROR: gh not found -- install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out listing PRs for scope {scope!r}"
     except (OSError, subprocess.SubprocessError) as err:

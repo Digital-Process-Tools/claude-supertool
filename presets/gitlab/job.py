@@ -708,7 +708,7 @@ def _job_row(job_id: str) -> tuple[dict | None, str]:
             capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        return None, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+        return None, "ERROR: glab not found — install the GitLab CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: glab timed out fetching job #{job_id}"
     if result.returncode != 0:
@@ -806,7 +806,7 @@ def _fetch_artifact_bytes(job_id: str, path: str) -> tuple["bytes | None", str]:
     try:
         proc = subprocess.run(["glab", "api", url], capture_output=True, timeout=30)
     except FileNotFoundError:
-        return None, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+        return None, "ERROR: glab not found — install the GitLab CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: glab timed out fetching artifact {path!r} for job #{job_id}"
     if proc.returncode != 0:
@@ -909,7 +909,7 @@ def _fetch_trace_and_meta(job_id: str) -> tuple[str, dict, str]:
             capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        return "", meta, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+        return "", meta, "ERROR: glab not found — install the GitLab CLI"
     except subprocess.TimeoutExpired:
         return "", meta, f"ERROR: glab timed out fetching the trace for job #{job_id}"
 
@@ -1308,7 +1308,7 @@ def main() -> int:
             capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli")
+        print("ERROR: glab not found — install the GitLab CLI")
         return 1
     except subprocess.TimeoutExpired:
         print("ERROR: glab timed out (metadata)")

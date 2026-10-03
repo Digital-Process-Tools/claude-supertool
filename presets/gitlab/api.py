@@ -506,8 +506,7 @@ def main() -> int:
             encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("ERROR: glab not found — install from "
-              "https://gitlab.com/gitlab-org/cli")
+        print("ERROR: glab not found — install the GitLab CLI")
         return 1
     except subprocess.TimeoutExpired:
         print(f"ERROR: glab timed out after {_TIMEOUT}s for "

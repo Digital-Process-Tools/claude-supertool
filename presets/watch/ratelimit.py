@@ -64,7 +64,7 @@ def _run_gh(args: list[str], timeout: float) -> tuple[str | None, int | None, st
         r = subprocess.run(["gh", *args], capture_output=True, text=True,
                            timeout=timeout, encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        return None, None, "gh not found -- install from https://cli.github.com"
+        return None, None, "gh not found -- install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return None, None, f"gh {' '.join(args)} timed out"
     except (OSError, subprocess.SubprocessError) as e:
