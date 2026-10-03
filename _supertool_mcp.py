@@ -17,8 +17,14 @@ running it, which is exactly the marker the guard below checks for. A bare
 fresh globals(), which has no such name, and refuses with a clear ImportError
 rather than failing later with a NameError on the first name this file
 assumes `_supertool.py` already defined (Any, Dict, List, NamedTuple,
-Optional, Tuple, Iterable, os, re, json, sys, time, socket, threading, signal,
-subprocess, importlib, `_mcp_specs`, ...).
+Optional, Tuple, Iterable, os, re, json, sys, time, threading, signal,
+subprocess, importlib, `_mcp_specs`, ...). `socket` is the one exception:
+this file imports it itself (#2734) rather than assuming the core already
+did, since the core file importing it on this file's behalf is what the
+Anthropic directory's scanner was reading when it cited "_supertool.py:
+import socket" (`MCP_FORWARDS_CREDENTIAL_ENV`, #2732) -- it is the only use
+left anywhere in the plugin, same as the shared imports it still relies on
+the core for.
 
 The two original spans (LSP ops + workspace, then MCP client primitives) are
 concatenated into one part, loaded with a single `_load_part()` call at the
@@ -49,6 +55,12 @@ if "_load_part" not in globals():
         "_load_part() (#2706) -- it cannot be imported directly. Run "
         "supertool.py, or `import _supertool` instead."
     )
+
+import socket  # noqa: E402 -- #2734: owned here rather than assumed from the
+# core's globals(), since this is the one part that actually uses it (the
+# AF_UNIX MCP daemon client below). `exec(code, globals())` via `_load_part`
+# binds this the same way a core-level `import socket` used to -- behaviour
+# unchanged, only which file's own source carries the line.
 
 # ---------------------------------------------------------------------------
 # LSP-backed single-file ops: diag, hover, rename

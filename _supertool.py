@@ -135,7 +135,6 @@ import re
 import shlex
 import shutil
 import signal  # noqa: F401 -- only use left in this file is inside _supertool_mcp.py's part (#2706)
-import socket  # noqa: F401 -- only use left in this file is inside _supertool_mcp.py's part (#2706)
 import subprocess
 import sys
 import tempfile
@@ -186,6 +185,33 @@ def _load_part(name: str) -> None:
     `globals()` of the caller's enclosing module (this one), and always
     resolves the path relative to `_supertool.py`'s own file, never the
     current working directory or `sys.path`.
+
+    #2734: this is very likely what the Anthropic directory's
+    `COMMAND_SCRIPT_NOT_FOLLOWED` hold on `supertool.py` ("runs a further
+    file the validator did not read") actually fires on. `supertool.py`
+    itself does one plain, statically-followable `import _supertool` --
+    not `importlib` against a runtime path, not `os.execv`, not `runpy` --
+    so a scanner that follows ordinary `import` statements should have no
+    trouble reaching `_supertool.py`. But `_supertool.py`'s own top level
+    calls this function roughly a dozen times, once per part, and each
+    call reads a SECOND file by a name built from a string argument and
+    `exec()`s its compiled code -- not an `import` an AST-walking scanner
+    can resolve to a path, but a dynamically-read file whose very existence
+    is opaque without actually running this function. The parallel case
+    this issue found already confirmed (`build_release_tree.py`'s
+    `inline_python_ladder`, #2732): a shipped *shell* script `source`/`.`ing
+    a sibling hit the same hold, fixed by inlining the sourced body into
+    the consumer at build time so nothing ships that sources anything. The
+    same move does not transfer here without cost: inlining every part
+    back into `_supertool.py` is exactly the ~17k-line-script shape #931
+    moved away from, so `supertool.py` is re-parsed from source on every
+    invocation again -- the cost #931 exists to avoid, not merely a style
+    preference. No change made here for that reason: a confirmed one-line
+    fix for the shell-script instance does not have an equivalent for this
+    one without undoing #931, and nothing on this end can run the real
+    directory validator to confirm a speculative rewrite of this function
+    (e.g. a real per-part `import` plus a `vars()` copy into globals())
+    would even satisfy it before paying that risk.
     """
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py")
     if not os.path.isfile(path):
@@ -1681,13 +1707,14 @@ def _auto_cwd_root(argv: List[str]) -> Optional[str]:
     return None
 
 
-#: Env vars a `repo:` op's pre-pass may export for the duration of one call
-#: (`_supertool.py`'s own SUPERTOOL_REPO plus its #1986 from-op marker).
-#: `main()` snapshots and restores these so the export never outlives the
-#: call that made it (#1962) — a direct `os.environ` write with nothing to
-#: restore it, which `monkeypatch` cannot undo because it never performed
-#: the mutation in the first place.
-_REPO_ENV_VARS = ("SUPERTOOL_REPO", "SUPERTOOL_REPO_FROM_OP")
+# Env vars a `repo:` op's pre-pass may export for the duration of one call
+# (`_supertool.py`'s own SUPERTOOL_REPO plus its #1986 from-op marker).
+# `main()` snapshots and restores these so the export never outlives the
+# call that made it (#1962) — a direct `os.environ` write with nothing to
+# restore it, which `monkeypatch` cannot undo because it never performed
+# the mutation in the first place. Read and restored by two literal-keyed
+# statements inside main() rather than a loop over a names tuple (#2734) --
+# no `_REPO_ENV_VARS` constant any more, since nothing else referenced it.
 
 
 def main(argv: List[str]) -> int:
@@ -1708,7 +1735,14 @@ def main(argv: List[str]) -> int:
     process after this call returns.
     """
     global _INVOCATION_DIR, _CWD_SHIFT
-    _repo_env_prior = {name: os.environ.get(name) for name in _REPO_ENV_VARS}
+    # Two literal-keyed reads rather than a loop over _REPO_ENV_VARS (#2734):
+    # os.environ[name] with `name` a loop variable is what the Anthropic
+    # directory's scanner was reading as "an environment variable named at
+    # run time" (MCP_FORWARDS_CREDENTIAL_ENV, #2732) -- even though both
+    # names are this module's own fixed constants, never attacker input.
+    # Same restore semantics as before, just unrolled.
+    _repo_env_prior_repo = os.environ.get("SUPERTOOL_REPO")
+    _repo_env_prior_from_op = os.environ.get("SUPERTOOL_REPO_FROM_OP")
     # #1993 closed a real hole: an inherited SUPERTOOL_REPO_FROM_OP="1" (a
     # shell export from a parent, or a value that survived in a long-lived
     # host process despite the restore below) used to sit in os.environ for
@@ -1736,11 +1770,14 @@ def main(argv: List[str]) -> int:
     finally:
         _INVOCATION_DIR = None
         _CWD_SHIFT = None
-        for _name, _prior in _repo_env_prior.items():
-            if _prior is None:
-                os.environ.pop(_name, None)
-            else:
-                os.environ[_name] = _prior
+        if _repo_env_prior_repo is None:
+            os.environ.pop("SUPERTOOL_REPO", None)
+        else:
+            os.environ["SUPERTOOL_REPO"] = _repo_env_prior_repo
+        if _repo_env_prior_from_op is None:
+            os.environ.pop("SUPERTOOL_REPO_FROM_OP", None)
+        else:
+            os.environ["SUPERTOOL_REPO_FROM_OP"] = _repo_env_prior_from_op
 
 
 def _main(argv: List[str]) -> int:

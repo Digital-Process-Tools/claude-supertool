@@ -163,6 +163,39 @@ class TestMergePresets:
         supertool._merge_presets(config, str(tmp_path))
         assert "_preset_warnings" in config
 
+    def test_directory_excluded_preset_names_the_install_type(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A preset the directory build strips out (#2734) gets a message
+        naming WHY it is absent, not the bare "not found" a typo gets.
+
+        Simulate a directory install: no presets/<name>.json anywhere
+        (project, user or shipped install dir), same as `test_not_found_returns_none`
+        sets up above -- the only difference is which name is being asked for.
+        """
+        monkeypatch.setattr(supertool, "_INSTALL_DIR", str(tmp_path / "install"))
+        monkeypatch.setattr(os.path, "expanduser",
+                             lambda p: str(tmp_path / "home") if p == "~" else p)
+        config: dict = {"presets": ["devto"], "ops": {}}
+        supertool._merge_presets(config, str(tmp_path / "empty-project"))
+        assert "_preset_warnings" in config
+        warning = config["_preset_warnings"][0]
+        assert "devto" in warning
+        assert "not in this build" in warning
+        assert "directory install" in warning
+        assert "dpt-plugins" in warning
+
+    def test_ordinary_missing_preset_keeps_the_generic_message(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A name NOT in the directory-exclusion set still gets the plain
+        "not found" message -- #2734's wording must not leak onto a typo."""
+        monkeypatch.setattr(supertool, "_INSTALL_DIR", str(tmp_path / "install"))
+        monkeypatch.setattr(os.path, "expanduser",
+                             lambda p: str(tmp_path / "home") if p == "~" else p)
+        config: dict = {"presets": ["totally-made-up"], "ops": {}}
+        supertool._merge_presets(config, str(tmp_path / "empty-project"))
+        warning = config["_preset_warnings"][0]
+        assert warning == "preset 'totally-made-up' not found"
+
     def test_no_ops_in_config_creates_ops(self, tmp_path: Path) -> None:
         """If config has no ops key, preset ops create it."""
         presets_dir = tmp_path / "presets"

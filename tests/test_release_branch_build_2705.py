@@ -381,6 +381,52 @@ def test_building_this_repository_head_ships_every_hook_script(tmp_path):
     assert (out / "CHANGELOG.md").stat().st_size < 262144
 
 
+def test_credential_forwarding_presets_do_not_ship(tmp_path):
+    """#2734: the directory build must not carry a preset that reads a
+    credential and sends it to its own vendor's API -- the shape the
+    Anthropic directory's MCP_FORWARDS_CREDENTIAL_ENV hold fires on.
+
+    Checks both that the config's deny list agrees with
+    `_supertool_config._DIRECTORY_BUILD_EXCLUDED_PRESETS` (so the clear
+    "not in this build" message and the actual build can never drift apart)
+    and that a real build of this repository's own HEAD leaves every denied
+    file and directory out, while a sibling preset's own files still ship --
+    a build that dropped presets/ entirely would pass the first half of this
+    test and fail only the second."""
+    sys.path.insert(0, str(REPO_ROOT))
+    import supertool  # noqa: E402  (module-identity-swapped to _supertool, #931)
+    mod = _load()
+    cfg = mod.load_config(CONFIG)
+    excluded = sorted(supertool._DIRECTORY_BUILD_EXCLUDED_PRESETS)
+    assert excluded == ["bluesky", "devto", "hashnode", "slack", "youtube"], excluded
+    for name in excluded:
+        assert f"presets/{name}.json" in cfg["deny"], name
+        assert f"presets/{name}/" in cfg["deny"], name
+    # The slack watch source dynamically loads presets/slack/_auth.py and
+    # presets/slack/_api.py by file path at import time -- denying
+    # presets/slack/ without this would ship a source whose import crashes.
+    assert "presets/watch/sources/slack/" in cfg["deny"]
+    # bluesky-engagement and devto-engagement read their own env vars
+    # directly and do not import from presets/bluesky or presets/devto, but
+    # #2734 excludes them too (named explicitly in the issue).
+    assert "presets/watch/sources/bluesky-engagement/" in cfg["deny"]
+    assert "presets/watch/sources/devto-engagement/" in cfg["deny"]
+
+    out = tmp_path / "out"
+    mod.build(REPO_ROOT, "HEAD", out, cfg)
+    for name in excluded:
+        assert not (out / "presets" / f"{name}.json").exists(), name
+        assert not (out / "presets" / name).exists(), name
+    for source in ("slack", "bluesky-engagement", "devto-engagement"):
+        assert not (out / "presets" / "watch" / "sources" / source).exists(), source
+    # Positive control: a sibling preset this issue does not touch still
+    # ships, same shape as the "nothing is present" trap the module docstring
+    # warns an empty-tree build would otherwise pass unnoticed.
+    assert (out / "presets" / "github.json").is_file()
+    assert (out / "presets" / "github").is_dir()
+    assert (out / "presets" / "watch" / "sources" / "gh-run").is_dir()
+
+
 def test_cli_builds_and_reports(tmp_path):
     repo = _make_repo(tmp_path)
     cfg = tmp_path / "cfg.json"

@@ -599,6 +599,20 @@ def _preset_disclosure() -> str:
             f"op 'cwd:<project-path>'.")
 
 
+#: Presets `.github/release-branch.json`'s `deny` list strips out of the
+#: directory build (#2734): each one reads a credential and sends it to its
+#: own vendor's API, the shape the Anthropic directory's `MCP_FORWARDS_CREDENTIAL_ENV`
+#: hold fires on (#2732). `dpt-plugins` keeps shipping all of them from
+#: `master`; only the directory tree omits the files. A name landing here
+#: must also appear in `.github/release-branch.json`'s `deny` list (and, for
+#: a watch source rather than a preset proper, under `presets/watch/sources/`)
+#: or this message would describe a build that does not actually ship this
+#: way. Checked against that file by `tests/test_release_branch_build_2705.py`
+#: rather than duplicated there -- a second copy of this list is the defect
+#: this comment exists to prevent.
+_DIRECTORY_BUILD_EXCLUDED_PRESETS = {"bluesky", "devto", "hashnode", "slack", "youtube"}
+
+
 def _find_preset_file(name: str, project_dir: str) -> str | None:
     """Find a preset JSON file by name, checking three locations in order.
 
@@ -912,10 +926,20 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
             continue
         preset_path = _find_preset_file(name, project_dir)
         if preset_path is None:
-            # Store warning in a list so callers can report it
-            config.setdefault("_preset_warnings", []).append(
-                f"preset {name!r} not found"
-            )
+            # Store warning in a list so callers can report it. A name on
+            # `_DIRECTORY_BUILD_EXCLUDED_PRESETS` is not a typo -- it is
+            # genuinely absent from a directory install on purpose (#2734),
+            # and a flat "not found" reads like the config is broken rather
+            # than like the install is deliberately smaller than `master`.
+            if name in _DIRECTORY_BUILD_EXCLUDED_PRESETS:
+                config.setdefault("_preset_warnings", []).append(
+                    f"preset {name!r} is not in this build (directory "
+                    f"install); install supertool@dpt-plugins for it"
+                )
+            else:
+                config.setdefault("_preset_warnings", []).append(
+                    f"preset {name!r} not found"
+                )
             continue
         try:
             with open(preset_path, encoding="utf-8") as f:

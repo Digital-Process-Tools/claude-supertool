@@ -63,6 +63,8 @@ This auto-registers `hooks/session-start.sh` via the plugin's `hooks/hooks.json`
 
 Standalone install (clone + symlink onto `$PATH`), the wrapper's caveats (a `cd` breaks `./supertool`, a git worktree starts without one), and every configuration key: [docs/configuration.md](docs/configuration.md).
 
+Installed through the Anthropic plugin directory instead of the DPT marketplace above? That listing tracks this repository's `release` branch, a smaller build that leaves out `bluesky`, `devto`, `hashnode`, `slack` and `youtube` — each reads a credential and sends it to its own vendor's API, which the directory's own review holds on ([docs/releasing.md](docs/releasing.md)). A project config that still names one of those presets gets told so, rather than a bare "not found". The DPT marketplace install above carries the full set.
+
 ## What a call looks like
 
 ```

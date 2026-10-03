@@ -31,6 +31,15 @@ GitLab and Claude Code's own session log; presets add more per project.
 - a plain-language check for text that looks like it is trying to steer an
   agent, before anything acts on it
 
+## Presets this build leaves out
+
+This build does not ship `bluesky`, `devto`, `hashnode`, `slack` or `youtube`:
+each one reads a credential (an API token, a session cookie) and sends it to
+its own vendor's API, which the Anthropic directory's own review holds on.
+`/plugin install supertool@dpt-plugins` (above) installs the full set from
+`master` instead. A project config that still names one of these presets gets
+a message saying so, rather than a bare "not found".
+
 ## Full documentation
 
 The complete command reference, every preset and the project's own writing
