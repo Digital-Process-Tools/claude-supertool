@@ -1,0 +1,15 @@
+{
+  "source": "gitlab-mr",
+  "events": [
+    {"key": "pipeline_failed",      "label": "Pipeline failed"},
+    {"key": "pipeline_succeeded",   "label": "Pipeline succeeded"},
+    {"key": "pipeline_running",     "label": "Pipeline started running"},
+    {"key": "comment_added",        "label": "New comment on the MR"},
+    {"key": "merged",               "label": "MR merged"},
+    {"key": "closed",               "label": "MR closed"},
+    {"key": "conflicts_appeared",   "label": "Conflicts appeared"},
+    {"key": "approved",             "label": "Approval rule satisfied"},
+    {"key": "retargeted",           "label": "Target branch changed"},
+    {"key": "mr_unreachable",       "label": "Could not look up the MR — a lookup that failed, not an MR that is quiet. Fires once per outage, not once per poll"}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "description": "statusline — one-line render for Claude Code's statusLine hook, joining locally computed segments with network-backed fragments published as a side effect of running gh-pr normally (#1850). The render path never makes a network call.",
+  "ops": {
+    "statusline": {
+      "safety": "read-only",
+      "cmd": "{python} {path}statusline/statusline.py {args}",
+      "timeout": 5,
+      "description": "Reads Claude Code's statusLine hook JSON on stdin (workspace.current_dir, model info) and prints one line, suitable for statusLine.command in settings.json. NEVER makes a network call — a synchronous gh/glab call would add its full round-trip to every assistant message. Two independent axes: render is width only (a local segment computes live, budgeted sub-second, and renders `unknown` on timeout rather than stalling); data source is what actually varies — a network-backed op (gh-pr today) publishes its own check tally as a side effect of running normally, atomically and keyed by worktree, and this op only ever reads that fragment, rendering an explicit `checks: unknown (not run this session)` when nothing has been published yet — the NORMAL state, not an error, since the harness runs this after every message and a fragment is only as fresh as the last time its op was actually run. Configured via ops.statusline.groups in .supertool.json: a list of groups, each a list of segment names — `[[\"session\"], [\"git-status\"], [\"gh-pr\"]]`. Unconfigured refuses by name rather than inventing a default; a segment name this op does not know how to render also refuses, by name, rather than rendering it blank. ops.statusline.item_sep (default ' · ') joins items inside a group, ops.statusline.group_sep (default ' | ') joins groups — never array entries, so a separator is only ever emitted between things that actually rendered. Segments shipped in this slice: session (model name, from stdin alone), git-status (branch, ahead/behind, dirty count, live git call under a sub-second budget), gh-pr (the published check tally, staleness-aware past ops.statusline.stale_secs, default 300). Multi-line output and further segments (radar, gl-mr) are deferred — see docs/presets/statusline.md.",
+      "syntax": "statusline",
+      "example": "statusline",
+      "paths": {"args": []}
+    }
+  }
+}
