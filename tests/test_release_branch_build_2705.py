@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -28,6 +29,58 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "build_release_tree.py"
 CONFIG = REPO_ROOT / ".github" / "release-branch.json"
+
+_BS = chr(92)
+_BASH_PROBE = "supertool-bash-ok"
+
+
+def _bash_candidates():
+    """Where a bash that actually runs scripts might be, most likely first
+    (same list tests/test_guard_interpreter_ladder_1390.py resolves
+    through, #1399/#1390): PATH first, then the two Git-for-Windows
+    locations, then the POSIX ones."""
+    git_bin = "C:" + _BS + "Program Files" + _BS + "Git" + _BS
+    return [shutil.which("bash"),
+            git_bin + "bin" + _BS + "bash.exe",
+            git_bin + "usr" + _BS + "bin" + _BS + "bash.exe",
+            "/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"]
+
+
+def _first_bash_that_runs_a_script():
+    """A bash chosen by what it does, not by what it is called -- #2732's
+    own new tests hit the same shape #1390 already fixed on windows-latest.
+    shutil.which("bash") answers "a file
+    named bash is on PATH", which on windows-latest is satisfied by the
+    System32 WSL launcher stub -- a program that is not a shell, cannot
+    open a script, and writes a UTF-16LE refusal instead. Each candidate is
+    asked to print a known string; the one that actually does is returned,
+    and that exact path is what gets spawned later -- subprocess.run with a
+    bare "bash" on Windows re-searches PATH through CreateProcess, which
+    need not agree with shutil.which, so probing one executable and
+    spawning the bare name proves nothing about the one that runs.
+
+    Returns None, never a platform name, when nothing on this host
+    qualifies: tests/test_symlink_capability_1143.py is the precedent for
+    why a skip must be gated on a capability probe, not on os.name."""
+    for candidate in _bash_candidates():
+        if not candidate:
+            continue
+        try:
+            proc = subprocess.run(
+                [candidate, "-c", "printf %s " + _BASH_PROBE],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0 and proc.stdout.strip() == _BASH_PROBE:
+            return candidate
+    return None
+
+
+#: Resolved once at collection time rather than per-test: three tests below
+#: each need it, and re-probing three times would triple the spawn cost for
+#: the same answer.
+BASH = _first_bash_that_runs_a_script()
 
 SLUG = "Example-Org/example-plugin"
 RAW = "https://raw.githubusercontent.com/Example-Org/example-plugin/main/"
@@ -505,10 +558,11 @@ def test_the_ladder_is_inlined_into_the_guarded_consumer():
     assert "python-ladder.sh" not in text
     assert "supertool_python_identifies" in text
     assert "echo before" in text and "echo after" in text
+    if BASH is None:
+        pytest.skip("no bash that actually runs a script was found on this host")
     # Behaviour-preserving: a bash parse of the inlined script still
     # succeeds and defines the ladder's own functions.
-    import subprocess
-    r = subprocess.run(["bash", "-n", "-c", text], capture_output=True,
+    r = subprocess.run([BASH, "-n", "-c", text], capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
     assert r.returncode == 0, r.stderr
 
@@ -528,8 +582,9 @@ def test_the_ladder_is_inlined_into_the_if_then_else_consumer():
     assert "could not source" not in text
     assert "echo setup" in text and "supertool_python_each onboard" in text
     assert "echo ran" in text
-    import subprocess
-    r = subprocess.run(["bash", "-n", "-c", text], capture_output=True,
+    if BASH is None:
+        pytest.skip("no bash that actually runs a script was found on this host")
+    r = subprocess.run([BASH, "-n", "-c", text], capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
     assert r.returncode == 0, r.stderr
 
@@ -582,8 +637,9 @@ def test_building_this_repository_head_inlines_the_real_ladder(tmp_path):
         # a build that emptied the file would pass the line above too.
         assert "supertool_python_each" in text, (rel, text)
         assert "LADDER=" not in text, (rel, text)
-        import subprocess
-        r = subprocess.run(["bash", "-n", str(out / rel)], capture_output=True,
+        if BASH is None:
+            pytest.skip("no bash that actually runs a script was found on this host")
+        r = subprocess.run([BASH, "-n", str(out / rel)], capture_output=True,
                            text=True, encoding="utf-8", errors="replace")
         assert r.returncode == 0, (rel, r.stderr)
 
