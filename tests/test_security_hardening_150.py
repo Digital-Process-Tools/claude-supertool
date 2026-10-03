@@ -20,6 +20,9 @@ import pytest
 
 import supertool
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _core_sources import core_source_text  # noqa: E402
+
 PRESETS_GIT = Path(__file__).parent.parent / "presets" / "git"
 
 
@@ -109,10 +112,18 @@ class TestStagedSymlinkRejected:
         We can't easily fake `git diff --cached` output without a real repo,
         so we check that the implementation rejects symlinks at the filter
         step. The dispatch logic uses `os.path.islink` — verified by source.
+
+        Reads core + every `_load_part`-loaded part (#2706), not
+        `supertool.__file__` alone — the staged-symlink check moved into
+        `_supertool_validate.py` during the split, and a scan anchored on
+        the core module's own file would have reported it missing forever,
+        which reads exactly like the guard having been deleted rather than
+        moved.
         """
-        # encoding='utf-8' — supertool.py contains non-cp1252 chars (em-dash,
-        # arrows) that crash the Windows default codec.
-        src = Path(supertool.__file__).read_text(encoding="utf-8")
+        # core_source_text() already reads every file as utf-8 — supertool.py
+        # contains non-cp1252 chars (em-dash, arrows) that crash the Windows
+        # default codec, which is why this was never a bare .read_text() call.
+        src = core_source_text()
         # Both staged ops must check islink before isfile.
         # (Loose grep — exact line could shift.)
         assert "os.path.islink(p)" in src

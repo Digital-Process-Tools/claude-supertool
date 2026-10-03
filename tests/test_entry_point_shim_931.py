@@ -37,8 +37,18 @@ import supertool
 
 REPO_ROOT = Path(__file__).parent.parent
 
-#: A `.pyc` at least this big proves it is the *bulk* that got cached, not some
-#: incidental helper. The source is ~780KB; an 80-line shim compiles to ~2KB.
+#: The *total* cached bytecode across every entry must clear this to prove it
+#: is the bulk that got cached, not some incidental helper. The source is
+#: ~780KB combined; an 80-line shim compiles to ~2KB and is never cached at
+#: all (CPython never writes a .pyc for the `__main__` script, which is the
+#: whole point of this file's fix). #2706 has since split the ~780KB single
+#: file into `_supertool.py` plus a dozen `_supertool_<x>.py` parts, each
+#: loaded with its own `importlib` machinery and so each cached separately --
+#: no single file clears 200KB on its own any more, so the per-file floor
+#: this constant used to gate on silently stopped proving anything the
+#: moment the split grew past one part. The real question was always "did a
+#: meaningful amount of the bulk get cached", answered by the sum below, not
+#: "did one particular file clear an arbitrary size".
 BULK_PYC_MIN_BYTES = 200_000
 
 
@@ -60,10 +70,18 @@ def _run_version(cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _bulk_pycs(root: Path) -> list[Path]:
+    """Every cached `.pyc` in this install -- CPython never writes one for the
+    `__main__` script, so every entry here is a genuinely imported module, not
+    the shim. "The bulk" is now the sum of however many parts #2706 has split
+    the tool into, not any one of them alone."""
     cache = root / "__pycache__"
     if not cache.is_dir():
         return []
-    return [p for p in cache.glob("*.pyc") if p.stat().st_size >= BULK_PYC_MIN_BYTES]
+    return list(cache.glob("*.pyc"))
+
+
+def _total_bulk_bytes(root: Path) -> int:
+    return sum(p.stat().st_size for p in _bulk_pycs(root))
 
 
 def test_script_invocation_caches_the_bulk_to_bytecode(tmp_path: Path) -> None:
@@ -74,13 +92,16 @@ def test_script_invocation_caches_the_bulk_to_bytecode(tmp_path: Path) -> None:
     assert proc.returncode == 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
 
     cached = _bulk_pycs(tmp_path)
-    assert cached, (
-        "no __pycache__ entry >= {0} bytes after running `supertool.py version`.\n"
+    total = _total_bulk_bytes(tmp_path)
+    assert cached and total >= BULK_PYC_MIN_BYTES, (
+        "only {2} bytes cached across {3} __pycache__ entries (need >= {0}) "
+        "after running `supertool.py version`.\n"
         "The bulk of the tool is being compiled from source on every invocation "
         "because it is the `__main__` script, which CPython never caches.\n"
         "__pycache__ contents: {1}".format(
             BULK_PYC_MIN_BYTES,
             sorted(p.name for p in (tmp_path / "__pycache__").glob("*")) or "(absent)",
+            total, len(cached),
         )
     )
 
@@ -91,7 +112,8 @@ def test_the_cached_bytecode_is_reused_on_the_next_invocation(tmp_path: Path) ->
 
     assert _run_version(tmp_path).returncode == 0
     first = _bulk_pycs(tmp_path)
-    assert first, "nothing cached on the first run — see the test above"
+    assert first and _total_bulk_bytes(tmp_path) >= BULK_PYC_MIN_BYTES, (
+        "nothing (or not enough) cached on the first run — see the test above")
     before = {p.name: (p.stat().st_mtime_ns, p.stat().st_size) for p in first}
 
     assert _run_version(tmp_path).returncode == 0

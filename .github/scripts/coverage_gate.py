@@ -228,8 +228,157 @@ ENFORCED: "dict[str, float]" = {
     # rest of this file (_SLACK below), not carried forward as if the
     # narrowed figure were the real one.
     "_supertool_guard.py": 93.0,
+    # Moved out of _supertool.py by #2706 (the mcp/lsp/workspace part: LSP
+    # ops, workspace, and the MCP client, loaded by one _load_part() call --
+    # see "Decision: the remaining core splits as parts sharing one
+    # namespace"). Measured 2026-10-02 on macOS/py3.13 over the directly
+    # migrated test files only (test_security_lsp.py, test_mcp_workspace.py,
+    # test_op_resolve.py, test_op_workspace.py,
+    # test_mcp_restart_note_flattens_names_1489.py,
+    # test_mcp_stop_outcome_547.py, test_mcp_stop_crash_574.py,
+    # test_validators_stop_on_new_file.py, test_custom_ops.py), not the full
+    # suite this gate itself runs: 67%. Floored 6 points under that, not the
+    # usual 3: CI's coverage job measured _supertool_doctor.py 3.5 points
+    # under its local narrowed number (#2714), and this entry has never been
+    # measured on CI.
+    "_supertool_mcp.py": 61.0,
     "_supertool_doctor.py": 80.0,
     "_supertool_gc.py": 80.0,
+    # Moved out of _supertool.py by #2706 (the custom-op / preset resolution
+    # region -- _safe_path, containment, _expand_env, _resolve_custom_op,
+    # alias resolution). Measured 2026-10-02 on macOS/py3.13 over the
+    # targeted selection named in this part's own lane report (a narrowed,
+    # local-only run, not the full suite this gate itself runs -- see
+    # CLAUDE.md on why the full suite is not run locally, and not the CI
+    # number either): 83%. Floored 6 points under that rather than the usual
+    # 3 -- PR #2714 measured a sibling part's CI coverage 3.5 points below
+    # its own local narrowed number (82.75% vs. 86.3%), so this number is
+    # pending CI and the wider margin absorbs that gap until CI's own figure
+    # is known.
+    "_supertool_presets.py": 77.0,
+    # Moved out of _supertool.py by #2706 wave 1 (the write-op region:
+    # op_replace/op_edit/op_json_set/op_paste/op_append/op_replace_lines and
+    # the atomic-write/rollback/near-miss-diagnostic helpers they share).
+    # Measured 2026-10-02 on macOS/py3.13 with `pytest -n0 -k "edit or
+    # replace or paste or append or json_set or rollback or atomic" --cov=
+    # _supertool_edit` (a narrowed, non-xdist run, not the full suite -- see
+    # CLAUDE.md on why the full suite is not run locally; xdist disabled
+    # because the out-of-process measurement this gate normally relies on,
+    # COVERAGE_PROCESS_START, measured 0% against a narrowed -k selection
+    # under -n auto in this same investigation): 87%. Floored 6 points under
+    # that, not the usual 3 (_SLACK below): CI has measured as much as 3.5
+    # points lower than a local macOS/py3.13 run elsewhere in this split
+    # (#2706 lane 0's own review), and this entry has only ever been
+    # measured locally, never on CI, so the usual slack is doubled rather
+    # than carried forward as if the local figure were the CI figure.
+    "_supertool_edit.py": 81.0,
+    # Moved out of _supertool.py by #2706 (op names/synonyms/near-miss
+    # suggestions/safety classification, plus arg-splitting and colon/
+    # extra-token refusals -- two contiguous spans of the pre-split file,
+    # concatenated into one part). Measured 2026-10-02 on macOS/py3.13, in
+    # process (no COVERAGE_PROCESS_START), `coverage run --include=*_supertool_parse.py`
+    # over the test files that call its functions by name or drive dispatch
+    # through them: 92%. Floored 7 points under that number, not 3 like
+    # _supertool_guard.py above -- #2714's lane measured 86.3% locally and
+    # CI's coverage job (which attributes child-process calls the way this
+    # narrowed in-process run cannot) measured 82.75%, under its 83.0 floor.
+    # This is a LOCAL number pending CI's own measurement, not the real one.
+    "_supertool_parse.py": 85.0,
+    # Moved out of _supertool.py by #2706 wave 1 (the TOML mini-parser and
+    # @file/payload routing). Measured 2026-10-02 on macOS/py3.13 with
+    # `coverage run --source=. -m pytest -k "payload or toml or at_file"`,
+    # then `coverage report --include="*_supertool_payload.py"` (pytest-cov's
+    # own `--cov=_supertool_payload` resolves the argument by importing it,
+    # which this part's own standalone-import guard refuses -- #2714's lane
+    # hit the same wall and reported 0%/no-data-collected for exactly that
+    # reason; `--include` on a plain `coverage run` matches by file path
+    # instead and does not need the import to succeed): 94%. Floored 6
+    # points under the measured number rather than the usual 3 -- this is a
+    # local macOS/py3.13 number pending the CI matrix, not the figure CI
+    # itself will measure (#2714's own lane measured 86.3% locally against
+    # a CI-measured 82.75%, a gap of ~3.5 points on the real matrix).
+    "_supertool_payload.py": 88.0,
+    # Moved out of _supertool.py by #2706 (the config/presets-merge/env-knobs/
+    # exclude/gitignore/rtk/display part). Measured 2026-10-02 on macOS/py3.13
+    # over a narrowed `-k` selection (config/preset/exclude/gitignore/rtk/
+    # plain_mode/mixed_tree/env_int/env_float/op_config_bool/display/
+    # coerce_bool test names, 1093 tests, not the full suite this gate itself
+    # runs -- see CLAUDE.md on why the full suite is not run locally): 85%,
+    # with `-n0` (no xdist). The first attempt at this measurement used `-n
+    # auto` (pyproject's own default) and reported 14% -- pytest-cov does not
+    # reliably combine in-process coverage across xdist workers for a module
+    # that is not itself spawned as a subprocess, so that number was the
+    # tool's own undercounting, not a real measurement; `-n0` is the escape
+    # hatch. This module is reached by nearly every op in the real suite --
+    # `_load_config()` runs on essentially every supertool invocation -- which
+    # is also why the number came back this high from a selection whose own
+    # test *names* mostly have nothing to do with config.
+    #
+    # Floored 6 points under the local number, not the usual 3 (_SLACK below)
+    # -- #2714 measured a sibling part's local narrowed macOS figure (86.3%)
+    # against CI's own `coverage` job figure for the same file (82.75%) and
+    # found a ~3.5 point gap that broke the floor outright; doubling the
+    # margin here is a local number pending CI, not a figure the `coverage`
+    # job has confirmed yet.
+    "_supertool_config.py": 79.0,
+    # Moved out of _supertool.py by #2706 (the read-family ops: render_file,
+    # op_read, op_glob, op_ls, op_head, op_tail, op_wc, op_stat, op_tree,
+    # op_map and the tree-sitter/ctags symbol-map internals). Measured
+    # 2026-10-02 on macOS/py3.13 over a narrowed read/grep/around/between/
+    # map/tree/glob selection, not the full suite this gate itself runs (see
+    # CLAUDE.md on why the full suite is not run locally): 80%. A LOCAL
+    # number, pending CI -- PR #2714 measured 82.75% locally-adjacent vs
+    # 86.3% on a narrowed macOS run for a sibling #2706 part, so this floors
+    # 6 points under the local figure rather than the 3-point slack
+    # elsewhere in this file, until CI's own number is known.
+    "_supertool_read.py": 74.0,
+    # Moved out of _supertool.py by #2706 (op_grep, op_around,
+    # op_between_symbol, op_between_pattern and the pattern gate). Measured
+    # the same run as _supertool_read.py above: 90%, a LOCAL number pending
+    # CI -- floored 6 points under for the same reason.
+    "_supertool_grep.py": 84.0,
+    # Moved out of _supertool.py by #2706 (introduction/output-format/
+    # version/help/ops*/registry). Measured locally 2026-10-02 on
+    # macOS/py3.13 over `-n0 --cov=_supertool_catalog` (a plain `pytest
+    # -n auto` collection reports `module-not-imported` / 0% for a part
+    # loaded via `exec(code, globals())` rather than a real `import` --
+    # same reason `_supertool_guard.py`/`_supertool_doctor.py` above carry
+    # the same note; `-n0` runs in-process so coverage sees the exec), over
+    # a narrowed selection (not the full suite -- see CLAUDE.md on why the
+    # full suite is not run locally) of the tests that exercise these ops
+    # directly: 92%. Floored 6 points under that rather than this file's own
+    # 3-point _SLACK convention (wider margin asked for explicitly for this
+    # part): a narrowed local selection can overestimate when unrelated
+    # co-selected tests incidentally exercise the same module. The local
+    # `coverage_gate.py` run will print a "floor is stale" advisory for this
+    # entry because of the wider margin -- advisory only (see _SLACK's use
+    # below: it never appends to `failures`) -- not carried forward as the
+    # real figure either way; CI's dedicated `coverage` job over the full
+    # suite is the authoritative number.
+    "_supertool_catalog.py": 86.0,
+    # Moved out of _supertool.py by #2706 (the validate part: validators,
+    # formatters, advice, _run_with_validators, op_validate*, op_format*).
+    # Measured 2026-10-02 on macOS/py3.13 over `-k "valid or format"` only
+    # (a narrowed run, not the full suite this gate itself runs -- see
+    # CLAUDE.md on why the full suite is not run locally), with
+    # `pytest -n0 --cov=_supertool_validate` (the `-n0` form, since the
+    # multi-process default under-measured at 0% with no per-process
+    # COVERAGE_PROCESS_START wiring for this module yet): 89%. Floored 6
+    # points under that rather than this file's usual 3-point slack: an
+    # earlier part in this same split measured 3.5 points lower on CI's
+    # Linux runner than on this local macOS run, so the wider margin is
+    # deliberate headroom for that same local-vs-CI gap, not carried
+    # forward as if the narrowed figure were the real one either way.
+    "_supertool_validate.py": 83.0,
+    # Moved out of _supertool.py by #2706 (dispatch, the accumulators and
+    # log_call). Measured 2026-10-02 on macOS/py3.13 over
+    # `-k "dispatch or log_call"` only, with COVERAGE_PROCESS_START set: 76%.
+    # Floored 6 points under that, more slack than this file's usual 3
+    # because `dispatch` is the universal op entry point and a huge share of
+    # the suite reaches it without "dispatch" or "log_call" in the test
+    # name -- the narrowed figure almost certainly understates the real one
+    # by more than the usual margin.
+    "_supertool_dispatch.py": 70.0,
     "presets/": 83.0,
     ".github/scripts/coverage_gate.py": 92.0,
     ".github/scripts/": 92.0,
@@ -377,7 +526,7 @@ def _source_lines() -> "list[str]":
     editable install), and a file path there is rejected with
     `module-not-imported`.
     """
-    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_doctor", "_supertool_gc"]
+    out = ["supertool", "_supertool", "_supertool_vim", "_supertool_guard", "_supertool_mcp", "_supertool_doctor", "_supertool_gc", "_supertool_presets", "_supertool_edit", "_supertool_parse", "_supertool_payload", "_supertool_config", "_supertool_read", "_supertool_grep", "_supertool_catalog", "_supertool_validate", "_supertool_dispatch"]
     for prefix in list(ENFORCED) + list(MEASURED_NOT_ENFORCED):
         if prefix.endswith("/"):
             out.append(str(REPO / prefix.rstrip("/")))

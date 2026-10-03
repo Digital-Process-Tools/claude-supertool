@@ -22,9 +22,13 @@ the next reader to nudge it the way the last one did.
 
 from __future__ import annotations
 
-import inspect
+import sys
+from pathlib import Path
 
 import supertool
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _core_sources import core_source_text  # noqa: E402
 
 
 def test_the_cap_is_the_harness_constant() -> None:
@@ -43,8 +47,16 @@ def test_the_boundary_is_inclusive() -> None:
 
 
 def _cap_comment() -> str:
-    """The comment block immediately above the constant."""
-    src = inspect.getsource(supertool)
+    """The comment block immediately above the constant.
+
+    Reads core + every `_load_part`-loaded part (#2706), not `supertool`'s
+    own `inspect.getsource()` alone -- `_HOOK_OUTPUT_CAP_BYTES` moved into
+    `_supertool_catalog.py` during the split, and a scan anchored on the
+    core module's own source would have reported a missing constant forever,
+    which reads exactly like the comment having been deleted rather than
+    moved.
+    """
+    src = core_source_text()
     idx = src.index("_HOOK_OUTPUT_CAP_BYTES = ")
     return src[max(0, idx - 2000):idx]
 

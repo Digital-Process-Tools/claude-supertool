@@ -187,14 +187,36 @@ def test_the_measured_paths_are_absolute() -> None:
     """
     lines = gate._source_lines()
     module_names = ("supertool", "_supertool", "_supertool_vim",
-                     "_supertool_guard", "_supertool_doctor", "_supertool_gc")
+                     "_supertool_guard", "_supertool_mcp", "_supertool_doctor",
+                     "_supertool_gc", "_supertool_presets", "_supertool_edit",
+                     "_supertool_parse", "_supertool_payload", "_supertool_config",
+                     "_supertool_read", "_supertool_grep", "_supertool_catalog",
+                     "_supertool_validate", "_supertool_dispatch")
     assert all(name in lines for name in module_names), (
         "every top-level module goes in by module name; `source` rejects a "
         "file path there. `_supertool` is where the code lives since #931, "
         "`_supertool_vim` since #2706 split the vim implementation out of "
         "it, `_supertool_guard` since #2706 lane 0 split the raw-command "
-        "guard out the same way, `_supertool_doctor`/`_supertool_gc` since "
-        "the same issue split doctor/init/gc out of it too")
+        "guard out the same way, `_supertool_mcp` since the same issue "
+        "split the mcp/lsp/workspace part out of it, "
+        "`_supertool_doctor`/`_supertool_gc` since "
+        "the same issue split doctor/init/gc out of it too, "
+        "`_supertool_presets` since #2706 split the custom-op / preset "
+        "resolution region out the same way, `_supertool_edit` since #2706 "
+        "wave 1 split the write-op region out the same way, "
+        "`_supertool_parse` since the same issue's parse lane split op "
+        "names/synonyms/safety-classes/arg-parsing out the same way, "
+        "`_supertool_payload` since #2706 wave 1 split the TOML mini-parser "
+        "and @file/payload routing out the same way, `_supertool_config` "
+        "since the config/presets-merge/env-knobs/exclude/gitignore/rtk/"
+        "display lane split out the same way, `_supertool_read`/"
+        "`_supertool_grep` since the read/grep-ops lane of the same split, "
+        "`_supertool_catalog` since the same issue split "
+        "introduction/output-format/version/help/ops*/registry out of it, "
+        "`_supertool_validate` since the same issue split validators, "
+        "formatters, advice and _run_with_validators out of it, "
+        "`_supertool_dispatch` since the same issue split dispatch/log_call "
+        "out of it too")
     paths = [line for line in lines if line not in module_names]
     assert paths, "no directory sources at all — the scope collapsed"
     for line in paths:

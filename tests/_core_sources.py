@@ -61,6 +61,36 @@ def part_names_in_load_order(core_source: Optional[str] = None) -> List[str]:
     return [name for _, name in hits]
 
 
+def part_call_sites(core_source: Optional[str] = None) -> List["tuple[int, str]"]:
+    """`(lineno, name)` for every `_load_part("name")` call site, in source order.
+
+    Same scan as `part_names_in_load_order`, minus the final unzip -- a caller
+    that needs to splice each part's body in at the exact line its call
+    occupies (rather than merely knowing which parts exist, in which order)
+    needs the line number too. `_load_part` always executes at the position
+    the call site occupies, so this is the one true offset to splice at --
+    appending a part's body elsewhere (e.g. always at the end) only happens to
+    model load order correctly for a part whose call site sits near the tail
+    of the file; a part loaded near the head, used throughout the rest of the
+    core, needs this.
+    """
+    source = core_source if core_source is not None else CORE.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    hits = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_load_part"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            hits.append((node.lineno, node.args[0].value))
+    hits.sort(key=lambda pair: pair[0])
+    return hits
+
+
 def core_source_paths() -> List[Path]:
     """Absolute paths of `_supertool.py` and every part it loads, in load order."""
     return [CORE] + [ROOT / (name + ".py") for name in part_names_in_load_order()]

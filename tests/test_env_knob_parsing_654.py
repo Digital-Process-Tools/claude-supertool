@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import supertool  # noqa: E402
+from _core_sources import core_source_paths  # noqa: E402
 from _preset_loader import load_preset_module  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -795,8 +796,13 @@ def bare_parse_lines(source: str) -> list[int]:
 
 def _scan_bare_parses():
     hits = {}
+    # "_supertool.py" stands for the core AND every `_supertool_<x>.py` part
+    # #2706 has split out of it -- the env-knob readers (`_env_int`,
+    # `_env_float`) moved into `_supertool_config.py`, and a scan anchored
+    # on `_supertool.py` alone would stop seeing a bare `int()`/`float()`
+    # env-read the moment it moved, silently.
     for path in (sorted(REPO_ROOT.glob("presets/**/*.py"))
-                 + [REPO_ROOT / "supertool.py", REPO_ROOT / "_supertool.py"]):
+                 + [REPO_ROOT / "supertool.py"] + core_source_paths()):
         rel = path.relative_to(REPO_ROOT).as_posix()
         source = path.read_text(encoding="utf-8", errors="replace")
         try:

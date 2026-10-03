@@ -62,6 +62,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "validators" / "common"))
 from spawnable import which_excluding_cwd as producer_which  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "tests"))
+from _core_sources import core_source_paths  # noqa: E402
+
 sys.path.insert(0, str(ROOT / "presets"))
 from _spawnable import which_excluding_cwd as preset_which  # noqa: E402
 
@@ -236,7 +239,12 @@ CHOKEPOINT_FILES = {"_spawnable.py"}
 #: but is one of #2596's own six original call sites and cannot be reached
 #: by any `rglob` rooted at WALK_DIRS -- named explicitly rather than
 #: silently dropped when the walk replaced the hand-listed SITES dict.
-EXTRA_FILES = ("_supertool.py",)
+#: Every `_supertool_<x>.py` part #2706 has since split out of it is in the
+#: exact same blind spot -- also at the repo root, also outside every
+#: WALK_DIRS entry -- so a bare-spawn call site that moved out of
+#: `_supertool.py` into a part would otherwise drop out of this register
+#: silently, the same shape #2611 found for `hooks/guard-selftest.py`.
+EXTRA_FILES = tuple(p.name for p in core_source_paths())
 
 #: Known, real, unfixed instances of this exact class, tracked separately
 #: rather than fixed in this change -- (relative path, tool name): reason.
