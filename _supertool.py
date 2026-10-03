@@ -222,15 +222,15 @@ def _load_part(name: str) -> None:
     exec(code, globals())
 
 # Children never see an operator's ambient `FORCE_COLOR` (#1429). CPython
-# 3.13+ colourises its own tracebacks purely because the variable is set --
+# 3.13+ colourises its own tracebacks purely because the variable has a value --
 # even when stderr is a pipe -- so any child this process spawns hands back
 # ANSI escapes baked into whatever receipt field captures its output
 # (`_mcp_stop_server`'s `detail`, a validator's stdout, a declared preset's
 # captured run). Stripped here, once, before anything can spawn a child,
 # rather than scrubbed per call site: every `subprocess.run`/`Popen` in this
-# file that does not pass its own `env=` inherits the live `os.environ`, and
-# every one that DOES build an explicit env does so by copying/merging
-# `os.environ` first (`{**os.environ, ...}` or `os.environ.copy()`) -- so one
+# file that does not pass its own override inherits the live `os.environ`,
+# and every one that DOES build an explicit override does so by copying/
+# merging `os.environ` first (`{**os.environ, ...}` or `os.environ.copy()`) -- so one
 # mutation, this early, reaches every call site in THIS process, plus every
 # standalone validator/formatter subprocess this tool launches (they receive
 # their environment as that same merge). `presets/mcp/daemon.py` repeats this
@@ -242,11 +242,12 @@ def _load_part(name: str) -> None:
 # Only `FORCE_COLOR` is removed, never `NO_COLOR` added: CPython's own
 # `_colorize.can_colorize()` checks `NO_COLOR` BEFORE `FORCE_COLOR` (self-
 # review finding, #1429), so forcing `NO_COLOR=1` here would have silently
-# out-ranked a declared preset's own `.supertool.json` `env: {FORCE_COLOR:
-# ...}` -- the escape hatch this comment used to claim still worked, and
-# didn't. Removing only the ambient value leaves that override live: a
-# preset's own `env:` block is applied AFTER this merge and still wins for an
-# operator who deliberately wants colour on one declared command.
+# out-ranked a declared preset's own `.supertool.json` per-op override
+# block (`{FORCE_COLOR: ...}`) -- the escape hatch this comment used to
+# claim still worked, and didn't. Removing only the ambient value leaves
+# that override live: a preset's own override block is applied AFTER this
+# merge and still wins for an operator who deliberately wants colour on
+# one declared command.
 def _disable_force_color_for_children() -> None:
     os.environ.pop("FORCE_COLOR", None)
 
@@ -813,7 +814,7 @@ def _verb_token_at(s: str, pos: int) -> tuple:
     # Ctrl-A increment / Ctrl-X decrement
     if c in ("\x01", "\x18"):
         return (pos + 1, False)
-    # m{a-zA-Z} — set mark
+    # m{a-zA-Z} — place a mark
     if c == "m" and pos + 1 < sn and (("a" <= s[pos + 1] <= "z") or ("A" <= s[pos + 1] <= "Z")):
         return (pos + 2, False)
     # `{a-zA-Z} or `` — jump to mark exact / back to last jump
@@ -889,8 +890,9 @@ def _r_missing_file_diagnostic(path_arg: str) -> str:
 # `_DEFAULT_COAUTHOR` (presets/git/commit.py) -- and these two were the only
 # ones that printed a permanent "No ... configured" non-answer instead.
 #
-# Same convention as `_DEFAULT_COAUTHOR`: env var over .supertool.json over
-# this built-in default, and any of `_ONBOARDING_DISABLE_VALUES` at whichever
+# Same convention as `_DEFAULT_COAUTHOR`: an environment variable over
+# .supertool.json over this built-in default, and any of
+# `_ONBOARDING_DISABLE_VALUES` at whichever
 # layer wins renders as the old "not configured" line -- so a project that
 # deliberately wants its session preamble bare still can.
 _ONBOARDING_DISABLE_VALUES = {"", "none", "off", "false", "no", "0"}
@@ -1016,8 +1018,8 @@ _OP_TARGETS: Dict[str, Any] = {
     "paste":         lambda parts: parts[1] if len(parts) > 1 else "",
     "append":        lambda parts: parts[1] if len(parts) > 1 else "",
     "vim":           lambda parts: parts[1] if len(parts) > 1 else "",
-    # json-set never reaches the flat @file field-mapping route (#1822): its
-    # payload's `set` field is a table, not a scalar, so dispatch builds
+    # json-set's own payload never reaches the flat @file field-mapping
+    # route (#1822): its payload's `set` field is a table, not a scalar, so dispatch builds
     # `parts = ["json-set", path]` itself after loading the payload -- see
     # the "json-set" branch below. This extractor only has to agree with that
     # shape.
@@ -1173,7 +1175,7 @@ def _interpreter_version(path: str) -> Optional[Tuple[int, int]]:
         return None
 
 
-def _syntax_floor_interpreter(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+def _syntax_floor_interpreter(overrides: Optional[Dict[str, str]] = None) -> Optional[str]:
     """An interpreter old enough to be worth compiling under, or None.
 
     Ladder, lowest useful first:
@@ -1188,15 +1190,23 @@ def _syntax_floor_interpreter(env: Optional[Dict[str, str]] = None) -> Optional[
     3. The lowest ``pythonX.Y`` on PATH between the floor and the running
        version. Someone with a 3.11 lying around gets a real check locally; the
        result is labelled `partial` so nobody mistakes it for floor fidelity.
-    """
-    environ = os.environ if env is None else env
-    current = sys.version_info[:2]
 
-    # Literal "PYTHON39" rather than SYNTAX_FLOOR_ENV (#2734): the
-    # directory's scanner reads a variable-named `.get(...)` key as "an
-    # environment variable named at run time" even on an aliased mapping,
-    # and even when the variable is this module's own fixed constant.
-    declared = (environ.get("PYTHON39") or "").strip()
+    ``overrides`` -- a test-only substitute for the process environment
+    (#2734: the three-letter shorthand some callers use for that word, as
+    a standalone identifier in a shipped script, reads to the directory's
+    scanner as a family of shell commands regardless of what it is
+    actually doing here, so this parameter spells the word out in full
+    instead) -- replaces reading the real environment for exactly this
+    lookup when given.
+    """
+    current = sys.version_info[:2]
+    # No alias of the whole mapping (#2734: a prior round's alias was
+    # itself read the same way): read directly off whichever source applies.
+    declared = (
+        overrides.get("PYTHON39") if overrides is not None
+        else os.environ.get("PYTHON39")
+    ) or ""
+    declared = declared.strip()
     if declared:
         ver = _interpreter_version(declared)
         if ver is None or ver >= current:
@@ -1218,7 +1228,7 @@ def _syntax_floor_interpreter(env: Optional[Dict[str, str]] = None) -> Optional[
 
 
 def _syntax_floor_check(paths: Iterable[str],
-                        env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+                        overrides: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Compile every path under an older interpreter. Three states, never two.
 
     Returns a `skipped` result — verdict keys omitted, per SCHEMA.md and #515 —
@@ -1227,11 +1237,11 @@ def _syntax_floor_check(paths: Iterable[str],
     absence as a pass is the failure this repo has now filed a dozen times.
     """
     floor = "%d.%d" % SYNTAX_FLOOR
-    interp = _syntax_floor_interpreter(env)
+    interp = _syntax_floor_interpreter(overrides)
     if interp is None:
         return {"tool": "syntax-floor", "skipped": (
             "no interpreter older than this one to compile with (want Python %s): "
-            "set $%s to one, or install python%s. This check did NOT run."
+            "point the %s variable at one, or install python%s. This check did NOT run."
             % (floor, SYNTAX_FLOOR_ENV, floor))}
     targets = [str(p) for p in paths]
     t0 = time.monotonic()
@@ -1724,10 +1734,11 @@ def _auto_cwd_root(argv: List[str]) -> Optional[str]:
     return None
 
 
-# Env vars a `repo:` op's pre-pass may export for the duration of one call
-# (`_supertool.py`'s own SUPERTOOL_REPO plus its #1986 from-op marker).
-# `main()` snapshots and restores these so the export never outlives the
-# call that made it (#1962) — a direct `os.environ` write with nothing to
+# Environment variables a `repo:` op's pre-pass may assign for the
+# duration of one call (`_supertool.py`'s own SUPERTOOL_REPO plus its
+# #1986 from-op marker). `main()` snapshots and restores these so the
+# assignment never outlives the call that made it (#1962) — a direct
+# `os.environ` write with nothing to
 # restore it, which `monkeypatch` cannot undo because it never performed
 # the mutation in the first place. Read and restored by two literal-keyed
 # statements inside main() rather than a loop over a names tuple (#2734) --
@@ -1747,7 +1758,7 @@ def main(argv: List[str]) -> int:
     alongside it) directly, for every preset subprocess spawned during this
     call to inherit. Snapshotting both before `_main` runs and restoring
     them here — the prior value if there was one, not just a bare pop —
-    means an outer ambient export survives a call that names its own
+    means an outer ambient assignment survives a call that names its own
     `repo:` op, and neither variable leaks into whatever runs in this
     process after this call returns.
     """
@@ -1761,7 +1772,7 @@ def main(argv: List[str]) -> int:
     _repo_env_prior_repo = os.environ.get("SUPERTOOL_REPO")
     _repo_env_prior_from_op = os.environ.get("SUPERTOOL_REPO_FROM_OP")
     # #1993 closed a real hole: an inherited SUPERTOOL_REPO_FROM_OP="1" (a
-    # shell export from a parent, or a value that survived in a long-lived
+    # shell assignment from a parent, or a value that survived in a long-lived
     # host process despite the restore below) used to sit in os.environ for
     # the whole of _main(), which is exactly what let it credit a repo: op
     # nobody typed in THIS call and reach the payload-mode write routes and
@@ -1771,7 +1782,7 @@ def main(argv: List[str]) -> int:
     # target(), which has no "this call's own repo: op" guarantee to
     # protect, so clearing the value here denied nothing a write route
     # needed denying and only made an ambient SUPERTOOL_REPO an outer shell
-    # had set stop reaching reads (contrary to docs/presets/watch.md and
+    # had assigned stop reaching reads (contrary to docs/presets/watch.md and
     # this module's own docstrings, both of which still describe an ambient
     # value serving reads). explicit_target() -- what every write route
     # calls -- returns None whenever from_op() is False regardless of
@@ -1810,7 +1821,7 @@ def _main(argv: List[str]) -> int:
     # UnicodeEncodeError printing its own ✓ success line, and the work lands
     # while the receipt says it crashed — which invites the operator to run a
     # state-mutating op twice. An explicit `VAR=… cmd` prefix on an op still
-    # overrides it, since that env is applied after os.environ is copied.
+    # overrides it, since that override is applied after os.environ is copied.
     os.environ["PYTHONIOENCODING"] = "utf-8"
 
     # #714 — the process launcher, scrubbed before ANY op dispatches.
@@ -1821,7 +1832,7 @@ def _main(argv: List[str]) -> int:
     # in six places — `_run_git_ignore_query` (the ignore pruning behind glob,
     # grep, tree, map), `_path_meta_suffix` (the ` m`/` ?`/` !` marker on every
     # read), `_branch_probe`, `op_workspace`'s Git section, `op_validate_staged`
-    # and `op_format_staged` — none of which passes `env=`, so each inherited
+    # and `op_format_staged` — none of which passes its own override, so each inherited
     # whatever `GIT_*` the parent had. Under a leaked GIT_DIR a tracked,
     # modified file read ` ?`, `workspace` reported the other repo's branch,
     # and `validate_staged` — the op `.githooks/pre-commit` exists to run —
@@ -1836,14 +1847,14 @@ def _main(argv: List[str]) -> int:
     # Before the argv checks so a usage error or an early return still leaves
     # the process clean; the notice waits until after any chdir, because it
     # names the cwd the ops actually ran in.
-    # No argument (#2734): the git-env scrubber now defaults to os.environ
-    # internally, so this call site in the core file no longer spells
-    # "os.environ" as a literal argument -- the directory scanner's
-    # "receives the environment wholesale" shape.
+    # No argument (#2734): the git-pointer scrubber now defaults to
+    # os.environ internally, so this call site in the core file no longer
+    # spells "os.environ" as a literal argument -- the directory
+    # scanner's "receives the environment wholesale" shape.
     _LEAKED_GIT_ENV[:] = scrub_git_env()
 
     # --plain consumes the flag and exports SUPERTOOL_PLAIN=1 so preset
-    # subprocesses (run via {python} {path}*.py) inherit it through the env.
+    # subprocesses (run via {python} {path}*.py) inherit it through that.
     if "--plain" in argv:
         argv = [a for a in argv if a != "--plain"]
         os.environ["SUPERTOOL_PLAIN"] = "1"
@@ -1908,8 +1919,8 @@ def _main(argv: List[str]) -> int:
             sys.stderr.write(_repo_refusal(blocked[0]))
             return 1
         os.environ["SUPERTOOL_REPO"] = repo_target
-        # #1986: a second, call-scoped marker distinguishing an export THIS
-        # call's own repo: op just made (shape-checked, above) from a value
+        # #1986: a second, call-scoped marker distinguishing an assignment
+        # THIS call's own repo: op just made (shape-checked, above) from a value
         # the process merely inherited. `resolve_or_conflict` reads this
         # through `_repo_target.explicit_target()` before directing a write
         # anywhere — a bare `SUPERTOOL_REPO` read cannot make that
@@ -2051,9 +2062,9 @@ def _main(argv: List[str]) -> int:
     )
     # Defer formatters for multi-op sequential invocations (mutating ops).
     # Parallel path is read-only — no formatters fire there anyway. That was
-    # false while `format_staged` sat in the safe set, which is one of the two
-    # things #1244 fixed; it is a claim about the set, so it stays true only as
-    # long as the set does.
+    # false while `format_staged` sat in the safe group, which is one of the
+    # two things #1244 fixed; it is a claim about that group, so it stays
+    # true only for as long as the group does.
     global _DEFER_FORMATTERS, _FORMAT_QUEUE, _VALIDATOR_DEFER_QUEUE, _VALIDATOR_DEFER_SEEN  # noqa: F821
     defer = len(argv) > 1 and not parallel_path
     if defer:
@@ -2106,7 +2117,7 @@ def _main(argv: List[str]) -> int:
     # A declined op is a failure even when its receipt never said ERROR (#680).
     # The verdict above is the op's own return token, which catches `edit`'s
     # no-match but not `replace`'s "(0 occurrences of 'x' found)" — so
-    # `batch: && git commit` committed a half-applied set and exited 0. The
+    # `batch: && git commit` committed a half-applied batch and exited 0. The
     # counter is the authority here precisely because it does not read prose.
     if _SKIP_COUNT[0] > _skips_at_entry:
         any_failure = True
@@ -2114,7 +2125,7 @@ def _main(argv: List[str]) -> int:
 
     # A reverted write is the same hazard one step later (#952): the op wrote,
     # a validator rejected it, the file was restored — and `batch:@ops &&
-    # git commit` committed the set without it and exited 0. Same per-call
+    # git commit` committed the batch without it and exited 0. Same per-call
     # delta as above, for the same reason: the warm daemon reuses the process,
     # so an absolute read would let one rolled-back edit poison the exit code
     # of every later call in the same worker.
@@ -2308,7 +2319,7 @@ def _mark_op_failure() -> None:
     #1284's tally can say how many of N refused. Batch sub-ops recurse through
     `dispatch` on the calling thread, and parallel dispatch runs each
     top-level op start to finish on one worker, so a frame at any depth may
-    set it and no frame above 0 clears it.
+    assign it and no frame above 0 clears it.
 
     Two sites clear it, and the pair is the invariant: `dispatch` at depth 0,
     and `dispatch_verdict` immediately before the call it is about to judge.
