@@ -834,9 +834,10 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
 
 
     hidden_files: List[str] = []
-    candidates = _grep_candidates(path, excl, hidden_files)
+    git_tally = _GitIgnoreTally()
+    candidates = _grep_candidates(path, excl, hidden_files, git_tally)
     scanned = len(candidates)
-    hidden = _hidden_suffix(len(hidden_files))
+    hidden = _hidden_suffix(len(hidden_files)) + git_tally.clause()
 
     if count_only:
         counts = _grep_count(pattern, path, limit, excl, candidates=candidates)
@@ -1763,7 +1764,15 @@ def _grep_count(
 def _grep_candidates(
     path: str, exclude_paths: Tuple[str, ...] = (),
     hidden: Optional[List[str]] = None,
+    git_tally: Optional["_GitIgnoreTally"] = None,
 ) -> List[str]:
+
+
+
+
+
+
+
 
 
 
@@ -1790,7 +1799,10 @@ def _grep_candidates(
     elif os.path.isdir(path):
         exts = _grep_file_includes()  
         cwd = os.getcwd()
-        ignored = _git_ignored_dirs(path) if exclude_paths else frozenset()
+        view = _git_ignore_view(path) if exclude_paths else _GIT_IGNORE_NONE
+        if git_tally is not None:
+            git_tally.saw(view)
+        ignored = view.dirs
         for root, dirs, files in os.walk(path):
             rel_root = _safe_relpath(root, cwd) if exclude_paths else ""
             if exclude_paths:
@@ -1808,6 +1820,10 @@ def _grep_candidates(
                     if hidden is not None and _is_disclosable_exclusion(
                             rel_name, exclude_paths):
                         hidden.append(os.path.join(root, name))
+                    continue
+                if _is_git_ignored_file(rel_name, view):
+                    if git_tally is not None:
+                        git_tally.hidden.append(os.path.join(root, name))
                     continue
                 candidates.append(os.path.join(root, name))
     return candidates

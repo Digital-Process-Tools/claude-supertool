@@ -91,15 +91,13 @@ _SECRET_EXCLUDE_PATHS: Tuple[str, ...] = (
 
 
 
-    ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
-    ".terraform/", ".chef/", ".npm/", "secrets/", "credentials/",
 
 
 
 
-    ".env/", ".env.*",
-    "!.env.example", "!.env.sample", "!.env.template", "!.env.dist",
-    "!.env.defaults", "!.env.schema",
+
+
+
 
     ".netrc/", "_netrc/", ".npmrc/", ".pypirc/", ".git-credentials/",
     ".pgpass/", ".my.cnf/", ".htpasswd/", ".dockercfg/",
@@ -2125,8 +2123,25 @@ def _rtk_drop_excluded(
 
 
 
-_GIT_IGNORED_CACHE: Dict[Tuple[str, str], frozenset] = {}
+
+_GIT_IGNORED_CACHE: Dict[Tuple[str, str], Any] = {}
 _GIT_IGNORE_TIMEOUT = 10
+
+
+class _GitIgnoreView(NamedTuple):
+
+
+
+
+
+
+
+    dirs: frozenset
+    files: frozenset
+    unavailable: str
+
+
+_GIT_IGNORE_NONE = _GitIgnoreView(frozenset(), frozenset(), "")
 
 
 def _gitignore_enabled() -> bool:
@@ -2141,7 +2156,9 @@ def _gitignore_enabled() -> bool:
     return bool(_load_config().get("gitignore", True))
 
 
-def _git_ignored_dirs(root: str) -> frozenset:
+def _git_ignore_view(root: str) -> _GitIgnoreView:
+
+
 
 
 
@@ -2165,14 +2182,19 @@ def _git_ignored_dirs(root: str) -> frozenset:
 
 
     if not _gitignore_enabled() or not os.path.isdir(root):
-        return frozenset()
+        return _GIT_IGNORE_NONE
     cwd = os.getcwd()
     key = (cwd, os.path.normpath(root))
     cached = _GIT_IGNORED_CACHE.get(key)
     if cached is None:
-        cached = _compute_git_ignored_dirs(root, cwd)
+        cached = _compute_git_ignore_view(root, cwd)
         _GIT_IGNORED_CACHE[key] = cached
     return cached
+
+
+def _git_ignored_dirs(root: str) -> frozenset:
+
+    return _git_ignore_view(root).dirs
 
 
 def _run_git_ignore_query(root: str, args: List[str]) -> Any:
@@ -2186,32 +2208,76 @@ def _run_git_ignore_query(root: str, args: List[str]) -> Any:
         return None
 
 
-def _compute_git_ignored_dirs(root: str, cwd: str) -> frozenset:
+def _compute_git_ignore_view(root: str, cwd: str) -> _GitIgnoreView:
 
 
 
 
     probe = _run_git_ignore_query(root, ["check-ignore", "-q", "--", os.path.abspath(root)])
-    if probe is None or probe.returncode != 1:
-        return frozenset()
+    if probe is None:
+        return _GitIgnoreView(frozenset(), frozenset(), "git could not be run")
+    if probe.returncode == 0:
+        return _GIT_IGNORE_NONE
+    if probe.returncode != 1:
+        err = (probe.stderr or b"").decode("utf-8", "replace").lower()
+        why = ("not a git repository" if "not a git repository" in err
+               else f"git check-ignore exited {probe.returncode}")
+        return _GitIgnoreView(frozenset(), frozenset(), why)
     listing = _run_git_ignore_query(root, [
         "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
         "--directory", "--no-empty-directory",
     ])
     if listing is None or listing.returncode != 0:
-        return frozenset()
+        return _GitIgnoreView(frozenset(), frozenset(), "git ls-files failed")
     dirs = set()
+    files = set()
     for entry in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
-
-
-        if not entry.endswith("/"):
+        if not entry:
             continue
+
+
         rel = _strip_dot_slash(
             _safe_relpath(os.path.normpath(os.path.join(root, entry)), cwd)
         )
-        if rel and rel != "." and not rel.startswith(".."):
-            dirs.add(rel)
-    return frozenset(dirs)
+        if not rel or rel == "." or rel.startswith(".."):
+            continue
+        (dirs if entry.endswith("/") else files).add(rel)
+    return _GitIgnoreView(frozenset(dirs), frozenset(files), "")
+
+
+class _GitIgnoreTally:
+
+
+
+    def __init__(self) -> None:
+        self.hidden: List[str] = []
+        self.unavailable: List[str] = []
+
+    def saw(self, view: _GitIgnoreView) -> None:
+        if view.unavailable and view.unavailable not in self.unavailable:
+            self.unavailable.append(view.unavailable)
+
+    def clause(self) -> str:
+
+
+
+        parts = []
+        n = len(self.hidden)
+        if n:
+
+
+            parts.append(f", {n} gitignored files hidden")
+        if self.unavailable:
+            parts.append(", gitignore filter not applied ("
+                         + "; ".join(self.unavailable) + ")")
+        return "".join(parts)
+
+
+def _is_git_ignored_file(rel_path: str, view: _GitIgnoreView) -> bool:
+
+    if not view.files:
+        return False
+    return _strip_dot_slash(rel_path) in view.files
 
 
 def _strip_dot_slash(path: str) -> str:
@@ -2253,8 +2319,17 @@ def _gitignore_residual(path: str, exclude_paths: Tuple[str, ...]) -> bool:
 
     if not exclude_paths:
         return False
+    view = _git_ignore_view(path)
+
+
+
+
+
+    if view.unavailable:
+        return True
     return any(
-        not _is_excluded(rel, exclude_paths) for rel in _git_ignored_dirs(path)
+        not _is_excluded(rel, exclude_paths)
+        for rel in (*view.dirs, *view.files)
     )
 
 

@@ -1211,7 +1211,9 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
 
     cap = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
     hidden_files: List[str] = []
-    files = _glob_files(pattern, excl, over_fetch=1, hidden=hidden_files)
+    git_tally = _GitIgnoreTally()
+    files = _glob_files(pattern, excl, over_fetch=1, hidden=hidden_files,
+                        git_tally=git_tally)
 
 
 
@@ -1228,7 +1230,10 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
             and not pattern.startswith(("/", "**", "./", "../"))):
         retry = "**/" + pattern
         hidden_files = []
-        files = _glob_files(retry, excl, over_fetch=1, hidden=hidden_files)
+        retry_tally = _GitIgnoreTally()
+        files = _glob_files(retry, excl, over_fetch=1, hidden=hidden_files,
+                            git_tally=retry_tally)
+        git_tally = retry_tally
         if files:
             midpath_note = (f"[mid-path retry: no match under cwd for "
                             f"{pattern!r} — matched {retry!r}]\n")
@@ -1274,7 +1279,8 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
             prefix = ""
     truncation = " — TRUNCATED, more files match" if glob_truncated else ""
     out = [midpath_note,
-           f"({len(files)} files{_hidden_suffix(len(hidden_files))}{truncation})\n"]
+           f"({len(files)} files{_hidden_suffix(len(hidden_files))}"
+           f"{git_tally.clause()}{truncation})\n"]
     if prefix:
         fwd_prefix = _fwd(prefix)
         out.append(f"{fwd_prefix}\n")
@@ -1928,6 +1934,13 @@ def op_tree(path: str, depth: int = 3,
     base = os.path.abspath(path)
     cwd = os.getcwd()
 
+
+
+
+    git_tally = _GitIgnoreTally()
+    view = _git_ignore_view(path) if exclude_paths else _GIT_IGNORE_NONE
+    git_tally.saw(view)
+
     def _walk(dir_path: str, prefix: str, current_depth: int) -> None:
         if current_depth > depth:
             return
@@ -1947,11 +1960,16 @@ def op_tree(path: str, depth: int = 3,
                     if _is_disclosable_exclusion(rel_f, exclude_paths):
                         hidden.append(f)
                     continue
+                if _is_git_ignored_file(rel_f, view):
+                    git_tally.hidden.append(f)
+                    continue
             out.append(f"{prefix}{f}\n")
         for d in dirs:
             if exclude_paths:
                 rel = _safe_relpath(os.path.join(dir_path, d), cwd)
                 if _is_excluded(rel, exclude_paths):
+                    continue
+                if _strip_dot_slash(rel) in view.dirs:
                     continue
             out.append(f"{prefix}{d}/\n")
             if current_depth < depth:
@@ -1961,6 +1979,9 @@ def op_tree(path: str, depth: int = 3,
     _walk(base, "  ", 1)
     if hidden:
         out.append(f"({len(hidden)} files hidden by exclude-paths)\n")
+    git_clause = git_tally.clause()
+    if git_clause:
+        out.append(f"({git_clause[2:]})\n")
     return "".join(out)
 
 
@@ -2776,6 +2797,7 @@ _MAP_EXTENSIONS = frozenset(
 def _collect_files(
     path: str, exclude_paths: Tuple[str, ...],
     hidden: Optional[List[str]] = None,
+    git_tally: Optional["_GitIgnoreTally"] = None,
 ) -> List[str]:
 
 
@@ -2797,6 +2819,11 @@ def _collect_files(
 
     cwd = os.getcwd()
     files: List[str] = []
+
+
+    view = _git_ignore_view(path) if exclude_paths else _GIT_IGNORE_NONE
+    if git_tally is not None:
+        git_tally.saw(view)
     for root, dirs, filenames in os.walk(path):
         rel_root = _safe_relpath(root, cwd)
         dirs[:] = sorted(
@@ -2804,6 +2831,7 @@ def _collect_files(
             if d not in skip_dirs
             and not d.startswith(".")
             and not (exclude_paths and _is_excluded(os.path.join(rel_root, d), exclude_paths))
+            and not _is_git_ignored(rel_root, d, view.dirs)
         )
         for fn in sorted(filenames):
             ext = os.path.splitext(fn)[1].lower()
@@ -2814,6 +2842,10 @@ def _collect_files(
                 if hidden is not None and _is_disclosable_exclusion(
                         rel_fn, exclude_paths):
                     hidden.append(os.path.join(root, fn))
+                continue
+            if _is_git_ignored_file(rel_fn, view):
+                if git_tally is not None:
+                    git_tally.hidden.append(os.path.join(root, fn))
                 continue
             files.append(os.path.join(root, fn))
     return files
@@ -2943,10 +2975,12 @@ def op_map(path: str, no_exclude: bool = False) -> str:
         return _path_not_found(path, op="map", call_prefix="map")
 
     hidden_files: List[str] = []
+    git_tally = _GitIgnoreTally()
     files = _collect_files(
-        path, _get_exclude_paths("map", no_exclude), hidden_files)
+        path, _get_exclude_paths("map", no_exclude), hidden_files, git_tally)
     if not files:
-        return f"(no supported files found in {path})\n"
+        return (f"(no supported files found in {path}"
+                f"{_hidden_suffix(len(hidden_files))}{git_tally.clause()})\n")
 
     truncated = len(files) > MAX_MAP_FILES
     files = files[:MAX_MAP_FILES]
@@ -3037,7 +3071,8 @@ def op_map(path: str, no_exclude: bool = False) -> str:
 
 
         actual_tier = "none"
-    out = [f"({len(files)} files{_hidden_suffix(len(hidden_files))}, tier: {actual_tier})\n"] + out_files
+    out = [f"({len(files)} files{_hidden_suffix(len(hidden_files))}"
+           f"{git_tally.clause()}, tier: {actual_tier})\n"] + out_files
 
 
 
@@ -3052,7 +3087,12 @@ def op_map(path: str, no_exclude: bool = False) -> str:
 def _glob_files(
     pattern: str, exclude_paths: Tuple[str, ...] = (), over_fetch: int = 0,
     hidden: Optional[List[str]] = None,
+    git_tally: Optional["_GitIgnoreTally"] = None,
 ) -> List[str]:
+
+
+
+
 
 
 
@@ -3077,7 +3117,8 @@ def _glob_files(
         seen: set = set()
         results: List[str] = []
         for sub_pattern in expanded:
-            for f in _glob_files(sub_pattern, exclude_paths, over_fetch, hidden):
+            for f in _glob_files(sub_pattern, exclude_paths, over_fetch, hidden,
+                                 git_tally):
                 if f not in seen:
                     seen.add(f)
                     results.append(f)
@@ -3100,7 +3141,10 @@ def _glob_files(
             tail = pattern.lstrip("/").lstrip(os.sep)
 
         cwd = os.getcwd()
-        ignored = _git_ignored_dirs(root_part)
+        view = _git_ignore_view(root_part)
+        if git_tally is not None:
+            git_tally.saw(view)
+        ignored = view.dirs
         files: List[str] = []
         for root, dirs, filenames in os.walk(root_part):
             rel_root = _safe_relpath(root, cwd)
@@ -3122,6 +3166,10 @@ def _glob_files(
                                         rel_full, exclude_paths)):
                                 hidden.append(full)
                             continue
+                        if _is_git_ignored_file(rel_full, view):
+                            if git_tally is not None:
+                                git_tally.hidden.append(full)
+                            continue
                         files.append(full)
                         if len(files) >= max_results:
                             return files
@@ -3141,18 +3189,28 @@ def _glob_files(
         cwd = os.getcwd()
 
 
-        ignored = _git_ignored_dirs(_glob_ignore_root(pattern))
+        view = _git_ignore_view(_glob_ignore_root(pattern))
+        if git_tally is not None:
+            git_tally.saw(view)
+        ignored = view.dirs
         if hidden is not None:
             hidden.extend(
                 m for m in files_out
                 if _is_disclosable_exclusion(
                     _safe_relpath(m, cwd), exclude_paths)
             )
-        files_out = [
-            m for m in files_out
-            if not _is_excluded(_safe_relpath(m, cwd), exclude_paths)
-            and not _under_git_ignored(_safe_relpath(m, cwd), ignored)
-        ]
+        kept = []
+        for m in files_out:
+            rel_m = _safe_relpath(m, cwd)
+            if (_is_excluded(rel_m, exclude_paths)
+                    or _under_git_ignored(rel_m, ignored)):
+                continue
+            if _is_git_ignored_file(rel_m, view):
+                if git_tally is not None:
+                    git_tally.hidden.append(m)
+                continue
+            kept.append(m)
+        files_out = kept
     return files_out[:max_results]
 
 
