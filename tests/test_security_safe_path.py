@@ -133,11 +133,28 @@ class TestPasteEditRejected:
         assert "ERROR" in out and "escapes cwd" in out
 
 
+def _gitignored_repo(root, *patterns):
+    """A git repo whose .gitignore names `patterns` (#2738)."""
+    import shutil
+    import subprocess
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    (root / ".gitignore").write_text("".join(p + "\n" for p in patterns))
+    subprocess.run(["git", "init", "-q"], cwd=str(root), capture_output=True)
+
+
 class TestExcludeList:
-    """Default exclude list shields credential dirs from traversal ops."""
+    """Gitignored credential dirs stay out of traversal ops.
+
+    Until #2734 the default exclude list named `.max/`, `.ssh/` and the other
+    credential directories itself. The Anthropic directory validator holds a
+    credential directory named in shipped data as a credential read, and
+    those entries duplicated `.gitignore`; since #2738 the walks skip what git
+    ignores, files included, so `.gitignore` is the shield these pin."""
 
     def test_max_dir_excluded_from_grep(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        _gitignored_repo(tmp_path, ".max/")
         (tmp_path / ".max").mkdir()
         (tmp_path / ".max" / "hashnode-token.txt").write_text("UNIQUE_NEEDLE_XYZ\n")
         (tmp_path / "src").mkdir()
@@ -149,6 +166,7 @@ class TestExcludeList:
 
     def test_ssh_dir_excluded_from_tree(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        _gitignored_repo(tmp_path, ".ssh/")
         (tmp_path / ".ssh").mkdir()
         (tmp_path / ".ssh" / "id_rsa").write_text("PRIVATE KEY\n")
         (tmp_path / "ok.py").write_text("pass\n")

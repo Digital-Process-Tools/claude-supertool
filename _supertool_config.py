@@ -90,16 +90,14 @@ _SECRET_EXCLUDE_PATHS: Tuple[str, ...] = (
     # and a search that silently skips your own code is a worse failure than
     # the one this list exists to prevent.
     #
-    # Directories.
-    ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
-    ".terraform/", ".chef/", ".npm/", "secrets/", "credentials/",
-    # Environment files. `.env.*` covers `.local`, `.production`, `.staging`
-    # and whatever a project invents next. The negations keep the committed
-    # placeholders greppable — people read those to learn which keys exist,
-    # and hiding them is the over-broad direction of this same defect.
-    ".env/", ".env.*",
-    "!.env.example", "!.env.sample", "!.env.template", "!.env.dist",
-    "!.env.defaults", "!.env.schema",
+    # No credential DIRECTORIES and no `.env` entries any more (#2734). The
+    # Anthropic directory validator holds a credential directory named in
+    # shipped data as a credential read (`credential_at:
+    # _supertool_config.py`, `env: ".aws/,"`), and these entries duplicated
+    # what `.gitignore` already says. Since #2738 the walks skip gitignored
+    # files as well as directories, so `.gitignore` is the guard -- the same
+    # one rg and Claude Code's own Grep honour.
+    #
     # Tool credential files.
     ".netrc/", "_netrc/", ".npmrc/", ".pypirc/", ".git-credentials/",
     ".pgpass/", ".my.cnf/", ".htpasswd/", ".dockercfg/",
@@ -2123,14 +2121,31 @@ def _rtk_drop_excluded(
     return "\n".join(kept) + ("\n" if kept else ""), len(dropped)
 
 
-# Directories git ignores, keyed on (cwd, search root). One entry per walk
-# root per process — a batch call runs many ops and must not re-shell per op.
-_GIT_IGNORED_CACHE: Dict[Tuple[str, str], frozenset] = {}
+# What git ignores under one walk root, keyed on (cwd, search root). One entry
+# per walk root per process — a batch call runs many ops and must not re-shell
+# per op, and a walk must never ask git once per file (#2738).
+_GIT_IGNORED_CACHE: Dict[Tuple[str, str], Any] = {}
 _GIT_IGNORE_TIMEOUT = 10
 
 
+class _GitIgnoreView(NamedTuple):
+    """What git said about one walk root (#449, #2738).
+
+    `dirs` and `files` are cwd-relative posix paths. `unavailable` is the third
+    state: "" when the filter ran (or was deliberately not wanted), otherwise
+    why it could not run -- which the op prints, because an unfiltered walk and
+    a filtered one must never render alike.
+    """
+    dirs: frozenset
+    files: frozenset
+    unavailable: str
+
+
+_GIT_IGNORE_NONE = _GitIgnoreView(frozenset(), frozenset(), "")
+
+
 def _gitignore_enabled() -> bool:
-    """Whether walks prune gitignored directories. Default: true (#449).
+    """Whether walks skip what git ignores. Default: true (#449, #2738).
 
     Off via `"gitignore": false` in .supertool.json, or SUPERTOOL_NO_GITIGNORE=1
     for one invocation. `no-exclude` on the op turns it off too, since that flag
@@ -2141,38 +2156,45 @@ def _gitignore_enabled() -> bool:
     return bool(_load_config().get("gitignore", True))
 
 
-def _git_ignored_dirs(root: str) -> frozenset:
-    """Directories under `root` that git ignores, as cwd-relative posix paths.
+def _git_ignore_view(root: str) -> _GitIgnoreView:
+    """Directories and files under `root` that git ignores, from ONE listing.
 
     Asks git rather than parsing `.gitignore` (#449). Negations (`!keep/`),
     nested ignore files, `.git/info/exclude` and the user's global excludes are
     all semantics we would otherwise have to reimplement, and getting any of
-    them wrong hides files — the failure direction this repository has spent a
-    week removing. `git ls-files --directory` also collapses an ignored tree to
-    its top directory instead of listing it, so the answer costs one subprocess
-    and never descends into what it is telling us to skip.
+    them wrong hides files. `git ls-files --directory` collapses an ignored tree
+    to its top directory instead of listing it, so the answer costs one
+    subprocess and never descends into what it is telling us to skip.
 
-    **Only directories are collected.** Ignored *files* are left in the walk:
-    the win here is pruning at the directory boundary, per-file filtering would
-    buy little, and `_DEFAULT_EXCLUDE_PATHS` already covers the secret-file
-    case (#146).
+    **Files too, since #2738.** #449 collected directories only and left
+    ignored files in the walk, on the grounds that `_DEFAULT_EXCLUDE_PATHS`
+    covered the secret-file case. That list named credential directories in
+    shipped data, which the Anthropic directory validator holds as a credential
+    read (#2734); `.gitignore` is the guard rg and Claude Code's own Grep
+    honour, so it is the one these walks honour now.
 
-    Returns an empty set — meaning "no opinion", not "nothing to skip" —
-    outside a repo, without git, on timeout, and, deliberately, when `root`
-    itself is ignored. That last case is the whole guarantee: a caller who
-    names `.claude/worktrees/foo` as the search root gets results, because
-    every path under an ignored root is ignored and pruning there would return
-    silence.
+    Deliberately no opinion -- both sets empty, `unavailable` empty -- when the
+    filter is switched off, when `root` is not a directory (a file named
+    directly is always searched), and when `root` itself is ignored: a caller
+    who names `.max/` or `.claude/worktrees/foo` as the root gets results,
+    because every path under an ignored root is ignored and filtering there
+    would return silence. Outside a repo, without git, or on a git failure,
+    both sets are empty and `unavailable` says why.
     """
     if not _gitignore_enabled() or not os.path.isdir(root):
-        return frozenset()
+        return _GIT_IGNORE_NONE
     cwd = os.getcwd()
     key = (cwd, os.path.normpath(root))
     cached = _GIT_IGNORED_CACHE.get(key)
     if cached is None:
-        cached = _compute_git_ignored_dirs(root, cwd)
+        cached = _compute_git_ignore_view(root, cwd)
         _GIT_IGNORED_CACHE[key] = cached
     return cached
+
+
+def _git_ignored_dirs(root: str) -> frozenset:
+    """Directories under `root` that git ignores (#449). See `_git_ignore_view`."""
+    return _git_ignore_view(root).dirs
 
 
 def _run_git_ignore_query(root: str, args: List[str]) -> Any:
@@ -2186,32 +2208,76 @@ def _run_git_ignore_query(root: str, args: List[str]) -> Any:
         return None
 
 
-def _compute_git_ignored_dirs(root: str, cwd: str) -> frozenset:
-    """Uncached body of `_git_ignored_dirs`."""
+def _compute_git_ignore_view(root: str, cwd: str) -> _GitIgnoreView:
+    """Uncached body of `_git_ignore_view`."""
     # check-ignore exits 1 for "not ignored", 0 for "ignored", 128 for "not a
-    # repo" / any other failure. Only 1 authorises pruning: 0 means the caller
+    # repo" / any other failure. Only 1 authorises filtering: 0 means the caller
     # deliberately searched inside an ignored tree, 128 means we do not know.
     probe = _run_git_ignore_query(root, ["check-ignore", "-q", "--", os.path.abspath(root)])
-    if probe is None or probe.returncode != 1:
-        return frozenset()
+    if probe is None:
+        return _GitIgnoreView(frozenset(), frozenset(), "git could not be run")
+    if probe.returncode == 0:
+        return _GIT_IGNORE_NONE
+    if probe.returncode != 1:
+        err = (probe.stderr or b"").decode("utf-8", "replace").lower()
+        why = ("not a git repository" if "not a git repository" in err
+               else f"git check-ignore exited {probe.returncode}")
+        return _GitIgnoreView(frozenset(), frozenset(), why)
     listing = _run_git_ignore_query(root, [
         "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
         "--directory", "--no-empty-directory",
     ])
     if listing is None or listing.returncode != 0:
-        return frozenset()
+        return _GitIgnoreView(frozenset(), frozenset(), "git ls-files failed")
     dirs = set()
+    files = set()
     for entry in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
-        # Trailing slash is git's marker for "this whole directory is ignored".
-        # Entries without one are individual files, which we leave alone.
-        if not entry.endswith("/"):
+        if not entry:
             continue
+        # Trailing slash is git's marker for "this whole directory is ignored";
+        # an entry without one is an individual ignored file (#2738).
         rel = _strip_dot_slash(
             _safe_relpath(os.path.normpath(os.path.join(root, entry)), cwd)
         )
-        if rel and rel != "." and not rel.startswith(".."):
-            dirs.add(rel)
-    return frozenset(dirs)
+        if not rel or rel == "." or rel.startswith(".."):
+            continue
+        (dirs if entry.endswith("/") else files).add(rel)
+    return _GitIgnoreView(frozenset(dirs), frozenset(files), "")
+
+
+class _GitIgnoreTally:
+    """What one op's walks hid because git ignores it, and whether the filter
+    could run at all (#2738). Rendered into the op's header by `clause()`."""
+
+    def __init__(self) -> None:
+        self.hidden: List[str] = []
+        self.unavailable: List[str] = []
+
+    def saw(self, view: _GitIgnoreView) -> None:
+        if view.unavailable and view.unavailable not in self.unavailable:
+            self.unavailable.append(view.unavailable)
+
+    def clause(self) -> str:
+        """`, N gitignored files hidden` and/or `, gitignore filter not
+        applied (WHY)` -- or "" when the filter ran and hid nothing, or was
+        switched off on purpose."""
+        parts = []
+        n = len(self.hidden)
+        if n:
+            # "files" whatever N, matching the `N files hidden by
+            # exclude-paths` clause beside it.
+            parts.append(f", {n} gitignored files hidden")
+        if self.unavailable:
+            parts.append(", gitignore filter not applied ("
+                         + "; ".join(self.unavailable) + ")")
+        return "".join(parts)
+
+
+def _is_git_ignored_file(rel_path: str, view: _GitIgnoreView) -> bool:
+    """Whether a cwd-relative file path is one git listed as ignored (#2738)."""
+    if not view.files:
+        return False
+    return _strip_dot_slash(rel_path) in view.files
 
 
 def _strip_dot_slash(path: str) -> str:
@@ -2253,8 +2319,17 @@ def _gitignore_residual(path: str, exclude_paths: Tuple[str, ...]) -> bool:
     """
     if not exclude_paths:
         return False
+    view = _git_ignore_view(path)
+    # An ignored FILE the list does not already exclude is residual too
+    # (#2738): the system grep rtk runs would print it, and the native walker
+    # now hides it. So is a listing that could not be taken -- the native
+    # walker says so in its header, and the delegated report has no clause
+    # to say it in.
+    if view.unavailable:
+        return True
     return any(
-        not _is_excluded(rel, exclude_paths) for rel in _git_ignored_dirs(path)
+        not _is_excluded(rel, exclude_paths)
+        for rel in (*view.dirs, *view.files)
     )
 
 

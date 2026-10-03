@@ -103,3 +103,13 @@ def test_op_glob_brace_dedup(tmp_files: Path) -> None:
     # `{json,json}` shouldn't double-count
     out = supertool.op_glob("**/*.{json,json}", no_auto_read=True)
     assert "(2 files)" in out
+
+
+@pytest.fixture(autouse=True)
+def _no_gitignore_clause_outside_a_repo(monkeypatch):
+    """These pin header shapes and rtk delegation in tmp dirs that are not git
+    repositories. Since #2738 such a walk says `gitignore filter not applied
+    (not a git repository)` and declines delegation; that is pinned in
+    tests/test_gitignore_files_2738.py, so it is switched off here rather
+    than threaded through every exact header below."""
+    monkeypatch.setenv("SUPERTOOL_NO_GITIGNORE", "1")

@@ -505,6 +505,8 @@ Speedup: I/O-bound ops on different files. ~3-5× faster on cold filesystem; mod
 
 `glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for. And some files are worse than noise: a `grep` that happens to cross a `.env` puts a live token in an LLM's context.
 
+**`.gitignore` is the first guard.** All four ops skip files and directories git ignores, and say how many files they hid ([Gitignored files and directories are skipped](operations/search.md#gitignored-files-and-directories-are-skipped)). A gitignored `.env`, `.aws/` or `.ssh/` is therefore never walked into. The list below no longer names credential directories or `.env` files: those entries duplicated `.gitignore`, and naming a credential directory in shipped data is what the Anthropic plugin directory's validator holds as a credential read ([#2734](https://github.com/Digital-Process-Tools/claude-supertool/issues/2734), [#2738](https://github.com/Digital-Process-Tools/claude-supertool/issues/2738)). **A `.env` your repo does not gitignore is now visible to these ops** — gitignore it, or add it under `exclude-paths` below.
+
 Excluded **directories** are pruned at the walk boundary — never opened. Excluded **files** are dropped from the result, and a file dropped for **credential** reasons is **counted**, so the report line says how many were hidden rather than simply not mentioning them.
 
 Noise entries (`.git`, `node_modules`, `__pycache__`, `dist/`, the caches) are dropped without being counted — see [Hidden files](operations/search.md#hidden-files-are-counted-not-silently-dropped) for why a counter that is never zero stops being a signal.
@@ -517,31 +519,23 @@ Noise entries (`.git`, `node_modules`, `__pycache__`, `dist/`, the caches) are d
 __pycache__/  .venv/  venv/  dist/  build/
 phpstan-result-cache/  .phpunit.cache/  .rector/
 
-# Credential directories
-.max/  .ssh/  .aws/  .gnupg/  .kube/  .docker/
-.terraform/  .chef/  .npm/  secrets/  credentials/
-
 # Credential files
-.env/  .env.*  .netrc/  _netrc/  .npmrc/  .pypirc/
+.netrc/  _netrc/  .npmrc/  .pypirc/
 .git-credentials/  .pgpass/  .my.cnf/  .htpasswd/  .dockercfg/
 id_rsa*  id_dsa*  id_ecdsa*  id_ed25519*
 *.pem  *.key  *.p12  *.pfx  *.jks  *.keystore  *.ppk
 .hashnode-token/  .devto-token/  .bluesky-app-password/
-
-# Kept visible on purpose
-!.env.example  !.env.sample  !.env.template
-!.env.dist  !.env.defaults  !.env.schema
 ```
 
 **Three entry shapes:**
 
 | Shape | Example | Matches |
 |---|---|---|
-| Literal | `.env/`, `node_modules/` | a dir **or a file** of that name. One segment matches at any depth; a multi-segment path (`src/legacy/`) is anchored to the project root. The trailing `/` is normalisation, not a directory assertion. |
+| Literal | `.netrc/`, `node_modules/` | a dir **or a file** of that name. One segment matches at any depth; a multi-segment path (`src/legacy/`) is anchored to the project root. The trailing `/` is normalisation, not a directory assertion. |
 | Glob | `*.pem`, `id_rsa*` | fnmatched against the basename. Needed for shapes that are not a fixed name. |
-| Negation | `!.env.example` | un-excludes what it matches, and wins over every other entry whatever the order. |
+| Negation | `!config/*.key` | un-excludes what it matches, and wins over every other entry whatever the order. |
 
-**Where the credential-file boundary sits.** A file is on the list only when holding a credential is its entire purpose: an exact name (`.netrc`) or an unambiguous key-file shape (`*.pem`). There are deliberately no name-fragment heuristics — `*secret*`, `*token*`, `*password*` would hit source and test files constantly, and a search that silently skips your own code is a worse failure than the one the list exists to prevent. `.env.example` and its siblings are committed placeholders people legitimately read to learn which keys exist, so they are negated back in.
+**Where the credential-file boundary sits.** A file is on the list only when holding a credential is its entire purpose: an exact name (`.netrc`) or an unambiguous key-file shape (`*.pem`). There are deliberately no name-fragment heuristics — `*secret*`, `*token*`, `*password*` would hit source and test files constantly, and a search that silently skips your own code is a worse failure than the one the list exists to prevent.
 
 **Project-level additions** — add to `.supertool.json` under `ops.<op-name>.exclude-paths`. These are **merged additively** with the defaults (not replacing), and take all three shapes:
 

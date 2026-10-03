@@ -147,9 +147,9 @@ The gate is narrow because the rejoin is normally right. Measured over the 165 d
 
 **Delegation does not change the dialect.** When rtk is installed and enabled, a plain `grep` (no context, no count) is delegated to it. The system grep behind rtk reads a POSIX **BRE** unless told otherwise, where `|`, `+`, `?`, `(` and `{` are ordinary characters — so `ab+c` matched a literal plus rather than `abbc`, and only when that reading happened to match at all ([#987](https://github.com/Digital-Process-Tools/claude-supertool/issues/987)). Supertool passes `-E`, and delegates only patterns whose two readings are the same by construction: any backslash escape outside the punctuation both dialects agree on (`\. \$ \* \+ \? \( \) \[ \] \{ \} \| \\ \/ \-`) sends the search to the native walker, as do lookaround and inline flags (`(?...`), non-greedy quantifiers, and POSIX bracket classes (`[[:alpha:]]`, `[[=a=]]`, `[[.a.]]`). That is a whitelist rather than a list of known offenders, because the version that enumerated `\d`/`\w`/`\b` let GNU's `\<` and `\>` word boundaries through — they anchor in ERE and are the plain characters `<` and `>` in Python.
 
-## Gitignored directories are skipped
+## Gitignored files and directories are skipped
 
-`glob` and `grep` prune directories git ignores, at the walk boundary — the subtree is never opened. Without this, one `glob:**/Foo.php` in a repo with six agent worktrees under a gitignored `.claude/worktrees/` returned seven hits, six of them stale copies of other branches that sorted *first*; and `scanned 118353 files` was largely the same tree counted repeatedly.
+`glob`, `grep`, `tree` and `map` skip what git ignores. Directories are pruned at the walk boundary — the subtree is never opened. Files are dropped from the result and **counted**: the header says `N gitignored files hidden`, so a search that skipped something never reads like one that found nothing ([#2738](https://github.com/Digital-Process-Tools/claude-supertool/issues/2738)). Without this, one `glob:**/Foo.php` in a repo with six agent worktrees under a gitignored `.claude/worktrees/` returned seven hits, six of them stale copies of other branches that sorted *first*; and `scanned 118353 files` was largely the same tree counted repeatedly.
 
 **Supertool asks git rather than parsing `.gitignore`.** One `git ls-files --others --ignored --exclude-standard --directory` per search root answers with full ignore semantics — negations (`!keep/`), nested `.gitignore` files, `.git/info/exclude`, your global excludes — and `--directory` collapses an ignored tree to its top directory instead of descending into it. Reimplementing that pattern language would mean hiding files whenever we got a rule wrong, which is the failure direction this op exists to avoid.
 
@@ -162,7 +162,7 @@ The gate is narrow because the rejoin is normally right. Measured over the 165 d
 
 Only a walk that would have *descended into* an ignored tree is pruned. Deliberately entering one is not.
 
-**Scope, deliberately narrow:** only ignored **directories** are pruned. Ignored *files* elsewhere in the tree are still searched — the win is at the directory boundary, and the secret-file case belongs to [`exclude-paths`](../configuration.md#excluding-paths-from-traversal-ops), which does filter files. And the prune is not a filter on results: it shrinks the walk, so `scanned N` drops with it and stays an honest denominator.
+**Files too, since [#2738](https://github.com/Digital-Process-Tools/claude-supertool/issues/2738).** Until then only ignored directories were pruned, and ignored *files* were searched, on the grounds that the secret-file case belonged to `exclude-paths`. That list named credential directories in shipped data, which the Anthropic plugin directory's validator holds as a credential read, so the `.env` and credential-directory entries were removed ([#2734](https://github.com/Digital-Process-Tools/claude-supertool/issues/2734)) and `.gitignore` is the guard — the one `rg` and Claude Code's own Grep honour. The same single `git ls-files` call answers both: one per walk root, never one per file. A gitignored file you name directly (`grep:X:.env`, `glob:.env`, `map:ignored.py`) is read, exactly as before. Pruning shrinks the walk, so `scanned N` drops with it and stays an honest denominator.
 
 Three ways out, in descending scope:
 
@@ -172,7 +172,7 @@ Three ways out, in descending scope:
 | `SUPERTOOL_NO_GITIGNORE=1` | one invocation |
 | `:no-exclude` on the op | one call — also drops `.git/`, `node_modules/` and the rest of `exclude-paths` |
 
-Outside a git repo, without `git` on `PATH`, or when the query times out, nothing is pruned — an unanswerable question yields "no opinion", never "skip it".
+Outside a git repo, without `git` on `PATH`, or when the query fails or times out, nothing is pruned — an unanswerable question yields "no opinion", never "skip it" — **and the header says so**: `gitignore filter not applied (not a git repository)`. A walk that could not be filtered must not render like one that was. For the same reason `grep` does not delegate to rtk then: the delegated report has nowhere to say it, and rtk runs the system grep, which knows nothing about `.gitignore`.
 
 ## Delegated to rtk
 
