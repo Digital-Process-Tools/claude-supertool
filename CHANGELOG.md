@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.1] - 2026-10-03
+
+### Fixed
+
+- Carved out the two files `hooks/shipped_rules.py` reads at runtime (`.claude/jit-context/tools/00-manual/00-index.tsv` and `supertool-no-cut.md`) from the `release` branch's `.claude/` deny-list, and made `smoke_release_tree.py` fail a build where the shipped jit-context guard rule loads nowhere -- previously a release install shipped that rule disabled, silently (#2729).
+
 ## [0.65.0] - 2026-10-03
 
 ### Added
@@ -8883,7 +8889,8 @@ All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.65.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.65.1...HEAD
+[0.65.1]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.65.1
 [0.65.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.65.0
 [0.64.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.64.0
 [0.63.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.63.0
