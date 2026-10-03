@@ -418,10 +418,29 @@ def test_the_banner_is_denied_and_the_readme_reference_rewritten(tmp_path):
     report = mod.build(REPO_ROOT, "HEAD", out, cfg)
     assert "supertool-banner.webp" in report["removed"], report["removed"]
     assert not (out / "supertool-banner.webp").exists()
+    # Not asserted here: the rewritten-URL mechanism itself. This build also
+    # swaps README.release.md in for README.md (#2732's other step), so the
+    # shipped README no longer carries the original <img src> to rewrite at
+    # all -- see test_a_denied_image_referenced_by_readme_is_rewritten below
+    # for that mechanism in isolation, decoupled from the readme swap.
+
+
+def test_a_denied_image_referenced_by_readme_is_rewritten(tmp_path):
+    """The banner-denial mechanism in isolation: a synthetic repo whose
+    README references a denied image, with no readme swap configured --
+    the same generic path the real repo's docs/logo.png case already
+    proves, applied to a root-level webp via an <img> tag."""
+    repo = _make_repo(tmp_path, extra={
+        "banner.webp": "fake webp\n",
+        "README.md": '<img src="banner.webp" width="900">\n\n' + README,
+    })
+    cfg = _config(deny=_config()["deny"] + ["banner.webp"])
+    out = _build(tmp_path, repo, cfg)
+    assert not (out / "banner.webp").exists()
     readme = (out / "README.md").read_text(encoding="utf-8")
-    assert 'src="supertool-banner.webp"' not in readme, readme
-    assert ('src="https://raw.githubusercontent.com/Digital-Process-Tools/'
-            'claude-supertool/master/supertool-banner.webp"') in readme, readme
+    assert 'src="banner.webp"' not in readme, readme
+    assert ('src="https://raw.githubusercontent.com/Example-Org/'
+            'example-plugin/main/banner.webp"') in readme, readme
 
 
 # -- #2732: inline hooks/python-ladder.sh rather than source it -----------------
