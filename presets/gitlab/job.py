@@ -239,7 +239,7 @@ _BOILERPLATE = [
 def _is_boilerplate(line: str) -> bool:
     """True for a line that IS runner teardown noise, not one that mentions it.
 
-    `rx.match`, anchored at position 0 and each pattern's own trailing `\Z`:
+    `rx.match`, anchored at position 0 and each pattern's own trailing `\\Z`:
     the marker has to account for the whole line (past an optional stream
     prefix), not just appear somewhere inside a longer message.
     """
