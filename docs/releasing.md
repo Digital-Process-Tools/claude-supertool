@@ -88,7 +88,9 @@ tree to a throwaway `release-preview` branch (never `release` itself: that
 branch is written only by `publish`, from a tag) and validate
 `owner/repo@release-preview` in the form first. This is a manual check, run
 ad hoc before a change like that ships, not a step the automated release
-sequence above performs on every tag.
+sequence above performs on every tag. What the validator held on this tree,
+probe by probe, and how to read its structured report:
+[directory-validator.md](directory-validator.md).
 
 **No scan of the slim `release` tree exists yet.** Everything below about file
 counts and sizes is measured locally (`check_release_tree.py` / `smoke_release_tree.py`
