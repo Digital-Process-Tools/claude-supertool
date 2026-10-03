@@ -34,11 +34,11 @@
     ".claude/jit-context/tools/00-manual/00-index.tsv",
     ".claude/jit-context/tools/00-manual/supertool-no-cut.md"
   ],
-  "_budget_why": "max_file_bytes and max_files are the directory's own rules (pre-submission checklist, 'Files in the plugin folder'); images and fonts are exempt from the per-file limit. max_total_bytes is this repository's own ceiling, set from the measured slim tree (6.4 MiB after the CHANGELOG cut) with headroom.",
+  "_budget_why": "max_file_bytes and max_files are the directory's own rules (pre-submission checklist, 'Files in the plugin folder'); images and fonts are exempt from the per-file limit. max_total_bytes is this repository's own ceiling: comment/docstring stripping (#2731) took the built tree from 6,887,694 to 3,495,927 bytes (measured on HEAD, 2026-10-03); 4 MiB leaves about 600 KiB of headroom over that for growth before the next release.",
   "budget": {
     "max_file_bytes": 262144,
     "max_files": 512,
-    "max_total_bytes": 8388608
+    "max_total_bytes": 4194304
   },
   "_exceptions_why": "A declared exception lets check_release_tree.py report a REVIEW line instead of a FAIL for a named, issue-referenced path over max_file_bytes. Any other oversize file still fails -- this is not a second deny-list.",
   "exceptions": [],
