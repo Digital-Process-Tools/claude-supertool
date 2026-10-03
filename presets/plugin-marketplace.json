@@ -1,0 +1,15 @@
+{
+  "description": "Did this release reach anyone? Reads every Claude Code plugin catalogue and reports, per catalogue, whether this plugin is listed at all, the commit it is pinned to, how far that pin is behind local HEAD, the catalogue's bump PRs for it, and whether the validation gate those PRs depend on currently passes. Three states, never two — a catalogue that could not be read is skipped with its reason and never renders as a row saying absent.",
+  "requires": "gh",
+  "ops": {
+    "plugin-marketplace": {
+      "safety": "read-only",
+      "cmd": "{python} {path}plugin-marketplace/pin.py {args}",
+      "timeout": 180,
+      "hint": true,
+      "description": "Did this release reach anyone? Per catalogue: listed / not listed / skipped-with-reason, the pinned sha, the plugin manifest version at that sha, commits and releases behind local HEAD, and the catalogue's bump PRs for this plugin with the search that found them. 'Not listed' and 'could not be read' never render the same — the first needs a submission, the second needs re-reading — and the >1MB contents-API envelope that answers HTTP 200 with an empty body is refused by name rather than parsed into an absent plugin. Plugin identity comes from .claude-plugin/plugin.json; pass NAME for another plugin, and the distance to local HEAD is then skipped with its reason. Adds a gate section from 'claude plugin validate' because the catalogue validates before it opens a bump PR; an absent claude CLI is skipped, never a pass. Exit 1 if any catalogue went unanswered.",
+      "syntax": "plugin-marketplace[:NAME]",
+      "example": "plugin-marketplace"
+    }
+  }
+}

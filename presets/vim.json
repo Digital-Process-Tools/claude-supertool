@@ -1,0 +1,13 @@
+{
+  "description": "Documentation for the built-in vim op — the default edit op for any pattern-based edit. The entry is under `builtin-ops`, not `ops`: this preset documents an op it does not define. vim dispatches from core and its @payload route comes from _AT_FILE_BUILTIN_DEFAULTS, so vim:::PATH:::SCRIPT and vim:@- both work whether or not this preset is loaded. What loading it adds is the macro grammar — the mode boundaries, the ex subset, the autocorrections — which is 1,373 bytes and carries hint: true, so it renders in ops-compact, the listing that runs against the SessionStart byte cap. A repo that does not use vim can leave this unlisted; a repo that does should list it, because an agent writing a macro without the grammar writes a broken one.",
+  "requires": "nothing — the op is built in",
+  "builtin-ops": {
+    "vim": {
+      "syntax": "vim:::PATH:::SCRIPT",
+      "description": "vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro: NORMAL mode reads verbs char-by-char; insert verbs (i/a/A/I/o/O), search (/?), and ex (:) enter GREEDY modes where chars are TEXT/PAT until \\e (ESC, U+001B) returns to NORMAL. No separator chars — ';', '{', '}', newlines etc. are literal. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move), bare `:N`/`:$`/`:.` (line goto). Inserts (TEXT until \\e, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT/OTEXT (open below/above, AUTO-INDENT to current line). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. Ex: :s/PAT/REPL/[gid] (literal-fallback on unescaped parens/over-escapes), :%s, :Nd/:N,Md/:.,/PAT/d, :g/PAT/d (also bare `g/PAT/d` and `%g/PAT/d` autoprefixed with `:`), :v/PAT/d, :r FILE, :Nr FILE (read after line N), :Na\\nBODY\\n. (ex append after line N), :w/:wq (no-op, supertool writes atomically). Autocorrects: `oi<ws>TEXT` strips redundant verb-bleed, `:%%d` → `:%d`, `V<N>Gd` → `:.,Nd`, `64,` abandoned range stripped. **DEFAULT EDIT OP** for any pattern-based edit (find+change, insert relative to pattern, multi-step chains). Only fall back to `paste` (full file) / `edit` (unique literal swap) / `replace_lines` (known line range) when vim doesn't fit.",
+      "example": "vim:::skill.md:::/## Process\\eO## Task list\\eo1. Foo\\eo2. Bar",
+      "status": 1,
+      "hint": true
+    }
+  }
+}
