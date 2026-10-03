@@ -1396,6 +1396,11 @@ RESET_EXEMPT_GLOBALS = (
     "_OP_CONFIG_RESERVED_KEYS",
     "_MCP_SERVERS",
     "_MCP_STOP_CODES",
+    # The five presets the directory build's deny-list strips out (#2734).
+    # A fixed set literal, written once at import and only ever read via
+    # `name in _DIRECTORY_BUILD_EXCLUDED_PRESETS` inside _merge_presets --
+    # same lifetime and shape as _AT_FILE_REST_RAW_FIELDS below.
+    "_DIRECTORY_BUILD_EXCLUDED_PRESETS",
     # Per-command-word option grammar for the raw-command guard (#1421).
     # Read on every `guard_command` call, written by nothing.
     "_GUARD_GLOBAL_OPTIONS",
