@@ -1,0 +1,347 @@
+#!/bin/bash
+# SessionStart hook — creates ./supertool symlink and outputs
+# self-documentation from .supertool.json for LLM onboarding.
+
+# Create ./supertool symlink so the model can call it from any project.
+# Be specific about which file that is: a project may already have something at
+# this name, and replacing it — or later invoking it — would make the hook's
+# behaviour a property of the checkout rather than of the plugin.
+BIN="${CLAUDE_PLUGIN_ROOT}/supertool.py"
+
+# A session that starts inside a checkout of this repo must not get a wrapper
+# at all (#711). The config and presets/ resolve from the checkout while the
+# link points at the plugin install, so the wrapper runs the plugin's core
+# against this tree's presets — the mix #678 refuses. Every custom op through
+# it answers "comes from a different supertool tree" and exits 1: a wrapper
+# that is present, looks right, and works for nothing.
+#
+# This is a refusal, not a trust decision. The hook does not read, verify or
+# link the local supertool.py; deciding that a local file is genuine is exactly
+# how #688's defect returns. It decides only that linking *here* would produce
+# a broken wrapper, and creates none. A false positive costs a convenience
+# symlink that would not have worked anyway; the other design's false positive
+# links a stranger's file.
+#
+# Mirrors _mixed_tree_pair(): walk up for the .supertool.json that would be
+# loaded, then look for a supertool.py beside it. `-ef` compares device+inode
+# through symlinks, so the plugin install running in its own directory — the
+# same file on both sides — is correctly not a mix.
+in_foreign_supertool_tree() {
+    local d prev
+    d="$(pwd -P)"
+    while [ -n "$d" ]; do
+        if [ -f "$d/.supertool.json" ]; then
+            [ -f "$d/supertool.py" ] && ! [ "$d/supertool.py" -ef "$BIN" ]
+            return
+        fi
+        prev="$d"
+        d="$(dirname "$d")"
+        [ "$d" = "$prev" ] && break
+    done
+    return 1
+}
+
+# A symlink into a *sibling* version directory of this same plugin's cache is
+# this hook's own artifact from a previous release (#2071), not a stranger's
+# file: `$BIN` carries the *currently running* version's path, so a plugin
+# update alone makes the previous session's own symlink fail an exact-equality
+# check against it. Comparing everything but the version segment is reading
+# the hook's own handwriting, not deciding a local file is genuine — #711/
+# #737's refusal above is about a `supertool.py` the checkout owns, which
+# this is not: nothing here is read or executed, only two path strings are
+# compared.
+own_stale_symlink_version() {
+    local target="$1" plugin_dir target_dir
+    # A shape match alone is not proof: a symlink can name a version segment
+    # that was never installed, including bytes an attacker chose (this
+    # target is data a project's own tracked symlink can carry, same as any
+    # other file content). Requiring the target to actually exist closes
+    # that, because an attacker able to plant a symlink in a project does
+    # not thereby gain write access to the plugin cache this compares
+    # against -- they cannot make a nonexistent path there exist.
+    [ -e "$target" ] || return 1
+    plugin_dir="$(dirname "$(dirname "$BIN")")"
+    target_dir="$(dirname "$(dirname "$target")")"
+    [ "$(basename "$target")" = "$(basename "$BIN")" ] || return 1
+    [ -n "$target_dir" ] && [ "$target_dir" = "$plugin_dir" ] || return 1
+    basename "$(dirname "$target")"
+}
+
+if in_foreign_supertool_tree; then
+    echo "> No ./supertool wrapper created here: this directory is its own supertool tree, so a wrapper pointing at the plugin install would run the plugin core against this tree's config and presets — the mix every custom op declines (#678)."
+    echo "> Use: python3 supertool.py 'op:args' — core, config and presets from one tree."
+    if [ -e "./supertool" ] || [ -L "./supertool" ]; then
+        echo "> Something is already at ./supertool and is left untouched. If it points at the plugin install, it is the broken wrapper described above."
+    fi
+elif [ -L "./supertool" ] && [ "$(readlink "./supertool")" = "$BIN" ]; then
+    :
+elif [ -L "./supertool" ] && OLD_VERSION="$(own_stale_symlink_version "$(readlink "./supertool")")"; then
+    NEW_VERSION="$(basename "$(dirname "$BIN")")"
+    # The repoint is attempted before the message is chosen, not after, so
+    # the sentence names what actually happened rather than what was merely
+    # intended -- the same "a receipt must not claim more than it verified"
+    # rule as everywhere else here.
+    if ln -sf "$BIN" "./supertool" 2>/dev/null; then
+        echo "> ./supertool pointed at this plugin's own $OLD_VERSION — its own symlink from an earlier release, not a stranger's file. The plugin is now $NEW_VERSION; repointed it so calls are answered by the current version."
+    else
+        echo "> ./supertool pointed at this plugin's own $OLD_VERSION — its own symlink from an earlier release, not a stranger's file. The plugin is now $NEW_VERSION, but repointing it failed; calls will still be answered by $OLD_VERSION until this is fixed by hand."
+    fi
+elif [ -e "./supertool" ] || [ -L "./supertool" ]; then
+    echo "> ./supertool already exists here and is not the plugin symlink — leaving it untouched."
+else
+    ln -sf "$BIN" "./supertool" 2>/dev/null
+fi
+
+# Output self-documentation from .supertool.json (fallback if no config).
+#
+# Through the shared ladder (#1382), never the bare name `python3`. That name
+# used to be right here, and #572 bans it from every spawn position in this
+# repo: on Windows it can resolve to the App Execution Alias stub and on a
+# stock macOS to the Xcode Command Line Tools stub, and both *block* rather
+# than error. At session start that is not an error message, it is Claude Code
+# taking a hook timeout to come up and then saying nothing about supertool —
+# an absence produced by the tool, read as an absence in the world.
+#
+# **Three states, and the floor is this hook's own decision** (#1382 asks which
+# it should be). Not a bare `python3` last rung: it would keep the hang for
+# exactly the hosts that have no alternative. Not a loud failure either — a
+# non-zero SessionStart hook is a broken session on every platform to report a
+# missing interpreter on one. So: say it once, degrade, keep going. The
+# `./supertool` symlink above never needed an interpreter and is already made;
+# what is lost is the roster, and the line below names what was tried so the
+# reader looks for the right absence.
+#
+# 'ops:session' — signatures, with the names-only roster as a measured fallback
+# (#2028). Not 'ops-compact': `ops-compact` is ~19.77KB and `ops:full` ~89.76KB
+# (moved from ~89.55KB by #2665's gh-issue-comment GET-before-PATCH
+# ownership-check description, itself moved from ~89.11KB by #2643's
+# gh-issue-comment edit=COMMENT_ID description, itself moved from ~88.71KB
+# by #2592's git-commit control-byte refusal, itself moved from ~87.46KB by
+# #1985's oss-tick preset description text, itself moved from ~87.11KB by
+# #1315's gl-pipeline/mcp_stop description and syntax text, and from
+# ~86.89KB by #2536/#2544's desktop-notification knob text) against a
+# 10,000-byte cap, so the compact listing was truncated every session
+# everything alphabetically after `grep` was hidden — the whole gh-*/git-*
+# families, radar, watch, read, paste, tree. It disclosed the truncation
+# honestly and that did not help, because what was hidden was existence and a
+# reader cannot miss what they never learned about.
+#
+# Not the roster either, which is what this line said for fifteen releases.
+# `ops:roster` is ~2.1KB (moved from ~2.0KB by #1850's `statusline` op) of
+# names plus a safety class, and it answers "does this op exist" (#614) but
+# not "is this op the answer" — an error teaches a
+# signature only after the decision to call has been made, and a name a reader
+# cannot interpret is a capability never reached for. Nothing fails when that
+# happens, so the cost was invisible.
+#
+# Bare `ops` is signatures-only since #1774 and fits at ~4.70KB (moved from
+# ~4.58KB by #1850's `statusline` op and #2478's `channel:stranded` addition
+# to `channel`'s `syntax` field -- the two land within this test's own
+# rounding tolerance of each other).
+# Whole hook: ~5.64KB (moved from ~5.52KB by the same two changes) against
+# 10,000. That was true all along and this comment
+# said so in passing while choosing the roster anyway: the numbers it reasoned
+# from were wrong — `ops` was stated at 47,254 (it is 4,126) and the cap at
+# 7,168 (it is 10,000, read out of the harness in #2029). #1877 corrected the
+# first pair here and the copy in _supertool.py kept them another fifteen
+# releases; both are now graded.
+#
+# The fallback is `ops:session`'s decision, not this script's, because the cap
+# constant lives in Python: a shell script measuring a payload it must then
+# regenerate is a second place for one decision to go stale.
+#
+# (Not exact figures: the disclosure names the absolute config path, so what a
+# session receives is these plus the length of that path — 30 to 130 bytes,
+# depending on where the checkout sits. tests/test_render_size_claims_1877.py
+# normalises that path away before grading, so the figures above are
+# checkout-independent and the tolerance is rounding room only. It read "they
+# move with the checkout, which is why the test grades them with a tolerance
+# rather than to the byte" until a 129-char clone made four of those rows red
+# with nothing wrong; the tolerance was the first place everyone looked, and it
+# was the wrong one.) Descriptions are one call away and richer there:
+# `help:OP` carries the full contract, the semantics and a worked example,
+# where the listing row carried one line.
+# shellcheck shell=bash
+# The interpreter ladder both shipped hooks resolve through (#1382).
+# Sourced, never executed - hence a `shell` directive and no shebang, and
+# hence bash rather than sh: both sourcing hooks are `#!/bin/bash` and the
+# candidate list is an array.
+#
+# It lives in its own file because it used to live in pre-bash-guard.sh alone,
+# and session-start.sh - the other hook in this directory - ran the bare name
+# `python3`. Two scripts a few lines apart disagreeing about the repo's own
+# convention is not a typo, it is what happens when a decision has no home:
+# the next hook written here would have chosen for a third time. One file, so
+# a hook inherits the decision instead of making it.
+#
+# **The bare name `python3` is never a candidate** (#572). On Windows it can
+# resolve to the App Execution Alias stub, which *blocks* rather than erroring;
+# on a stock macOS `/usr/bin/python3` is the Xcode Command Line Tools stub,
+# which opens an install dialog. Neither fails - both hang, one before every
+# Bash call and one at session start, where the symptom is a slow startup and
+# no supertool output rather than an error anyone can act on. Versioned names,
+# an activated venv and `py -3` are tried instead, and each must *execute*,
+# not merely resolve.
+#
+# **`py -3` is the last rung, and it is the only one Windows usually has**
+# (#1402). Neither python.org's installer nor GitHub's `hostedtoolcache`
+# creates `python3.9.exe`-`python3.14.exe`; both create `python.exe` and
+# `python3.exe`. So the versioned ladder finds nothing on a standard Windows
+# install. The launcher is a real executable rather than an alias stub, it
+# takes a version selector, and it is tried **after** every versioned name so
+# a host with a real `python3.12` keeps using it. Graded **reasoned, not
+# observed** (the #627 convention): nobody here has a Windows box. The
+# load-bearing claim is that Windows ships no default App Execution Alias for
+# `py.exe` - the stubs that block, and that got `python3` banned in #572, are
+# `python.exe` and `python3.exe`. If that is wrong, the cost is #572 again,
+# which is why the rung is last: any host with a versioned interpreter never
+# reaches it.
+#
+# **#572 considered `py -3` and dropped it, and this reverses that** for the
+# hooks only. Its reason, from the v0.15.0 CHANGELOG entry, was "this is a
+# bash script that only ever runs under Git Bash or WSL, where a Windows
+# launcher shim is the wrong layer to reach for" - a preference about layering,
+# argued without the fact #1402 supplies: on Windows the versioned names it
+# chose instead **do not exist**. #572 checked that versioned names are not
+# *aliased*, which is true, and not that they are present. Under WSL `py` is
+# simply absent and the rung costs a `command -v`. `.githooks/pre-push` keeps
+# the shorter ladder deliberately and does not source this file: it refuses the
+# push and names `PYTHON=` as the way through, and a loud refusal with an
+# escape hatch does not need the extra rung a disclosed degrade does.
+#
+# **`SUPERTOOL_PYTHON` is deliberately not read here** (#1390). It selected the
+# interpreter, the only test was `-c pass`, and every binary that exits 0
+# passes that - so `SUPERTOOL_PYTHON=/usr/bin/true` was rc 0, empty stdout and
+# no disclosure. The variable exists for supertool's own spawns; a gate
+# deciding whether a command may run is a different trust context and does not
+# inherit it.
+#
+# `VIRTUAL_ENV` stays, because on Windows it is often the only interpreter
+# there is, and it is required to look like a venv (`pyvenv.cfg`) rather than
+# merely to be set. That narrows the same primitive without closing it: an
+# attacker who can write two files and set one variable still gets an exec.
+# Said plainly rather than implied, because the ladder cannot be made PATH-free
+# - PATH is itself an environment variable, and anyone who controls it already
+# controls every command in the session.
+#
+# **What the caller decides is what happens when nothing answers**, and the two
+# hooks answer differently on purpose: the guard declines in words and lets the
+# command through, the session hook prints its disclosure and still leaves the
+# `./supertool` symlink it made without any interpreter at all. This file
+# resolves; it never decides.
+
+#: One name every rung has to print exactly, so a candidate is chosen by what
+#: it does rather than by what it is called. Not `-c pass`: exiting 0 is a
+#: property of `/usr/bin/true`, of `/bin/ls` and of every other binary on the
+#: box (#1390). Equality rather than substring, which is also what rejects a
+#: launcher that writes a preamble of its own (#1402).
+#: Named `SUPERTOOL_LADDER_*` rather than `SUPERTOOL_PYTHON_*` on purpose:
+#: `SUPERTOOL_PYTHON` is the variable #1390 removed from this trust context,
+#: and `tests/test_guard_interpreter_ladder_1390.py` pins its absence by
+#: substring. A prefix that happens to contain it would have to weaken that
+#: test to ship, and the test is right.
+SUPERTOOL_LADDER_PROBE='import sys; sys.stdout.write("supertool-python-" + str(sys.version_info[0]))'
+
+#: The rungs, in words, for a caller disclosing that none of them answered. A
+#: reader told only about the versioned names looks for the wrong absence.
+# shellcheck disable=SC2034  # read by the sourcing hook, not by this file
+SUPERTOOL_LADDER_RUNGS="python3.9-python3.14, an activated virtualenv's own interpreter, or the Windows launcher py -3"
+
+# supertool_python_identifies INTERPRETER [ARG...] - is this argv a Python 3?
+#
+# `session-start.sh`'s alone since #1377: it runs supertool with real
+# arguments, whose free-form output cannot identify the interpreter that
+# produced it, and it pays this probe once per session. `pre-bash-guard.sh`
+# ran it once per Bash call for 52ms of a 301ms wrapper and now identifies a
+# candidate by the envelope its real run writes.
+#
+# Reads /dev/null rather than inheriting stdin, so a probe never consumes
+# input a caller's real run still needs.
+supertool_python_identifies() {
+    _said=$("$@" -c "$SUPERTOOL_LADDER_PROBE" 2>/dev/null </dev/null) || return 1
+    [ "$_said" = "supertool-python-3" ]
+}
+
+# supertool_python_each CALLBACK - call CALLBACK with each candidate argv.
+#
+# Takes a callback rather than printing a list because a candidate is an argv,
+# not a word: `py -3` is two of them and a `$VIRTUAL_ENV` path can contain
+# spaces, so any string-splitting rendezvous between this file and its callers
+# would break one or the other. A callback that succeeds is expected to exit
+# the script; returning simply advances to the next rung, and falling out of
+# the loop is how a caller learns nothing answered.
+supertool_python_each() {
+    _callback="$1"
+    # shellcheck disable=SC2178,SC2128  # _candidates is an array throughout
+    _candidates=(python3.14 python3.13 python3.12 python3.11 python3.10 python3.9)
+    if [ -n "${VIRTUAL_ENV:-}" ] && [ -f "$VIRTUAL_ENV/pyvenv.cfg" ]; then
+        _candidates=("$VIRTUAL_ENV/bin/python3" "$VIRTUAL_ENV/Scripts/python.exe" "${_candidates[@]}")
+    fi
+
+    for _candidate in "${_candidates[@]}"; do
+        command -v "$_candidate" >/dev/null 2>&1 || continue
+        "$_callback" "$_candidate"
+    done
+
+    # The Windows Python launcher, last (#1402). `command -v` first, so a host
+    # without it never execs anything: a missing `py` costs a builtin lookup,
+    # not a spawn.
+    if command -v py >/dev/null 2>&1; then
+        "$_callback" py -3
+    fi
+}
+
+# shellcheck disable=SC2329  # invoked indirectly, as supertool_python_each's callback
+onboard() {
+    supertool_python_identifies "$@" || return 1
+    if ! "$@" "${CLAUDE_PLUGIN_ROOT}/supertool.py" 'introduction' 'output-format' 'ops:session'; then
+        echo "> supertool's op listing is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops' prints the listing."
+    fi
+    # 'channel:stranded' is a SEPARATE call, deliberately not folded into the
+    # batch above (#2478 self-review). channel.py's `stranded` sub-op returns
+    # RC_NOT_DELIVERING=1 -- not a failure, an answer -- whenever it has
+    # something to report, but presets/watch.json's `channel` op declares no
+    # `exitStatus`, so the supertool dispatcher cannot tell that apart from a
+    # real refusal (its own description field already says so: "the distinct
+    # codes ... survive only when presets/watch/channel.py is run directly,
+    # because the supertool wrapper collapses every non-zero to 1"). Batched
+    # with the listing call above, a stranded channel's nonzero exit made the
+    # WHOLE batch nonzero and triggered the "op listing is incomplete" line
+    # printed above -- false, since `ops:session` had rendered completely --
+    # at exactly the one moment #2478 exists to be noticed: a session with a
+    # stranded channel. Declaring `exitStatus` on the shared `channel` op
+    # was rejected: `channel:health`/`channel:probe` reuse the same manifest
+    # entry and their own non-zero codes (NOT DELIVERING, CANNOT DETERMINE,
+    # CONTRADICTED, ...) must stay real findings, never silently certified
+    # "clean" for a future caller that chains on the exit status. A second,
+    # unbatched call costs one extra interpreter start at session start and
+    # keeps the correctness the shared declaration would have given up.
+    #
+    # Silent on a clean channel or one nobody watches, so the ordinary session
+    # pays nothing for it beyond that one extra process. Read-only by
+    # construction: it opens no socket, makes no network call and spawns
+    # nothing, reading only what this channel's own pollers already wrote to
+    # their state files.
+    #
+    # 'channel:health' is deliberately NOT what runs here. Its bound path spawns
+    # `claude mcp get`, and a SessionStart hook that starts an MCP server to
+    # diagnose an MCP server is #1558's shape one layer worse. It also answers
+    # about the socket right now, and at session start the consumer may not have
+    # bound yet -- a missing socket at t=0 is a race, not a finding.
+    #
+    # Why this belongs at session start at all: measured 2026-09-09, a session
+    # armed with --dangerously-load-development-channels got no consumer, and
+    # four pollers emitted into a socket that did not exist for 32 minutes. One
+    # of the lost events was a failing check on an open pull request. Every
+    # instrument said so correctly and none of them was asked, because a session
+    # that does not know its channel is dead has no reason to ask one.
+    "$@" "${CLAUDE_PLUGIN_ROOT}/supertool.py" 'channel:stranded'
+    exit 0
+}
+
+    supertool_python_each onboard
+    echo "> supertool's op listing is not shown: nothing on PATH identified itself as a Python 3. Tried $SUPERTOOL_LADDER_RUNGS. The bare name python3 is never run, because on Windows and on a stock macOS it can resolve to a stub that blocks instead of erroring (#572, #1382)."
+
+# A SessionStart hook that exits non-zero is a broken session, and every path
+# above this line has already said what it could not do.
+exit 0
