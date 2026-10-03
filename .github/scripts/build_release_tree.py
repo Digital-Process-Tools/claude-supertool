@@ -251,6 +251,108 @@ def rewrite_links(text: str, md_path: str, should_rewrite: Callable[[str], str |
     return "".join(out), count
 
 
+# -- sourced-script inlining (#2732) -----------------------------------------------
+#
+# COMMAND_SCRIPT_NOT_FOLLOWED ("Scripts the validator couldn't follow") is a
+# confirmed hold on a shipped script that `source`s/`.`s another file
+# (claude-jit-context's docs/directory-validator.md, playbook step 5). The
+# committed tree keeps hooks/python-ladder.sh as its own file -- one
+# definition both hooks share, readable on its own -- and this step produces
+# a release tree where each consumer carries the ladder's body in place of
+# the `source`/`.` line, and the now-unreferenced ladder file does not ship.
+#
+# A build-time transform of the in-memory tree, never an edit to the
+# committed hooks/*.sh: local development keeps the shared file.
+
+_LADDER_VAR_LINE = re.compile(
+    r'^LADDER="\$\(cd "\$\(dirname "\$0"\)" && pwd\)/python-ladder\.sh"\n',
+    re.MULTILINE)
+_LADDER_SHELLCHECK_COMMENT = re.compile(
+    r'^[ \t]*# shellcheck source=hooks/python-ladder\.sh\n', re.MULTILINE)
+_LADDER_SOURCE_GUARDED = re.compile(
+    r'^\. "\$LADDER" 2>/dev/null \|\| decline "the shared interpreter ladder '
+    r'could not be sourced"\n', re.MULTILINE)
+_LADDER_SOURCE_IF = re.compile(
+    r'^if \. "\$LADDER" 2>/dev/null; then\n'
+    r'(?P<then>(?:.*\n)*?)'
+    r'^else\n'
+    r'(?:.*\n)*?'
+    r'^fi\n',
+    re.MULTILINE)
+
+
+class LadderInlineError(BuildError):
+    """The ladder-inlining step could not recognise a consumer's own
+    `source`/`.` call site -- refuse the build rather than ship a hook with
+    the ladder's functions undefined (#2732)."""
+
+
+def inline_python_ladder(contents: dict[str, bytes], config: dict) -> list[str]:
+    """Mutate CONTENTS (path -> utf-8 bytes, the same shape `build()` already
+    holds) in place: inline the ladder's body into every consumer named by
+    config["ladder_inline"], then drop the ladder file itself. Returns the
+    list of consumers actually inlined into -- empty if the config carries
+    no `ladder_inline` key or the ladder path is not in this tree (a config
+    problem for a build that has nothing to inline, not an error: a tree
+    that denied hooks/ entirely has nothing to do here either)."""
+    spec = config.get("ladder_inline")
+    if not spec:
+        return []
+    ladder_path = spec["ladder"]
+    if ladder_path not in contents:
+        return []
+    ladder_body = contents[ladder_path].decode("utf-8").rstrip("\n") + "\n"
+    inlined: list[str] = []
+    for rel in spec.get("consumers", []):
+        if rel not in contents:
+            continue
+        text = contents[rel].decode("utf-8")
+        # A function as repl, never a string: re.sub treats backslashes in a
+        # string replacement as backreferences, and the ladder's own prose
+        # is not guaranteed free of them.
+        new_text, n_var = _LADDER_VAR_LINE.subn(
+            lambda _m: ladder_body, text, count=1)
+        if n_var != 1:
+            raise LadderInlineError(
+                f"{rel}: the ladder variable assignment this step expects to "
+                "replace was not found -- #2732's inlining is out of date "
+                "with this file")
+        new_text, n_comment = _LADDER_SHELLCHECK_COMMENT.subn("", new_text)
+        new_text, n_guarded = _LADDER_SOURCE_GUARDED.subn("", new_text)
+        new_text, n_if = _LADDER_SOURCE_IF.subn(
+            lambda m: m.group("then"), new_text)
+        if n_guarded + n_if != 1:
+            raise LadderInlineError(
+                f"{rel}: the `source`/`.` call site this step expects to "
+                "remove was not found (or was found more than once) -- "
+                "#2732's inlining is out of date with this file")
+        contents[rel] = new_text.encode("utf-8")
+        inlined.append(rel)
+    contents.pop(ladder_path, None)
+    return inlined
+
+
+# -- release README swap (#2732) ---------------------------------------------------
+#
+# MCP_FORWARDS_CREDENTIAL_ENV's text-only half: the full README's security
+# section (a refused-path example) and command examples read, to the
+# directory's own scanner, as credential-handling/attack text. A short,
+# variable-free release README swapped in for README.md at build time is
+# the documented fix (claude-jit-context's docs/directory-validator.md,
+# playbook step 4) -- the full README never reaches the directory at all.
+
+def swap_release_readme(contents: dict[str, bytes], config: dict) -> bool:
+    """Replace contents["README.md"] with contents[config["release_readme"]]
+    and drop the release-only file from what ships under its own name.
+    Returns whether a swap happened -- False if the config names no
+    `release_readme` key or that path is not in this tree."""
+    rel = config.get("release_readme")
+    if not rel or rel not in contents:
+        return False
+    contents["README.md"] = contents.pop(rel)
+    return True
+
+
 # -- build ------------------------------------------------------------------------
 
 def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
@@ -292,6 +394,18 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
     if changelog and changelog in contents:
         url = f"https://github.com/{slug}/blob/{config['default_branch']}/{changelog}"
         contents[changelog] = cut_changelog(contents[changelog].decode("utf-8"), url).encode("utf-8")
+
+    ladder_inlined = inline_python_ladder(contents, config)
+    if ladder_inlined:
+        ladder_path = config["ladder_inline"]["ladder"]
+        kept = [(mode, sha, path) for mode, sha, path in kept if path != ladder_path]
+        removed.append(ladder_path)
+
+    readme_swapped = swap_release_readme(contents, config)
+    if readme_swapped:
+        readme_path = config["release_readme"]
+        kept = [(mode, sha, path) for mode, sha, path in kept if path != readme_path]
+        removed.append(readme_path)
 
     rewritten: dict[str, int] = {}
     if config.get("rewrite_links", True):
@@ -335,7 +449,8 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
     unused = [e for e in deny if not any(is_denied(p, [e]) for _, _, p in entries)]
     unused_keep = [e for e in keep if not any(p == e for _, _, p in entries)]
     return {"ref": ref, "commit": commit, "kept": len(kept), "removed": removed,
-            "rewritten": rewritten, "unused_deny": unused, "unused_keep": unused_keep}
+            "rewritten": rewritten, "unused_deny": unused, "unused_keep": unused_keep,
+            "ladder_inlined": ladder_inlined, "readme_swapped": readme_swapped}
 
 
 def main(argv: list[str] | None = None) -> int:

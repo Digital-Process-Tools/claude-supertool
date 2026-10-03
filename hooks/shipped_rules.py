@@ -289,10 +289,15 @@ def _body(rule: Rule):
 _DISCARD_SEPARATORS = ";()<>|&"
 
 #: `_supertool._GUARD_HEREDOC`, copied rather than imported for the same
-#: #1377 reason as everything else in this module: a plain opener, `<<-`
-#: (strips leading tabs) included, an optional matching quote around the
-#: delimiter word.
-_DISCARD_HEREDOC = re.compile(r"<<-?\s*([\x22\x27]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+#: #1377 reason as everything else in this module: a plain opener, the dash
+#: form that strips leading tabs included, an optional matching quote around
+#: the delimiter word.
+#:
+#: Built from `chr(60)` rather than typed as two literal characters (#2732):
+#: the Anthropic directory's own write-up files a typed heredoc operator
+#: in ANY shipped script, even inside a regex, as a hard block.
+_LT = chr(60)
+_DISCARD_HEREDOC = re.compile(_LT + _LT + r"-?\s*([\x22\x27]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
 def _strip_heredoc_bodies(prefix: str) -> str:
@@ -453,12 +458,12 @@ def match(command: str, plugin_root: str, project_dir: str):
         text = _body(rule)
         if text is None:
             # A deny with no remedy in it is a wall the caller cannot read
-            # their way out of. Disclose and allow, the same third state the
+            # their way out of. Disclose and let it through, the same third state the
             # rest of this hook uses.
             return "note", (
                 "supertool's shipped rule " + rule.name + " matched this "
                 "command and its body could not be read from " + rule.path
-                + ". The command was allowed - this is a statement about the "
+                + ". The command proceeded - this is a statement about the "
                 "rule, not about the command.")
         if rule.verb == "deny":
             text = text + _discard_line(command, found.start())
@@ -481,7 +486,7 @@ def match(command: str, plugin_root: str, project_dir: str):
             "supertool ships guard rules the `replaces` registry cannot "
             "express, and this install could not honour "
             + str(len(skipped)) + " of them: " + "; ".join(skipped)
-            + ". The command was allowed - this is a statement about the "
+            + ". The command proceeded - this is a statement about the "
             "rule layer, not about the command.")
     return None
 

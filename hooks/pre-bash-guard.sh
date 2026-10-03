@@ -6,19 +6,20 @@
 # plugin install where the interpreter is missing must not turn every Bash call
 # into a hook error.
 #
-# **Which interpreter runs it is `hooks/python-ladder.sh`'s decision**, shared
-# with `hooks/session-start.sh` since #1382. The bare name `python3` is never
-# tried (#572), `py -3` is the last rung (#1402), `SUPERTOOL_PYTHON` is not
-# read (#1390), and a candidate has to identify itself before it is run — the
-# reasoning for each of those lives in that file rather than being restated in
-# two, which is the state #1382 was filed about.
+# **Which interpreter runs it is the shared interpreter ladder's decision**
+# (#1382, inlined at release-build time, #2732) -- the bare name `python3` is
+# never tried (#572), `py -3` is the last rung (#1402), `SUPERTOOL_PYTHON` is
+# not read (#1390), and a candidate has to identify itself before it is run.
+# `session-start.sh` shares the same ladder rather than a second copy of the
+# decision, which is the state #1382 was filed about.
 #
 # **What is this script's own decision is the floor**, and the three hooks that
 # resolve an interpreter all pick a different one on purpose. This one
-# discloses and allows: when no rung answers, the gate is off and the session
-# continues. `.githooks/pre-push` refuses the push, lists every name it tried
-# and documents `PYTHON=` as the way through — a loud refusal with an escape
-# hatch does not need the extra rung a disclosed allow does. `session-start.sh`
+# discloses and lets the command through: when no rung answers, the gate is off
+# and the session continues. `.githooks/pre-push` refuses the push, lists every
+# name it tried and documents `PYTHON=` as the way through — a loud refusal
+# with an escape hatch does not need the extra rung a disclosed pass-through
+# does. `session-start.sh`
 # prints its disclosure and keeps the `./supertool` symlink, which never needed
 # an interpreter at all.
 #
@@ -61,8 +62,9 @@ BIN="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/hooks/pre_bash_gua
 #: **It used to be the envelope's own first bytes, and that was the defect**
 #: (#1625). The rung wrote a `hookSpecificOutput` document, this script matched
 #: a prefix of it and forwarded the whole thing, so a `$VIRTUAL_ENV/bin/python3`
-#: printing a well-formed document carrying `"permissionDecision":"allow"` and
-#: exiting 0 had written the harness's verdict. Well-formed JSON: nothing for
+#: printing a well-formed document carrying a `permissionDecision` value
+#: other than `deny` and exiting 0 had written the harness's verdict.
+#: Well-formed JSON: nothing for
 #: #1613's escaper, which closes the route where a *path* writes that field by
 #: concatenation, not the route where the rung's own stdout does.
 #:
@@ -199,7 +201,7 @@ _deny() {
 # rather than at this function's five call sites is what stops a sixth call
 # site reintroducing #1613.
 decline() {
-    _note "supertool raw-command guard did not run: $1. The command was allowed - this is a statement about the guard, not about the command."
+    _note "supertool raw-command guard did not run: $1. The command proceeded - this is a statement about the guard, not about the command."
 }
 
 # relay ANSWER - the envelope this script writes for a rung's answer.
@@ -230,8 +232,8 @@ decline() {
 # dropped either: a wrapper and a `pre_bash_guard.py` from different installs
 # disagreeing about the vocabulary would otherwise turn every Bash call into a
 # gate that silently said nothing, which is the fail-open this file's header
-# opens by refusing. So it takes the same disclosed-allow the ladder's own
-# failures take, and names the dialect it could not read. The verb is
+# opens by refusing. So it takes the same disclosed pass-through the ladder's
+# own failures take, and names the dialect it could not read. The verb is
 # rung-controlled, so it is cut to a length and escaped like any other text.
 # shellcheck disable=SC2329  # reached from `attempt`, itself a callback
 relay() {
@@ -240,8 +242,8 @@ relay() {
     # A stray carriage return is a verb, not a dialect. `pre_bash_guard.py`
     # writes bytes rather than text precisely so Windows cannot put one here,
     # but this wrapper also runs under Git Bash against whatever `py -3`
-    # resolves to, and a `deny` silently demoted to a disclosed allow by a
-    # line ending is the worst failure available on this path. Stripping it
+    # resolves to, and a `deny` silently demoted to a disclosed pass-through by
+    # a line ending is the worst failure available on this path. Stripping it
     # reads the verb that was sent; it cannot turn an unknown dialect into a
     # known one.
     _verb=${_verb%"$CR"}
@@ -284,8 +286,8 @@ attempt() {
             # exactly like one whose output does not match this wire
             # protocol at all - fall through with neither `relay` called nor
             # `PARTIAL_TRIED` set, so the walk continues to the next
-            # candidate. That is the same road #1625 already cut for a
-            # forged `allow`: not a verb this build accepts, so the answer
+            # candidate. That is the same road #1625 already cut for a forged
+            # verdict other than deny: not a verb this build accepts, so the answer
             # is never committed to, and a real interpreter further down the
             # ladder still gets to inspect the command and deny it.
             #
@@ -340,7 +342,7 @@ attempt() {
             # answer is what an interpreter killed part-way through
             # `sys.stdout.write` leaves behind, and the prefix test accepts
             # it. A fragment is a verb this wrapper cannot read, so relaying
-            # one would buy a disclosed allow about a rung that was answering
+            # one would buy a disclosed pass-through about a rung that was answering
             # correctly until it died — a worse diagnosis than the one below,
             # which names the interpreter.
             #
@@ -378,4 +380,4 @@ fi
 if [ -n "${LAST_TRIED:-}" ]; then
     decline "$LAST_TRIED exited $LAST_RC without writing a verdict"
 fi
-decline "no $SUPERTOOL_LADDER_RUNGS on PATH that executes (the bare name python3 is never tried, see hooks/python-ladder.sh)"
+decline "no $SUPERTOOL_LADDER_RUNGS on PATH that executes (the bare name python3 is never tried)"

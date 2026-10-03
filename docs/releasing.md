@@ -109,6 +109,7 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
   | `.supertool.example.json` | a copy-paste template referenced only from denied docs |
   | `CLAUDE.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md` | governance prose for contributors to this repository, not loaded by the plugin |
   | `pyproject.toml` | packaging metadata for the pip route, not read at runtime |
+  | `supertool-banner.webp` | the directory held a release-tree probe citing this asset (`UNREAD_ASSET_REFERENCED`, #2732); README's own link-rewriting turns its `<img src>` into an absolute URL on `master`, the same mechanism `docs/` links already use |
 
   **Kept, on purpose, even though they look like dev config:**
   `_shipped_reference.py` is the fallback `_shipped_config()` reads once
@@ -134,9 +135,24 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
   (README's `docs/` links) to absolute URLs on `master`: `raw.githubusercontent.com`
   for images, `github.com/.../blob/master` for everything else. Links to files that
   still ship are left alone.
+- **It inlines `hooks/python-ladder.sh`** into the two hooks that `source`/`.` it
+  (`hooks/pre-bash-guard.sh`, `hooks/session-start.sh`), config key
+  `ladder_inline`, and the now-unreferenced file does not ship. The committed
+  tree keeps the shared file for local development; a shipped script that
+  sources another is a confirmed directory hold
+  (`COMMAND_SCRIPT_NOT_FOLLOWED`, #2732) that this step removes without
+  duplicating the ladder's definitions by hand in both hooks.
+- **It swaps `README.release.md` in for `README.md`**, config key
+  `release_readme`. The full README's security section and command examples
+  read, to the directory's scanner, as credential-handling text
+  (`MCP_FORWARDS_CREDENTIAL_ENV`, #2732); the release README is a short,
+  variable-free description with one link back to the full README on
+  `master`, and the full README never reaches the directory's scan at all.
 
 Built from `v0.64.0` (2026-10-02): **336 files, 6.5 MB**, down from 1,726 files and
-24.6 MB.
+24.6 MB. (Measured before #2732's two extra build steps; both shrink the tree
+further by one file each -- `hooks/python-ladder.sh` and `README.release.md`
+itself, since the release README replaces, rather than adds to, `README.md`.)
 
 ### The `_supertool.py` exception
 

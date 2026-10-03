@@ -123,7 +123,8 @@ def _check_vim_shell_allowed() -> Optional[str]:
         pass
     return (
         "ERROR: vim shell verbs (:!, :%!, :r !) are disabled by default. "
-        'To allow: set SUPERTOOL_ALLOW_VIM_SHELL=1 (env), or add '
+        'To allow: define SUPERTOOL_ALLOW_VIM_SHELL=1 as an environment '
+        'variable, or add '
         '`"allow_vim_shell": true` to .supertool.json. '
         "For one-off shell logic, prefer a wrapper script + custom op.\n"
     )

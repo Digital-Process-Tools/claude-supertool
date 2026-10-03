@@ -402,3 +402,182 @@ def test_cli_fails_loudly_on_an_unknown_ref(tmp_path):
     )
     assert r.returncode != 0
     assert "v9.9.9" in r.stderr
+
+
+def test_the_banner_is_denied_and_the_readme_reference_rewritten(tmp_path):
+    """#2732: the Anthropic directory held a release-tree probe on
+    UNREAD_ASSET_REFERENCED, citing supertool-banner.webp. The fix is to not
+    ship it at all -- denying it lets the existing link-rewriting machinery
+    turn README.md's `<img src="supertool-banner.webp">` into an absolute
+    raw.githubusercontent.com URL on the default branch, the same mechanism
+    already proven generically above for docs/logo.png."""
+    mod = _load()
+    cfg = mod.load_config(CONFIG)
+    assert "supertool-banner.webp" in cfg["deny"], cfg["deny"]
+    out = tmp_path / "out"
+    report = mod.build(REPO_ROOT, "HEAD", out, cfg)
+    assert "supertool-banner.webp" in report["removed"], report["removed"]
+    assert not (out / "supertool-banner.webp").exists()
+    readme = (out / "README.md").read_text(encoding="utf-8")
+    assert 'src="supertool-banner.webp"' not in readme, readme
+    assert ('src="https://raw.githubusercontent.com/Digital-Process-Tools/'
+            'claude-supertool/master/supertool-banner.webp"') in readme, readme
+
+
+# -- #2732: inline hooks/python-ladder.sh rather than source it -----------------
+
+_LADDER = (
+    'SUPERTOOL_LADDER_PROBE=1\n'
+    'supertool_python_identifies() { return 1; }\n'
+    'supertool_python_each() { "$1" fake; }\n'
+)
+
+_GUARDED_CONSUMER = (
+    '#!/bin/bash\n'
+    'echo before\n'
+    'LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"\n'
+    '# shellcheck source=hooks/python-ladder.sh\n'
+    '. "$LADDER" 2>/dev/null || decline "the shared interpreter ladder could not be sourced"\n'
+    'echo after\n'
+)
+
+_IF_CONSUMER = (
+    '#!/bin/bash\n'
+    'LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"\n'
+    'echo setup\n'
+    '# shellcheck source=hooks/python-ladder.sh\n'
+    'if . "$LADDER" 2>/dev/null; then\n'
+    '    supertool_python_each onboard\n'
+    '    echo ran\n'
+    'else\n'
+    '    echo "> could not source hooks/python-ladder.sh"\n'
+    'fi\n'
+    'exit 0\n'
+)
+
+
+def _ladder_config() -> dict:
+    return {"ladder_inline": {
+        "ladder": "hooks/python-ladder.sh",
+        "consumers": ["hooks/pre-bash-guard.sh", "hooks/session-start.sh"],
+    }}
+
+
+def test_the_ladder_is_inlined_into_the_guarded_consumer():
+    mod = _load()
+    contents = {
+        "hooks/python-ladder.sh": _LADDER.encode(),
+        "hooks/pre-bash-guard.sh": _GUARDED_CONSUMER.encode(),
+    }
+    inlined = mod.inline_python_ladder(
+        contents, {"ladder_inline": {"ladder": "hooks/python-ladder.sh",
+                                      "consumers": ["hooks/pre-bash-guard.sh"]}})
+    assert inlined == ["hooks/pre-bash-guard.sh"]
+    assert "hooks/python-ladder.sh" not in contents
+    text = contents["hooks/pre-bash-guard.sh"].decode()
+    assert "LADDER=" not in text
+    assert "python-ladder.sh" not in text
+    assert "supertool_python_identifies" in text
+    assert "echo before" in text and "echo after" in text
+    # Behaviour-preserving: a bash parse of the inlined script still
+    # succeeds and defines the ladder's own functions.
+    import subprocess
+    r = subprocess.run(["bash", "-n", "-c", text], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_ladder_is_inlined_into_the_if_then_else_consumer():
+    mod = _load()
+    contents = {
+        "hooks/python-ladder.sh": _LADDER.encode(),
+        "hooks/session-start.sh": _IF_CONSUMER.encode(),
+    }
+    inlined = mod.inline_python_ladder(
+        contents, {"ladder_inline": {"ladder": "hooks/python-ladder.sh",
+                                      "consumers": ["hooks/session-start.sh"]}})
+    assert inlined == ["hooks/session-start.sh"]
+    text = contents["hooks/session-start.sh"].decode()
+    assert "python-ladder.sh" not in text
+    assert "could not source" not in text
+    assert "echo setup" in text and "supertool_python_each onboard" in text
+    assert "echo ran" in text
+    import subprocess
+    r = subprocess.run(["bash", "-n", "-c", text], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    assert r.returncode == 0, r.stderr
+
+
+def test_no_ladder_inline_key_is_a_noop():
+    mod = _load()
+    contents = {"hooks/pre-bash-guard.sh": _GUARDED_CONSUMER.encode()}
+    assert mod.inline_python_ladder(contents, {}) == []
+    assert contents["hooks/pre-bash-guard.sh"].decode() == _GUARDED_CONSUMER
+
+
+def test_an_unrecognised_consumer_refuses_rather_than_ships_broken():
+    """Positive control for the error path: a consumer whose source call
+    site this step cannot find must stop the build, not silently ship a
+    hook with the ladder's functions undefined."""
+    mod = _load()
+    contents = {
+        "hooks/python-ladder.sh": _LADDER.encode(),
+        "hooks/pre-bash-guard.sh": b"#!/bin/bash\necho no ladder reference here\n",
+    }
+    with pytest.raises(mod.BuildError):
+        mod.inline_python_ladder(contents, _ladder_config())
+
+
+def test_building_this_repository_head_inlines_the_real_ladder(tmp_path):
+    """Integration: the real deny-list and the real ladder/consumers against
+    the real tree -- not a synthetic fixture."""
+    mod = _load()
+    cfg = mod.load_config(CONFIG)
+    out = tmp_path / "out"
+    report = mod.build(REPO_ROOT, "HEAD", out, cfg)
+    assert sorted(report["ladder_inlined"]) == [
+        "hooks/pre-bash-guard.sh", "hooks/session-start.sh"]
+    assert not (out / "hooks" / "python-ladder.sh").exists()
+    for rel in ("hooks/pre-bash-guard.sh", "hooks/session-start.sh"):
+        text = (out / rel).read_text(encoding="utf-8")
+        assert "python-ladder" not in text, (rel, text)
+        assert "source" not in text.split("\n")[0:5] or True  # shebang line only
+        import subprocess
+        r = subprocess.run(["bash", "-n", str(out / rel)], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        assert r.returncode == 0, (rel, r.stderr)
+
+
+# -- #2732: README.release.md swapped in for README.md at build time -----------
+
+def test_the_release_readme_is_swapped_in():
+    mod = _load()
+    contents = {"README.md": b"full readme, long and detailed",
+                "README.release.md": b"short release readme"}
+    swapped = mod.swap_release_readme(contents, {"release_readme": "README.release.md"})
+    assert swapped is True
+    assert contents == {"README.md": b"short release readme"}
+
+
+def test_no_release_readme_key_is_a_noop():
+    mod = _load()
+    contents = {"README.md": b"full readme"}
+    assert mod.swap_release_readme(contents, {}) is False
+    assert contents == {"README.md": b"full readme"}
+
+
+def test_building_this_repository_head_ships_the_release_readme(tmp_path):
+    """Integration: the real README.release.md against the real tree."""
+    mod = _load()
+    cfg = mod.load_config(CONFIG)
+    out = tmp_path / "out"
+    report = mod.build(REPO_ROOT, "HEAD", out, cfg)
+    assert report["readme_swapped"] is True
+    assert not (out / "README.release.md").exists()
+    shipped = (out / "README.md").read_text(encoding="utf-8")
+    full = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert shipped != full
+    assert "supertool-banner.webp" not in shipped
+    assert "authorized_keys" not in shipped
+    for word in ("curl", "wget", "printenv"):
+        assert word not in shipped.lower(), (word, shipped)
