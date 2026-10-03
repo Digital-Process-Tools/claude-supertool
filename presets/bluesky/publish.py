@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Bluesky publish: bluesky_publish:TEXT_FILE_OR_TEXT[|REPLY_TO_AT_URI[|force]]
+
+If the first arg is a path to a file that exists, its contents become
+the post body. Otherwise the arg is treated as inline text. Bluesky
+posts are limited to 300 characters by the AT Protocol — we error if
+the body exceeds that, since the API will silently truncate otherwise.
+
+Optional second arg: AT URI of a post to reply to
+(at://DID/app.bsky.feed.post/POST_ID). Builds the reply ref correctly
+(parent + root via getPostThread).
+
+PRE-FLIGHT DUPLICATE CHECK (reply only): When reply_uri is set, the op scans
+own recent posts via app.bsky.feed.getAuthorFeed and aborts if a reply to the
+same root already exists. Pass |force as 3rd pipe-separated field to bypass.
+If the pre-flight check cannot be made, the op ABORTS rather than replying
+unchecked (#601) — a duplicate reply is a public artifact on somebody else's
+thread and this preset cannot undo it, while the decline costs one `|force`.
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
+from _atproto import get_session, xrpc
+from _auth import get_app_password, get_handle
+from _publish_safety import safe_resolve_body_path, require_confirm, apply_disclosure  # noqa: E402
+
+MAX_LEN = 300
+
+# AT Protocol facets — Bluesky renders plain-text URLs unclickably; rich-text
+# annotations are required. The byte offsets must be UTF-8 bytes, not chars.
+# Excludes angle brackets so `<https://x.com>` and Markdown-style links don't
+# pull `>` into the facet URI (would produce an invalid URL).
+URL_RE = re.compile(r"https?://[^\s<>]+")
+_TRAILING_PUNCT = ".,;:!?)]}>\"'"
+
+
+def extract_link_facets(body: str) -> list[dict]:
+    """Detect URLs in body and return AT Protocol facets making them clickable.
+
+    Returns an empty list if no URLs are found. Trailing sentence punctuation
+    (commas, periods, parens, etc.) is stripped from each URL so a sentence
+    like "see https://x.com." doesn't capture the trailing dot. URLs with a
+    query string or fragment are NOT stripped — `?` and `#` start contexts
+    where punctuation can be semantically meaningful (e.g. `?q=hi!`).
+    """
+    facets: list[dict] = []
+    for m in URL_RE.finditer(body):
+        url = m.group(0)
+        # Strip trailing sentence punctuation only when the URL has no query or
+        # fragment — inside those, characters like `!` and `)` can be valid.
+        if "?" not in url and "#" not in url:
+            while url and url[-1] in _TRAILING_PUNCT:
+                url = url[:-1]
+        if not url:
+            continue
+        start_byte = len(body[: m.start()].encode("utf-8"))
+        end_byte = start_byte + len(url.encode("utf-8"))
+        facets.append({
+            "index": {"byteStart": start_byte, "byteEnd": end_byte},
+            "features": [{"$type": "app.bsky.richtext.facet#link", "uri": url}],
+        })
+    return facets
+
+
+_FILE_PREFIX = "file://"
+
+
+def _resolve_body(arg: str) -> tuple[str, bool]:
+    """Resolve a body argument to its text content.
+
+    Returns (text, from_file).
+
+    - `file://path` — MUST resolve to an existing file. Errors if missing.
+      Catches typos that the legacy bare-path auto-detect would silently
+      forward as inline text.
+    - bare path that `is_file()` — reads the file (backward compat).
+    - anything else — returned as-is (inline text).
+    """
+    if arg.startswith(_FILE_PREFIX):
+        path_str = arg[len(_FILE_PREFIX):]
+        resolved = safe_resolve_body_path(path_str)
+        if not resolved.is_file():
+            sys.stderr.write(
+                f"ERROR: file not found: {path_str}\n"
+                "(file:// prefix requires the file to exist — typo or wrong path?)\n"
+            )
+            sys.exit(2)
+        return resolved.read_text(encoding="utf-8"), True
+    try:
+        p = Path(arg)
+        if p.is_file():
+            resolved = safe_resolve_body_path(arg)
+            return resolved.read_text(encoding="utf-8"), True
+    except OSError:
+        pass
+    return arg, False
+
+
+def parse_args(arg: str) -> tuple[str, str | None, bool]:
+    """Return (body, reply_uri, force)."""
+    parts = arg.split("|", 2)
+    if not parts[0].strip():
+        sys.stderr.write("ERROR: usage bluesky_publish:TEXT_OR_FILE[|REPLY_TO_AT_URI[|force]]\n")
+        sys.exit(2)
+    body, _from_file = _resolve_body(parts[0])
+    body = body.strip()
+    if len(body) > MAX_LEN:
+        sys.stderr.write(f"ERROR: post is {len(body)} chars (max {MAX_LEN}). Trim or split.\n")
+        sys.exit(2)
+    reply_uri = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+    force = len(parts) > 2 and parts[2].strip().lower() == "force"
+    return body, reply_uri, force
+
+
+def resolve_reply_ref(session: dict, reply_to_uri: str) -> dict:
+    """Build the reply ref: needs parent + root cid+uri."""
+    thread = xrpc("app.bsky.feed.getPostThread", session,
+                   params={"uri": reply_to_uri, "depth": 0})
+    post = (thread.get("thread") or {}).get("post") or {}
+    parent_ref = {"uri": post.get("uri"), "cid": post.get("cid")}
+    record = post.get("record") or {}
+    parent_reply = record.get("reply") or {}
+    root_ref = parent_reply.get("root") or parent_ref
+    return {"parent": parent_ref, "root": root_ref}
+
+
+def _get_root_uri(session: dict, reply_to_uri: str) -> str | None:
+    """Resolve the root URI of a reply chain. Returns None on failure.
+
+    Catches BaseException because xrpc() calls sys.exit(1) on HTTP errors —
+    SystemExit subclasses BaseException, not Exception, so bare `except
+    Exception` would let it escape and kill the whole publish op when the
+    reply target just happens to 404.
+    """
+    try:
+        thread = xrpc("app.bsky.feed.getPostThread", session,
+                       params={"uri": reply_to_uri, "depth": 0})
+        post = (thread.get("thread") or {}).get("post") or {}
+        record = post.get("record") or {}
+        root = (record.get("reply") or {}).get("root") or {}
+        return root.get("uri") or reply_to_uri
+    except (Exception, SystemExit):
+        return None
+
+
+def preflight_publish(reply_uri: str, session: dict) -> bool | None:
+    """Return True if own feed already has a reply to the same root as reply_uri.
+
+    Scans up to 50 own recent posts. Returns False when the feed was read and
+    holds no such reply, and **None when the check could not be made** — the
+    caller must fail closed. Both used to be False (#601), which made a 502 on
+    `getAuthorFeed` read as an unreplied thread.
+
+    `_get_root_uri` returning None is one of those unknowns, not an absence: it
+    already swallows `SystemExit` deliberately so a 404 reply target does not
+    kill the whole op, and None is the only way that decision reaches here.
+
+    `SystemExit` stays in the handler because `xrpc` calls `sys.exit(1)` on any
+    HTTP or network error, so a transport failure arrives as `SystemExit` rather
+    than `Exception` and a bare `except Exception` would let it kill the op.
+    That exit is a *transport accident*, not a refusal by a helper — the only
+    deliberate exit in this chain is `_get_root_uri`'s, and it never escapes.
+    """
+    try:
+        root_uri = _get_root_uri(session, reply_uri)
+        if not root_uri:
+            return None
+        resp = xrpc("app.bsky.feed.getAuthorFeed", session,
+                    params={"actor": session["did"], "limit": 50})
+        for item in resp.get("feed") or []:
+            post = item.get("post") or {}
+            record = post.get("record") or {}
+            reply = record.get("reply") or {}
+            item_root = (reply.get("root") or {}).get("uri")
+            if item_root and item_root == root_uri:
+                return True
+        return False
+    except (Exception, SystemExit):
+        return None
+
+
+def main(arg: str) -> None:
+    body, reply_uri, force = parse_args(arg)
+    body, disclosure_state = apply_disclosure(body, max_len=MAX_LEN)
+    require_confirm("bluesky_publish", body, force=force)
+    handle = get_handle()
+    session = get_session(handle, get_app_password())
+    if reply_uri and not force:
+        already = preflight_publish(reply_uri, session)
+        if already is None:
+            sys.stderr.write(
+                f"ABORT — pre-flight lookup failed for {reply_uri} (cannot verify "
+                "whether this thread was already replied to). "
+                "Use |force to bypass and reply anyway.\n"
+            )
+            sys.exit(1)
+        if already:
+            sys.stderr.write(
+                f"ABORT — already replied to thread root of {reply_uri}. "
+                "Use |force to override.\n"
+            )
+            sys.exit(1)
+    record: dict = {
+        "$type": "app.bsky.feed.post",
+        "text": body,
+        "createdAt": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+    }
+    facets = extract_link_facets(body)
+    if facets:
+        record["facets"] = facets
+    if reply_uri:
+        record["reply"] = resolve_reply_ref(session, reply_uri)
+    data = xrpc(
+        "com.atproto.repo.createRecord", session, method="POST",
+        body={
+            "repo": session["did"],
+            "collection": "app.bsky.feed.post",
+            "record": record,
+        },
+    )
+    uri = data.get("uri", "?")
+    cid = data.get("cid", "?")
+    rkey = uri.split("/")[-1] if uri.startswith("at://") else "?"
+    web = f"https://bsky.app/profile/{handle}/post/{rkey}"
+    print(f"(published uri={uri} cid={cid})")
+    print(f"URL: {web}")
+    if disclosure_state != "appended":
+        print(f"(disclosure: {disclosure_state})")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.stderr.write("ERROR: missing arg\n")
+        sys.exit(2)
+    main(":".join(sys.argv[1:]))

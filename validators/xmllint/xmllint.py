@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""xmllint validator adapter — XML well-formedness via libxml2.
+
+Stdlib only. Reference implementation per validators/SCHEMA.md.
+Usage:  xmllint.py <file>
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from source_context import context_fields
+from refusal import guard_main, tool_fault
+from linebreaks import split_lines
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
+
+# libxml announces a finding about the document as `file:LINE: parser error : ...`.
+# Every other way it exits non-zero says nothing about the document's XML:
+#
+#   warning: failed to load external entity "x.xml"   (missing or unreadable path)
+#   I/O error : Permission denied
+#   Unknown option --bogusflag  + ~70 lines of usage
+#
+# All three used to be published as one `code: "xml"` error at file level, so a
+# path typo and a wrong flag were both reported as malformed XML (#753). A
+# located diagnostic is the marker; anything else on a non-zero exit is a
+# libxml failure, not a verdict about the file.
+
+
+# `file:LINE: message`. Extracted so the rule can be driven in process on every
+# platform — the fake-binary fixture that drives the whole adapter is POSIX-only
+# (see tests/test_adapter_tool_vs_file_753.py).
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.+?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit:` anywhere in the line — including one
+# supplied by a filename crafted to contain its own `N: ` sequence. Building
+# the pattern from `file` means only a spelling of the path libxml was
+# actually invoked against can start a match (see `path_anchor.py`, #1937,
+# for what "a spelling of" widened to after this comment was first
+# written). "Start" no longer means column 0: a tool can print the invoked
+# path more than once before its own diagnostic, so the match is now a
+# `.search()` anywhere in the line at a `:digit` boundary, not a `.match()`
+# at position 0 -- see `path_anchor.anchor()`'s own docstring for why that
+# does not reopen #1934's forgery.
+#
+# Tolerant of the spellings a real libxml can echo that back in (#1937) --
+# and of libxml (or something upstream) reporting a symlinked invoked
+# path's RESOLVED form instead, via `extra_paths=[realpath]` below -- see
+# validators/common/path_anchor.py for both widenings.
+def _diagnostic_re(file: str) -> re.Pattern[str]:
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    return _anchor(file, r":(\d+):\s*(.+)", extra_paths=extra)
+
+
+def parse_diagnostics(out: str, file: str) -> list[dict]:
+    """Every located diagnostic in libxml's stderr. Empty means it did not
+    speak about the document."""
+    pattern = _diagnostic_re(file)
+    errors = []
+    for line in split_lines(out):
+        m = pattern.search(line)
+        if m:
+            ln = int(m.group(1))
+            errors.append({"line": ln, "col": None, "severity": "error",
+                           "code": "xml", "msg": m.group(2).strip()[:200],
+                           **context_fields(file, ln)})
+    return errors
+
+
+def emit(d: dict) -> None:
+    print(json.dumps(d))
+
+
+def contained_target(file: str) -> str:
+    """`file`, spelled so xmllint cannot read it as an option (#2412)."""
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
+
+
+def main() -> None:
+    if len(sys.argv) < 2 or not sys.argv[1]:
+        emit({"tool": "xmllint", "file": "", "ok": False, "count": 1,
+              "errors": [{"line": None, "col": None, "severity": "error",
+                          "code": "adapter", "msg": "no file arg"}],
+              "duration_ms": 0})
+        return
+    file = sys.argv[1]
+    start = time.time()
+    try:
+        # #150 XXE defence-in-depth: `--nonet` blocks network access during
+        # entity resolution (DTDs, external entities); `--noent` resolves
+        # entities to their text rather than fetching them. Both narrow what
+        # libxml2 will do with attacker-influenced XML during validation.
+        #
+        # The target is contained rather than `--`-separated (#2412):
+        # measured against a real installed xmllint (libxml2), `xmllint
+        # --noout --nonet --noent -- -weird.xml` itself errors `Unknown
+        # option --` — the separator is read as a bare option, not a
+        # terminator. Containment (the same shape
+        # `validators/pyright/pyright.py` (#2379) uses) works regardless:
+        # a relative target starting with `-` is prefixed with
+        # `os.curdir`, so xmllint's argv parser sees a string that cannot
+        # start with `-` at all.
+        r = subprocess.run(
+            ["xmllint", "--noout", "--nonet", "--noent", contained_target(file)],
+            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError:
+        emit({"tool": "xmllint", "file": file, "ok": False, "count": 1,
+              "errors": [{"line": None, "col": None, "severity": "error",
+                          "code": "adapter", "msg": "xmllint binary not found"}],
+              "duration_ms": int((time.time() - start) * 1000)})
+        return
+    except subprocess.TimeoutExpired:
+        emit({"tool": "xmllint", "file": file, "ok": False, "count": 1,
+              "errors": [{"line": None, "col": None, "severity": "error",
+                          "code": "adapter", "msg": "timeout"}],
+              "duration_ms": int((time.time() - start) * 1000)})
+        return
+    dur = int((time.time() - start) * 1000)
+    if r.returncode == 0:
+        emit({"tool": "xmllint", "file": file, "ok": True, "count": 0,
+              "errors": [], "duration_ms": dur})
+        return
+    # xmllint stderr: "file:LINE: parser error : msg" + context lines
+    out = r.stderr or ""
+    errors = parse_diagnostics(out, file)
+    if not errors:
+        # #1937, third CI round: when the anchor missed but xmllint DID
+        # speak, say what it saw -- the invoked path and whatever path the
+        # tool's own output appears to name -- instead of leaving the next
+        # reader to guess the transform from an assertion failure alone.
+        errors = [{"line": None, "col": None, "severity": "error",
+                   "code": "adapter",
+                   "msg": _anchor_miss_message(
+                       file, out, tool_fault("xmllint", r.returncode, out))}]
+    emit({"tool": "xmllint", "file": file, "ok": False, "count": len(errors),
+          "errors": errors, "duration_ms": dur})
+
+
+if __name__ == "__main__":
+    guard_main("xmllint", main)

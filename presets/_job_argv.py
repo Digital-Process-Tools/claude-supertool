@@ -1,0 +1,222 @@
+"""Argv shape for the two job-log presets (#1145).
+
+`gh-job` and `gl-job` take the same three-part op — `OP:ID[:MODE[:ARG...]]` —
+and core hands it to them as argv after splitting the op string on every `:`.
+Three readings of that argv used to end in a confident answer to a question
+nobody asked:
+
+* a MODE token the preset did not recognise fell through to the default render
+  and exited 0, so a log tail read as "the slice you asked for found nothing";
+* an ID with trailing non-digits was rendered in the header as the job being
+  read — GitHub's REST API coerces `actions/jobs/123ep` to job 123 and answers
+  200, so the API cannot be relied on to reject one;
+* a `:` inside a grep PATTERN split it into two argv entries and only the first
+  was used.
+
+The resolutions here are the ones the codebase already reached elsewhere rather
+than new ones: refuse and name what broke, and for the colon carry the pattern
+and echo how it was read, which is core `grep`'s `_colon_split_hint`. Refusing
+`:` outright was considered and rejected — nothing follows PATTERN in either
+op, so rejoining is not a guess between two readings, it is the only one.
+
+`|` is deliberately absent from all of this. Core shell-quotes each part before
+substituting `{args}`, so alternation reaches the preset intact and always did.
+"""
+from __future__ import annotations
+
+import re
+
+import _digits  # (the one ASCII-digit test, shared since #1727)
+
+# #521 -- pytest own short-summary marker, in either separator it ships:
+# FAILED tests/test_x.py::test_name (native) or
+# FAILED tests.test_x.test_name (the dotted form
+# .github/scripts/junit_summary.py re-emits from junit.xml). Anchored at
+# line start so a job-table row this op itself renders elsewhere --
+# - pytest (ubuntu-latest, 3.12) (job #123) -- failure -- or a step name
+# containing the bare word failure never matches: neither begins a line
+# with the literal token FAILED followed by whitespace and a node id.
+#
+# Only captures the token right after FAILED -- self-review caught that an
+# earlier version of this pattern (`\S+(::|\.)\S+` matched inline) fired on
+# ANY dotted token, so "FAILED build.sh exited with code 1" and "FAILED
+# main.py compile step" both read as MANUAL, which defeats the whole point
+# of a rule meant to tell a unit-test failure apart from other kinds. The
+# token itself is graded separately below.
+_PYTEST_FAILED_LINE_RE = re.compile(r"^FAILED\s+(\S+)", re.MULTILINE)
+
+# `raw` is here too, though its own START/END parsing lives in each preset.
+# `artifacts`/`artifact` (#1796): list a job's artifacts, or fetch one file
+# out of them. Shared as a mode name only -- the fetch itself is forge-
+# specific (GitLab has a single-file endpoint, GitHub does not), so each
+# preset implements it separately, the same split `raw`/`grep` already have.
+MODES = ("fail", "errors", "raw", "grep", "artifacts", "artifact")
+
+#: Shared rather than retyped (#1727). `presets/_digits.py` carries the `\Z`
+#: anchor (#1188) and both character classes `str.isdigit()` wrongly admits.
+_DIGITS = _digits.DIGITS
+
+
+def refuse_job_id(op: str, forge: str, job_id: str) -> str:
+    """Message refusing a job id that is not one. Empty string when it is.
+
+    `str.isdigit()` is not the test: it accepts Arabic-Indic digits and
+    superscripts, neither of which is an id either forge will answer for, and a
+    check that passes text the API then rejects is worse than no check.
+    """
+    if _DIGITS.match(job_id):
+        return ""
+    stray = "".join(sorted({c for c in job_id if not _DIGITS.match(c)}))
+    digits = "".join(c for c in job_id if _DIGITS.match(c)) or "JOB_ID"
+    return (
+        f"ERROR: {op} takes a numeric job id and got {job_id!r} "
+        f"(not a digit: {stray!r}).\n"
+        f"Nothing was read. A non-numeric id is the tell that the op string was "
+        f"mangled before it arrived, and it has to be caught here, because "
+        f"{forge} answers 200 for a numeric id with trailing text by coercing "
+        f"it back to the number. Rendering it in the header would publish a "
+        f"corrupted identifier as the job that was read.\n"
+        f"Re-run with the digits alone: {op}:{digits}"
+    )
+
+
+def refuse_mode(op: str, mode: str) -> str:
+    """Message refusing an unrecognised MODE token. Empty string when it is one.
+
+    An empty MODE is the bare `OP:ID` form and is not a mode at all.
+    """
+    if not mode or mode in MODES:
+        return ""
+    return (
+        f"ERROR: {op} does not have a {mode!r} mode.\n"
+        f"Nothing was read. This used to fall through to the default view — "
+        f"metadata plus the log tail, exit 0 — which reads as an answer to the "
+        f"question you asked rather than as a mode that was never applied.\n"
+        f"Modes: fail (alias errors), raw, grep, artifacts, artifact. Usage: "
+        f"{op}:JOB_ID:fail | {op}:JOB_ID:raw[:-N|:START[:END]] | "
+        f"{op}:JOB_ID:grep:PATTERN | {op}:JOB_ID:artifacts | "
+        f"{op}:JOB_ID:artifact:PATH"
+    )
+
+
+def refuse_job_ids(op: str, forge: str, job_ids: str) -> tuple[list[str], str]:
+    """`(ids, "")` for a valid comma-separated job-id list; `([], message)` else.
+
+    #626's multi-id form, `gl-job-trace:A,B` since the #2146 split gave the
+    trace fan-out its own op. Each piece gets the exact same check
+    `refuse_job_id` applies to a single id, before anything is fetched — a
+    stray non-digit anywhere in the list must refuse the whole call rather
+    than silently drop the bad piece and read the rest.
+
+    Duplicates are folded, first occurrence wins, so `A,A` fetches once. An
+    empty piece (`',A'`, `'A,,B'`, or the bare `''`) is refused rather than
+    becoming a silently smaller list than the one that was typed.
+    """
+    pieces = job_ids.split(",")
+    if not job_ids or any(not p for p in pieces):
+        return [], (
+            f"ERROR: {op} takes one or more comma-separated numeric job ids "
+            f"and got {job_ids!r}. Nothing was read.\n"
+            # No trailing `:trace` (#2146): `op` is now `gl-job-trace` itself,
+            # whose own syntax carries no mode suffix — the old caller here
+            # was `gl-job`, whose real syntax DID end in `:trace`, and this
+            # template kept that literal after the caller changed underneath
+            # it, so the usage hint pointed at a form core itself refuses.
+            f"Usage: {op}:ID1[,ID2,...]"
+        )
+    seen: list[str] = []
+    for piece in pieces:
+        refusal = refuse_job_id(op, forge, piece)
+        if refusal:
+            return [], refusal
+        if piece not in seen:
+            seen.append(piece)
+    return seen, ""
+
+
+def grep_pattern(op: str, tokens: list[str]) -> tuple[str, str]:
+    """`(pattern, disclosure)` for the argv entries right of `grep`.
+
+    Core split the op on every `:`, so a pattern containing one arrives as
+    several entries. Nothing follows PATTERN in either op, so they rejoin with
+    the `:` that separated them and the whole pattern survives.
+
+    The disclosure is empty for the ordinary one-token case. Saying it on every
+    grep would make it worth nothing on the call that needs it — the same
+    reason `_colon_split_hint` returns nothing for an ordinary typo.
+    """
+    pattern = ":".join(tokens)
+    if len(tokens) < 2:
+        return pattern, ""
+    return pattern, (
+        f"Note: this pattern contains ':', which is also {op}'s own argument "
+        f"separator, so core delivered it as {len(tokens)} pieces and they were "
+        f"rejoined — the pattern was read as /{pattern}/. Nothing follows the "
+        f"pattern in this op, so that is the only reading that keeps it whole; "
+        f"check that it says what you meant."
+    )
+
+
+def artifact_path(op: str, tokens: list[str]) -> tuple[str, str]:
+    """`(path, disclosure)` for the argv entries right of `artifact` (#1796).
+
+    Same rejoin `grep_pattern` above already does, for the same reason: core
+    split the op on every `:`, so a path that happens to contain one (rare
+    for a POSIX artifact path, not impossible for one a Windows runner wrote)
+    arrives as several argv entries. Nothing follows PATH in this op, so
+    rejoining with the `:` that separated them is the only reading that keeps
+    the path whole.
+    """
+    path = ":".join(tokens)
+    if len(tokens) < 2:
+        return path, ""
+    return path, (
+        f"Note: this path contains ':', which is also {op}'s own argument "
+        f"separator, so core delivered it as {len(tokens)} pieces and they "
+        f"were rejoined — the path was read as {path!r}. Nothing follows the "
+        f"path in this op, so that is the only reading that keeps it whole; "
+        f"check that it says what you meant."
+    )
+
+
+def classify_unit_test_failure(text: str) -> "str | None":
+    """The ONE row #521's own issue text calls a rule rather than a
+    heuristic: "unit test failure -> MANUAL, always. A bot deciding is the
+    test wrong or the code wrong produces green pipelines and broken
+    production." Returns "MANUAL" when a pytest short-summary failure line
+    is present anywhere in *text*, `None` otherwise.
+
+    `None` is not "not a unit test failure" -- it is "this rule did not
+    fire", never collapsed into a false negative the way this codebase's
+    own defect class (CLAUDE.md) warns against. Every other row in the
+    issue's table (rector/prettier hunks, PHPStan, infra flakes) is
+    deliberately NOT attempted here: the issue says a classifier needs a
+    corpus first, and the corpus this rule was measured against
+    (`docs/ci-failure-classification.md`, six real failed runs on this
+    repository, 2026-09-09) contained no instance of any of them -- this
+    repository has no PHP/rector/PHPStan CI leg at all, so that half of the
+    original table may not even apply here.
+
+    A `FAILED` line alone is not enough: self-review found that grading on
+    the presence of ANY dot or `::` right after the token matched
+    non-pytest lines too (`FAILED build.sh exited with code 1`, `FAILED
+    main.py compile step`), which defeats the rule's whole purpose. The
+    token right after `FAILED` must ALSO look like a real pytest node id --
+    pytest's native `path::test_name` form (any `::` at all -- pytest node
+    ids are the only thing in ordinary CI text that uses a double colon),
+    or the dotted `module.test_name` form `.github/scripts/junit_summary.py`
+    re-emits from junit.xml, gated on at least one dot-separated segment
+    starting with `test` (case-insensitive) -- a signal `build.sh` and
+    `main.py` do not carry, and every dotted node id in the observed
+    corpus does (`tests.test_go_warmup_lock_2331.test_two_racing...`).
+    """
+    for match in _PYTEST_FAILED_LINE_RE.finditer(text):
+        token = match.group(1)
+        if "::" in token:
+            return "MANUAL"
+        segments = token.split(".")
+        if len(segments) >= 2 and any(
+            seg.lower().startswith("test") for seg in segments
+        ):
+            return "MANUAL"
+    return None

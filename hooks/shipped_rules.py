@@ -1,0 +1,508 @@
+"""The guard rules `replaces` cannot express, shipped to every repo (#1698).
+
+`.claude/jit-context/tools/00-manual/` holds five hand-written rules, each
+there because the `replaces` registry cannot reach what it forbids. They are
+read by `claude-jit-context`'s hooks out of `$CLAUDE_PROJECT_DIR`, so they
+guard sessions run inside the supertool checkout and **nowhere else** — a
+plugin that ships ops to other repositories shipped none of the guardrails that
+make those ops safe to use there. Measured in `Digital-Process-Tools/claude-oss`,
+whose whole workflow is ops: `./supertool 'git-push' 2>&1 | tail -6` ran
+unblocked and the cut removed the `Repo:` and `Upstream:` lines, the two that
+say which repository was written to.
+
+The channel that does reach every user is the plugin's own `hooks/hooks.json`.
+This module is read by `hooks/pre_bash_guard.py`, which that file registers on
+`Bash|PowerShell` regardless of what the target repository contains.
+
+**The rule files are not copied.** `$CLAUDE_PLUGIN_ROOT/.claude/jit-context/`
+is part of every plugin install, so the markdown and the index this reads are
+the same bytes the jit hooks read here. A second copy would be a second thing
+to keep true, and `tests/test_jit_index_round_trips_1579.py` already exists
+because a derived file drifted from the frontmatter it was derived from.
+
+**Four of the five do not travel, and that is a recorded absence rather than an
+omission** — see `NOT_SHIPPED`. A rule that encodes this repository's merge
+strategy, or that names an op the caller's presets may not load, or that fires
+on a tool no shipped matcher covers, arrives in someone else's repository as a
+wrong block whose only escape is `raw_command_guard: false` for the whole
+repository. `inventory()` enumerates both halves, and `hooks/guard-selftest.py`
+prints it: a repo that does not get a rule is told which and why, rather than
+being left with the silence #1698 was filed about.
+
+**Layers are the ownership boundary.** A project carrying its own copy of a
+rule file owns that rule, and the shipped one stands down for it — per rule,
+not per repository. Without that, every supertool worktree would refuse the
+same command twice with two different messages, which is #1376's option 3 and
+was killed rather than accepted for one release.
+"""
+from __future__ import annotations
+
+import os
+import re
+from collections import namedtuple
+
+#: rule file -> the wire verb it is enforced with. `deny` only: the wrapper
+#: has no session memory, so a `remind` would be re-injected on every matching
+#: call rather than once, and a note under every call anyone writes is one
+#: nobody reads — the reasoning `_may_be_replaced` already applies. That is
+#: about a *healthy* install noting forever by design, and is not what the
+#: broken-index disclosure in `match` does: that one fires only where this
+#: module's own shipped tree is defective and stops when it is repaired, which
+#: is the trade `hooks/pre-bash-guard.sh`'s `decline` already makes.
+SHIPPED = {
+    "supertool-no-cut.md": "deny",
+}
+
+#: rule file -> why it stays this repository's own. Each of these would be a
+#: wrong block somewhere else, and a wrong block's only escape is repo-global.
+NOT_SHIPPED = {
+    "harness-tools-blocked.md":
+        "its tool matcher is Edit|Write|Read|Grep|Glob|MultiEdit|"
+        "NotebookEdit and the shipped hooks.json registers Bash|PowerShell "
+        "only, so no shipped matcher can reach it. plugin.json already states "
+        "that blocking the harness's own file tools is the operator's "
+        "setting, not the plugin's; README's `Hard-block native tools` is the "
+        "recipe for opting in. Re-measured for #1791, which reported this rule "
+        "as shipping and blocking every file operation in other people's "
+        "repositories: it does not, and its index pattern is `~.`, so "
+        "shipping it would deny every Bash command there rather than only the "
+        "file tools. Pinned by tests/test_harness_tools_do_not_ship_1791.py.",
+    "merged-is-not-ancestry.md":
+        "it encodes this repository's merge strategy, not supertool's "
+        "behaviour. `git branch --merged` is an ancestry test that under-"
+        "reports only where pull requests are squashed; in a repo that merges "
+        "with a merge commit the command is correct and blocking it would be "
+        "a wrong block about somebody else's workflow.",
+    "git-C-has-cwd.md":
+        "its remedies name git-diff, git-diverge and git-worktrees, which "
+        "exist only where the `git` preset is loaded. A refusal naming an op "
+        "the caller does not have is a dead end, and the rule is already "
+        "carved (#1438) around exactly which `-C` shapes the shipped registry "
+        "claims in this checkout.",
+    "channel-consumers-not-stale.md":
+        "its mode is `once,remind`, and once-per-session needs state a "
+        "PreToolUse hook does not carry -- the same measurement "
+        "`op-defaults-that-narrow.md` records below. Shipped as a plain note "
+        "it would be re-injected on every command mentioning channel.ts, "
+        "including the ones that are reading the consumer rather than "
+        "counting it. The claim itself is about supertool's own consumer "
+        "processes and would be true in any repository; it is the delivery "
+        "mechanism that does not travel, not the content.",
+    "op-defaults-that-narrow.md":
+        "its mode is `once,remind`, and once-per-session needs state a "
+        "PreToolUse hook does not carry. Shipped as a plain note it would be "
+        "re-injected on every gh-prs / gl-mrs / radar call, which is the "
+        "silence-with-a-token-cost #1413 declined to add.",
+    "json-set-no-append.md":
+        "its mode is `once,remind`, and once-per-session needs state a "
+        "PreToolUse hook does not carry -- the same measurement "
+        "`op-defaults-that-narrow.md` records above. Shipped as a plain note "
+        "it would be re-injected on every json-set call in every repository, "
+        "most of which have no report-JSON append workflow to warn about.",
+    "worktree-reuse-ahead-behind.md":
+        "its mode is `once,remind`, same reason. It also names this "
+        "repository's own dispatch pattern (a lane reusing a worktree/branch "
+        "across a multi-issue bundle) rather than a fact true of supertool "
+        "generally -- a repo with no such dispatch loop would get a note "
+        "about a workflow it does not run.",
+}
+
+#: Where both layers keep their rules, relative to a tree root.
+_RULE_DIR = (".claude", "jit-context", "tools", "00-manual")
+
+#: The file the matcher actually reads. A rule with no row here is a rule that
+#: never runs, which reads exactly like one that runs and never matches.
+_INDEX = "00-index.tsv"
+
+#: POSIX bracket classes this translator knows, and the whole of what it
+#: knows. The index is compiled by **awk** (`claude-jit-context`'s
+#: `pre-tool-hook.sh:80`), where `[[:space:]]` is a class; Python's `re` has no
+#: such syntax and would read it as a set of literal characters — `[`, `:`,
+#: `s`, `p`, `a`, `c`, `e` — which is a different pattern that still compiles.
+#: So an unknown class is declined rather than approximated.
+_POSIX_CLASSES = {
+    "[:space:]": " " + chr(92) + "t" + chr(92) + "n" + chr(92) + "r"
+                 + chr(92) + "f" + chr(92) + "v",
+}
+
+Rule = namedtuple("Rule", "name verb regex path")
+
+TAB = chr(9)
+
+
+def rule_directory(root: str) -> str:
+    """Where *root* keeps its `00-manual` rules."""
+    return os.path.join(root, *_RULE_DIR)
+
+
+def translate(pattern: str):
+    """*pattern* as Python `re`, or None if it cannot be honoured.
+
+    Three states, and the third is the point: a pattern this cannot read is
+    reported by `load` rather than dropped. Silently dropping it would leave a
+    rule that is indexed, on disk, and enforced nowhere — the shape #1254 grew
+    a write-time validator for after two `block` rules turned out to have been
+    dead since the day they were written.
+    """
+    out = pattern
+    for name, expansion in _POSIX_CLASSES.items():
+        out = out.replace(name, expansion)
+    if "[:" in out:
+        return None
+    try:
+        re.compile(out)
+    except re.error:
+        return None
+    return out
+
+
+def _skip(name: str, why: str) -> str:
+    return name + ": " + why
+
+
+def load(root: str):
+    """(rules, skipped). Never an empty rule list with nothing said about it."""
+    directory = rule_directory(root)
+    index = os.path.join(directory, _INDEX)
+    try:
+        with open(index, encoding="utf-8") as handle:
+            raw = handle.read()
+    except (OSError, ValueError) as exc:
+        # `ValueError` and not `OSError` alone: an index that is not UTF-8
+        # raises `UnicodeDecodeError`, which is a `ValueError`. A narrower
+        # clause never fires on it, the exception leaves this function, and
+        # the caller turns a corrupt index into "nothing matched" — the
+        # guard's own defect class, inside the guard.
+        return [], [_skip(
+            _INDEX,
+            "could not be read at " + directory + " (" + str(exc)
+            + "), so no shipped rule is enforced from this install")]
+
+    rules = []
+    skipped = []
+    seen = set()
+    for line in raw.splitlines():
+        fields = line.split(TAB)
+        if len(fields) < 4:
+            continue
+        pattern, name, mode = fields[1], fields[2], fields[3]
+        if name not in SHIPPED:
+            continue
+        seen.add(name)
+        verb = SHIPPED[name]
+        if verb == "deny" and "block" not in mode:
+            skipped.append(_skip(
+                name, "this module ships it as a deny and its index row says "
+                      "mode " + repr(mode) + " - the two layers disagree, so "
+                      "nothing is enforced until they are reconciled"))
+            continue
+        if not pattern.startswith("~"):
+            skipped.append(_skip(
+                name, "its index row is a literal match, not a regex, and "
+                      "only regex rows are shipped"))
+            continue
+        translated = translate(pattern[1:])
+        if translated is None:
+            skipped.append(_skip(
+                name, "its awk pattern uses a POSIX bracket class this "
+                      "translator does not know, so it is declined rather "
+                      "than approximated into a different pattern"))
+            continue
+        body = os.path.join(directory, name)
+        if not os.path.isfile(body):
+            skipped.append(_skip(
+                name, "it has an index row and no file on disk, so there is "
+                      "no body to refuse with"))
+            continue
+        # `re.IGNORECASE` rather than lower-casing the subject at match
+        # time: `str.lower()` is not length-preserving for every Unicode
+        # input (a single `\u0130` becomes two codepoints), and this file
+        # slices the ORIGINAL, un-lowered command at the match's own offset
+        # to find what precedes it (#1873's discard disclosure). An offset
+        # computed against a lowered subject and applied to the original
+        # text drifts past the true boundary whenever such a character
+        # precedes the match, pulling a fragment of the MATCHED command
+        # into the "discarded" list (found in review of that fix). Compiling
+        # case-insensitively once, here, and matching the original text
+        # keeps the same "reads this the way awk's tolower(cmd) does"
+        # case-blindness with no separate transformed copy to drift from.
+        rules.append(Rule(name, verb, re.compile(translated, re.IGNORECASE),
+                          body))
+
+    for name in sorted(set(SHIPPED) - seen):
+        skipped.append(_skip(
+            name, "no row in " + _INDEX + ", so nothing carries its pattern"))
+    return rules, skipped
+
+
+def owned_by_project(name: str, project_dir: str) -> bool:
+    """Does the project carry its own copy of this rule file?
+
+    Per rule rather than per repository: a repo that wrote one rule of its own
+    has not taken over the other four.
+    """
+    if not project_dir:
+        return False
+    return os.path.isfile(os.path.join(rule_directory(project_dir), name))
+
+
+_TRAILER = (
+    "This rule ships with supertool and is enforced by the plugin's "
+    "PreToolUse hook in every repository, not only in the supertool checkout "
+    "(#1698). To own it here instead, put your own copy at "
+    ".claude/jit-context/tools/00-manual/" + "{name}" + " and the shipped one "
+    "stands down. Four sibling rules do NOT ship, each for a stated reason: "
+    "run `python3 <plugin-root>/hooks/guard-selftest.py` for the list.")
+
+
+def _body(rule: Rule):
+    """The rule's prose plus the trailer, or None if it could not be read."""
+    try:
+        with open(rule.path, encoding="utf-8") as handle:
+            text = handle.read()
+    except (OSError, ValueError):
+        return None
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        for offset in range(1, len(lines)):
+            if lines[offset].strip() == "---":
+                lines = lines[offset + 1:]
+                break
+    prose = chr(10).join(lines).strip()
+    return prose + chr(10) + chr(10) + _TRAILER.format(name=rule.name)
+
+
+#: Characters a compound Bash call's top-level boundaries are made of, for
+#: this module's own discard disclosure (#1873's second half). `_supertool.py`
+#: has its own copy of this same idea, `_GUARD_SEPARATOR_CHARS` --  not
+#: reused here, deliberately: this file is read before `_supertool` is
+#: imported, on purpose, to keep the common case (nothing shipped matches)
+#: from paying that import (#1377). A rule that matches has already paid for
+#: a `re.search`, so a second, small, in-file segmenter costs nothing the
+#: fast path cares about. `<` and `>` are carried in the SAME set as `;&|`
+#: rather than checked separately, on purpose: a run has to be scanned whole
+#: before it is known to contain one, and `2>&1`'s `&` is only rescued by
+#: that whole-run check when `>` was part of the run to begin with -- leave
+#: it out and the `&` in `2>&1` is scanned alone and read as a lone
+#: background operator, splitting one discarded write into two fragments
+#: (`_guard_raw_segment_spans`'s own #1684).
+_DISCARD_SEPARATORS = ";()<>|&"
+
+#: `_supertool._GUARD_HEREDOC`, copied rather than imported for the same
+#: #1377 reason as everything else in this module: a plain opener, `<<-`
+#: (strips leading tabs) included, an optional matching quote around the
+#: delimiter word.
+_DISCARD_HEREDOC = re.compile(r"<<-?\s*([\x22\x27]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _strip_heredoc_bodies(prefix: str) -> str:
+    """*prefix* with every heredoc body it fully contains blanked out.
+
+    `supertool-no-cut.md`'s own body notes a real case this guards against:
+    "a heredoc body line that begins with a piped call" is one the RULE
+    matches on, which means a `;`/`&`/`|` inside a heredoc's DATA -- a commit
+    message, a pasted payload -- is not a command boundary, and segmenting it
+    unstripped names lines of somebody's file content as "commands that
+    would not run either" (found in review of this fix). Line-based, exactly
+    like `_supertool._guard_strip_heredocs`: a body's extent is defined by
+    the newline-delimited line the closing delimiter sits alone on, which
+    `shlex`-style tokenising has already thrown away by the time this file's
+    segmenter would otherwise see it.
+
+    Bounded to what *prefix* can prove: a heredoc whose delimiter line is
+    AFTER `prefix` ends (the match this whole disclosure is about sat inside
+    the heredoc, per the case above) has no closing line here to find, and is
+    left untouched rather than guessed at -- the same "being wrong here costs
+    a scan of a body nobody can run; being wrong the other way was a silent
+    hole" trade `_guard_strip_heredocs` makes for the identical reason.
+    """
+    out = []
+    lines = prefix.split(chr(10))
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        for m in _DISCARD_HEREDOC.finditer(line):
+            delimiter = m.group(2)
+            end = i
+            while end < len(lines) and lines[end].strip() != delimiter:
+                end += 1
+            if end >= len(lines):
+                continue
+            line = line.replace(m.group(0), " ", 1)
+            i = end + 1
+        out.append(line)
+    return chr(10).join(out)
+
+
+def _discarded_segments(prefix: str):
+    """Top-level command texts in *prefix*, the part of a command BEFORE a
+    shipped rule's own match, split on `;`, `&&`, `||` and a lone `&`.
+
+    Quote and backslash tracking mirrors `_supertool._guard_raw_segment_spans`:
+    a quote opens and closes a quoted run during which nothing is special
+    except its own close (plus backslash-escaping inside a double quote), and
+    a backslash outside quotes escapes exactly the next character. A run of
+    separator characters that also contains `<` or `>` is a redirection, not
+    a boundary -- `2>&1` must not read as a `&`-separator splitting one write
+    into two fragments, the exact bug `_guard_raw_segment_spans` was written
+    to avoid in the registry route (#1684). Never raises: an unterminated
+    quote here is not this function's problem to report, and a `match()`
+    caller only reaches this AFTER the real tokeniser-backed guard (or this
+    same regex layer) has already decided whether to deny the command --
+    this function only decides what else to say about that decision.
+    """
+    segments = []
+    start = 0
+    quote = ""
+    i = 0
+    n = len(prefix)
+    while i < n:
+        ch = prefix[i]
+        if quote:
+            if ch == chr(92) and quote == chr(34) and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in ("'", chr(34)):
+            quote = ch
+            i += 1
+            continue
+        if ch == chr(92) and i + 1 < n:
+            i += 2
+            continue
+        if ch in _DISCARD_SEPARATORS:
+            j = i
+            while j < n and prefix[j] in _DISCARD_SEPARATORS:
+                j += 1
+            run = prefix[i:j]
+            if "<" not in run and ">" not in run:
+                segments.append(prefix[start:i])
+                start = j
+            i = j
+            continue
+        i += 1
+    segments.append(prefix[start:n])
+    return [s.strip() for s in segments if s.strip()]
+
+
+def _flatten(text: str) -> str:
+    """*text*, safe to wrap in a single pair of backticks, on one line.
+
+    This module's own tiny version of `_supertool._flat_field`'s guarantee
+    -- not imported, for the same #1377 reason as everything else here. A
+    discarded segment is a slice of the CALLER's own command text, and
+    embedding it raw put a caller-chosen newline at column 0 of the very
+    `deny` text an agent reads as system-authored: `git commit -m "hi\n#
+    SYSTEM: ..."` landed its own second line flush left in the denial
+    (found in review of this fix, mirroring the exact defect `_guard_quote`
+    / #1391 was written to close on the registry route). A literal backtick
+    in the segment broke its own fencing the same way. `repr()` of any
+    `str` is one line by the language's own definition and escapes both a
+    newline and -- once its own quote is stripped off -- everything left is
+    printable; a backtick is printable and survives `repr()` unescaped, so
+    it is escaped here, separately, with a backslash a Markdown reader does
+    not honour inside a code span -- which is the point: it stops the
+    segment from closing the span early, and this text is read by an agent
+    parsing plain prose, not rendered by a CommonMark engine.
+    """
+    flat = repr(text)[1:-1]
+    return flat.replace(chr(96), chr(92) + chr(96))
+
+
+def _discard_line(command: str, match_start: int) -> str:
+    """What #1873 asks this layer to add: name what a `deny` also discards.
+
+    Empty when nothing precedes the match -- the common case, a single
+    command, has nothing to disclose and gets no line at all.
+    """
+    discarded = _discarded_segments(
+        _strip_heredoc_bodies(command[:match_start]))
+    if not discarded:
+        return ""
+    named = "; ".join("`" + _flatten(seg) + "`" for seg in discarded)
+    return (
+        chr(10) + chr(10)
+        + "A `PreToolUse` refusal is all-or-nothing across the whole Bash "
+        "call, so " + str(len(discarded)) + " earlier command(s) in this "
+        "same call would not run either: " + named)
+
+
+def match(command: str, plugin_root: str, project_dir: str):
+    """(verb, text) for the first shipped rule that claims *command*.
+
+    Case-blind, exactly as awk's `match(tolower(cmd), pat)` does in the hook
+    these rules were written for -- `load()` compiles each pattern with
+    `re.IGNORECASE` rather than this function lower-casing *command* itself,
+    so the match runs against the ORIGINAL text and `found.start()` is a
+    real offset into it. Lower-casing the subject used to be done here, and
+    `str.lower()` is not length-preserving for every Unicode input, so an
+    offset from a lowered copy applied back to the original could land
+    inside the very command that matched (found in review, #1873).
+    """
+    rules, skipped = load(plugin_root)
+    for rule in rules:
+        found = rule.regex.search(command)
+        if not found:
+            continue
+        if owned_by_project(rule.name, project_dir):
+            continue
+        text = _body(rule)
+        if text is None:
+            # A deny with no remedy in it is a wall the caller cannot read
+            # their way out of. Disclose and allow, the same third state the
+            # rest of this hook uses.
+            return "note", (
+                "supertool's shipped rule " + rule.name + " matched this "
+                "command and its body could not be read from " + rule.path
+                + ". The command was allowed - this is a statement about the "
+                "rule, not about the command.")
+        if rule.verb == "deny":
+            text = text + _discard_line(command, found.start())
+        return rule.verb, text
+
+    if skipped and os.path.isfile(
+            os.path.join(rule_directory(plugin_root), _INDEX)):
+        # **Three states, and this is the third.** A rule that is indexed,
+        # named in `SHIPPED` and impossible to honour used to return the same
+        # `None` as a command nothing claimed — a rule that looks shipped and
+        # is not, which is the whole shape #1698 was filed about, reproduced
+        # inside its own fix.
+        #
+        # Bounded to an install whose index is *present*. A plugin root with
+        # no rule directory carries no layer rather than a broken one, and a
+        # note there would ride on every Bash call anyone ever makes;
+        # `hooks/guard-selftest.py` reports that half, which is the division
+        # #1378 already settled for the hook as a whole.
+        return "note", (
+            "supertool ships guard rules the `replaces` registry cannot "
+            "express, and this install could not honour "
+            + str(len(skipped)) + " of them: " + "; ".join(skipped)
+            + ". The command was allowed - this is a statement about the "
+            "rule layer, not about the command.")
+    return None
+
+
+def inventory(plugin_root: str, project_dir: str):
+    """One line per rule, both halves, so an absence is never silent."""
+    rules, skipped = load(plugin_root)
+    by_name = {rule.name: rule for rule in rules}
+    lines = ["  shipped rules the `replaces` registry cannot express:"]
+    for name in sorted(SHIPPED):
+        if name not in by_name:
+            state = "not loaded"
+        elif owned_by_project(name, project_dir):
+            state = ("stands down - this project owns its own copy at "
+                     + os.path.join(*(_RULE_DIR + (name,))))
+        else:
+            state = "enforcing as " + SHIPPED[name]
+        lines.append("    " + name + " : " + state)
+    for note in skipped:
+        lines.append("    skipped     : " + note)
+    lines.append("  rules that stay local to the supertool checkout:")
+    for name in sorted(NOT_SHIPPED):
+        lines.append("    " + name + " : " + NOT_SHIPPED[name])
+    return lines

@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""prettier-check validator adapter. Emits SCHEMA.md JSON.
+
+Usage: prettier-check.py <file>
+
+Env vars:
+  PRETTIER_BIN         prettier binary (default: prettier)
+  PRETTIER_CONFIG      path to config file (optional, adds --config FILE)
+  PRETTIER_IGNORE_PATH path to ignore file (optional, adds --ignore-path FILE)
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from refusal import guard_main, skipped
+from spawnable import already_a_path, argv0, spawnable
+
+TOOL = "prettier-check"
+
+
+def contained_target(file: str) -> str:
+    """`file`, spelled so `--file-info` cannot read it as an option value (#2412).
+
+    `prettier --file-info` takes the path as ITS OWN option value, not as
+    a plain positional after prettier's flags -- so `-- file` (the fix
+    used elsewhere in this repo, ahead of a plain positional) does not
+    apply here: measured against a real installed prettier 3.6.2,
+    `prettier --file-info -- -flagged.json` silently drops `--file-info`
+    (its value becomes the literal string `--`) and instead formats
+    `-flagged.json` under prettier's DEFAULT command, printing formatted
+    source where a `{"ignored": ..., "inferredParser": ...}` verdict was
+    expected. Prefixing a relative, `-`-leading target with `os.curdir`
+    (the same containment `validators/pyright/pyright.py` (#2379) uses)
+    fixes it without moving the value away from the option it belongs to:
+    `prettier --file-info ./-flagged.json` answers the JSON verdict
+    correctly. An absolute path is already unambiguous and is left alone.
+    """
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
+
+# Budget for each spawn below. Named so a decline can quote it: a reader who
+# sees "timeout" cannot tell a hung prettier from a busy machine (#658).
+TIMEOUT_S = 15
+
+# What an ignored file looks like, and why the clean arm needs a second question.
+#
+# prettier honours `.prettierignore` (and `--ignore-path`) for a path handed to
+# it explicitly: it opens nothing, prints "All matched files use Prettier code
+# style!" and exits 0 — byte for byte what a correctly formatted file produces
+# (measured, prettier 3.6.2). So a zero exit is two different facts wearing the
+# same output, and the only way to tell them apart is to ask prettier which of
+# them this was.
+#
+# `prettier --file-info FILE` is that question: it resolves the same ignore
+# files and answers `{"ignored": true|false, "inferredParser": ...}`. Asking
+# prettier beats reimplementing the answer here — ignore resolution is
+# gitignore-syntax over a file whose location is itself configurable.
+#
+# It costs one extra spawn and only on the arm where the answer is ambiguous:
+# a run that reported a formatting difference has demonstrably read the file.
+# The probe is handed the same `--config`/`--ignore-path` flags as the check,
+# because a probe resolving a different ignore set answers about a different
+# run.
+#
+# It is bounded by what is LEFT of TIMEOUT_S rather than given a fresh one, so
+# this adapter still finishes inside the one budget its registration is set
+# against. Two full walls would put the worst case at 2x the `"timeout": 15`
+# in `.supertool.example.json`, and the core kills the adapter at its own
+# wall: the caller would get `NOT CHECKED (timed out)` naming nothing, where a
+# probe that runs out of clock declines and says which question went
+# unanswered (`docs/validators.md`, on html-check's deliberate headroom).
+#
+# That claim was false while the probe carried a `max(1.0, budget)` floor: at
+# 14.5s elapsed it still launched with a full second, for 15.5s against a
+# 15s registration — the exact overrun the paragraph promises not to have
+# (#1601 audit). A spent budget is now the third state below, not a borrowed
+# second, and the test asserts elapsed + probe timeout against TIMEOUT_S
+# rather than the probe alone, which the floor satisfied while overshooting.
+IGNORED_REASON = ("prettier declined to check this file — it matched an ignore "
+                  "pattern (`.prettierignore`, or the `--ignore-path` file); "
+                  "`prettier --file-info` on this path answers "
+                  '`"ignored": true`')
+
+UNATTRIBUTABLE_REASON = ("prettier exited 0 and `prettier --file-info` could "
+                         "not say whether the file is ignored, so this run is "
+                         "not a verdict about it")
+
+NO_BUDGET_REASON = (f"prettier exited 0 and the {TIMEOUT_S}s budget was spent "
+                    "before `prettier --file-info` could be asked whether the "
+                    "file is ignored, so this run is not a verdict about it")
+
+
+def emit(obj: dict) -> None:
+    print(json.dumps(obj))
+
+
+def _is_ignored(file: str, prettier_bin: str, flags: list,
+                budget: float) -> "bool | None":
+    """Was this file in scope? `None` when the question itself failed.
+
+    `None` is not `False`. A probe that could not run leaves the zero exit
+    unattributable, and publishing `ok` over it is the fabrication this arm
+    exists to prevent — the caller gets the third state with the reason.
+
+    `budget` is whatever is left of `TIMEOUT_S` and is passed through
+    unclamped: the caller has already declined when it is not positive, and a
+    floor here would spend time the registration does not have.
+    """
+    try:
+        r = subprocess.run([argv0(prettier_bin), "--file-info", contained_target(file)] + flags,
+                           capture_output=True, text=True,
+                           timeout=budget,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        info = json.loads((r.stdout or "").strip())
+    except ValueError:
+        return None
+    if not isinstance(info, dict) or not isinstance(info.get("ignored"), bool):
+        return None
+    return info["ignored"]
+
+
+def main() -> None:
+    if len(sys.argv) < 2 or not sys.argv[1]:
+        emit({
+            "tool": "prettier-check", "file": "", "ok": False, "count": 1,
+            "errors": [{"line": None, "col": None, "severity": "error",
+                        "code": "adapter", "msg": "no file arg"}],
+            "duration_ms": 0,
+        })
+        return
+
+    file = sys.argv[1]
+    start = time.time()
+
+    prettier_bin = os.environ.get("PRETTIER_BIN", "prettier")
+    prettier_config = os.environ.get("PRETTIER_CONFIG", "")
+    prettier_ignore_path = os.environ.get("PRETTIER_IGNORE_PATH", "")
+
+    if not spawnable(prettier_bin) and not already_a_path(prettier_bin):
+        emit({
+            "tool": "prettier-check", "file": file, "ok": False, "count": 1,
+            "errors": [{"line": None, "col": None, "severity": "error",
+                        "code": "adapter", "msg": f"PRETTIER_BIN not found: {prettier_bin}"}],
+            "duration_ms": int((time.time() - start) * 1000),
+        })
+        return
+
+    flags = []
+    if prettier_config:
+        flags += ["--config", prettier_config]
+    if prettier_ignore_path:
+        flags += ["--ignore-path", prettier_ignore_path]
+    cmd = [argv0(prettier_bin), "--check"] + flags + ["--", file]
+
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_S, encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        dur = int((time.time() - start) * 1000)
+        emit({
+            "tool": "prettier-check", "file": file, "ok": False, "count": 1,
+            "errors": [{"line": None, "col": None, "severity": "error",
+                        "code": "adapter", "msg": f"prettier binary not found: {prettier_bin}"}],
+            "duration_ms": dur,
+        })
+        return
+    except subprocess.TimeoutExpired:
+        emit({
+            "tool": "prettier-check", "file": file, "ok": False, "count": 1,
+            "errors": [{"line": None, "col": None, "severity": "error",
+                        "code": "adapter",
+                        "msg": f"timeout — prettier did not return within "
+                               f"{TIMEOUT_S}s; the file was NOT checked"}],
+            "duration_ms": int((time.time() - start) * 1000),
+        })
+        return
+
+    dur = int((time.time() - start) * 1000)
+
+    # prettier --check exits 0 if file is formatted, 1 if it needs formatting
+    # — and also when it never opened the file at all, which is the case the
+    # probe above exists to separate (#1601). The duration is recomputed
+    # afterwards: one that stops before the probe under-reports what the caller
+    # waited for.
+    if r.returncode == 0:
+        remaining = TIMEOUT_S - (time.time() - start)
+        if remaining <= 0:
+            emit(skipped(TOOL, file, NO_BUDGET_REASON,
+                         int((time.time() - start) * 1000)))
+            return
+        ignored = _is_ignored(file, prettier_bin, flags, remaining)
+        if ignored is not False:
+            emit(skipped(TOOL, file,
+                         IGNORED_REASON if ignored else UNATTRIBUTABLE_REASON,
+                         int((time.time() - start) * 1000)))
+            return
+        emit({"tool": "prettier-check", "file": file, "ok": True, "count": 0,
+              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
+        return
+
+    emit({
+        "tool": "prettier-check",
+        "file": file,
+        "ok": False,
+        "count": 1,
+        "errors": [{"line": None, "col": None, "severity": "error",
+                    "code": "formatting",
+                    "msg": f"file needs formatting (run: {prettier_bin} --write {file})"}],
+        "duration_ms": dur,
+    })
+
+
+if __name__ == "__main__":
+    guard_main(TOOL, main)

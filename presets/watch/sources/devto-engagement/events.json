@@ -1,0 +1,9 @@
+{
+  "source": "devto-engagement",
+  "events": [
+    {"key": "comment_received",      "label": "A new comment appeared on one of your recent articles"},
+    {"key": "reply_received",        "label": "A new comment's parent is one you posted through this tool"},
+    {"key": "reaction_received",     "label": "An article's reaction count crossed a threshold (10, 25, 50, 100, ...)"},
+    {"key": "engagement_unreachable","label": "The population could not be read — a fetch that failed or a missing API key, not dev.to going quiet. Fires once per outage, not once per poll"}
+  ]
+}
