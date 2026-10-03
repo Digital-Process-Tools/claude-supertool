@@ -106,6 +106,46 @@ jobs:
           VALIDATE: ${{ steps.cli.outputs.validate }}
         run: python3 .github/scripts/smoke_release_tree.py "$RUNNER_TEMP/release-tree" --validate "$VALIDATE"
 
+      - name: Prove the stripped tree behaves like the source (#2731)
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/release-tree"
+          equiv="$RUNNER_TEMP/release-equiv"
+          rm -rf "$equiv"
+          mkdir -p "$equiv"
+          cp -a "$out"/. "$equiv"/
+          cp -a tests "$equiv"/tests
+          cp pyproject.toml "$equiv"/pyproject.toml
+          python3 -m pip install --disable-pip-version-check pytest pytest-xdist
+          cd "$equiv"
+          # A slice, not the whole suite: the entry-point shim, the part loader,
+          # read/grep/edit/dispatch/batch, and the raw-command guard and hooks,
+          # run against the STRIPPED tree's own modules (this cwd is the built
+          # tree with tests/ copied alongside it, so `import supertool` resolves
+          # here, not to the checkout). `-o addopts=""` drops the repo's default
+          # coverage/xdist flags that assume the un-split checkout layout.
+          # Two deselects reach into .github/, denied from this tree on purpose
+          # (#2705) -- they assert something about the checkout's own dev
+          # tooling, not about runtime behaviour, so they cannot pass here.
+          select=(
+            "tests/test_entry_point_shim_931.py"
+            "tests/test_console_entry_point_442.py"
+            "tests/test_part_loader_2706.py"
+            "tests/test_part_loader_concatenated_ruff_2706.py"
+            "tests/test_preset_loader.py"
+            "tests/test_edit_ops.py"
+            "tests/test_batch_op.py"
+            "tests/test_dispatch_verdict_stale_1359.py"
+            "tests/test_grep_pattern_fidelity_1065_987_988.py"
+            "tests/test_read_abstract_languages_670.py"
+            "tests/test_guard_builtin_ops_absent_1384.py"
+            "tests/test_guard_command_word_1389.py"
+            "tests/test_git_push_hook_text_nff_641.py"
+          )
+          python3 -m pytest -q -p no:cacheprovider -n auto -o addopts="" "${select[@]}" \
+            --deselect "tests/test_entry_point_shim_931.py::test_the_coverage_floor_still_bounds_the_file_that_holds_the_code" \
+            --deselect "tests/test_entry_point_shim_931.py::test_the_changelog_gate_still_sees_the_file_that_holds_the_code"
+
   # The only job that can write. It rebuilds from the same sha (the build is
   # deterministic) rather than trusting an artifact, refuses to push unless the
   # rebuilt tree is byte-for-byte the one `verify` passed, and pushes one commit.
