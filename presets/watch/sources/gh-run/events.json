@@ -1,0 +1,12 @@
+{
+  "source": "gh-run",
+  "events": [
+    {"key": "run_succeeded",       "label": "Workflow run succeeded"},
+    {"key": "run_failed",          "label": "Workflow run failed (failure / timed_out / startup_failure)"},
+    {"key": "run_cancelled",       "label": "Workflow run cancelled"},
+    {"key": "run_action_required", "label": "Workflow run is waiting on a human"},
+    {"key": "run_started",         "label": "Workflow run left the queue and started"},
+    {"key": "run_inconclusive",    "label": "Workflow run ended without a pass/fail verdict, or with a conclusion this source does not recognise"},
+    {"key": "run_unreachable",     "label": "Could not look up the run — a lookup that failed, not a run that is quiet"}
+  ]
+}
