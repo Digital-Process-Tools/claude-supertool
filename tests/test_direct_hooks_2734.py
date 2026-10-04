@@ -80,8 +80,13 @@ def test_the_built_hooks_json_runs_python_directly(tmp_path) -> None:
     assert ".sh" not in text, text
     assert "hooks/session_start.py" in text
     assert "hooks/pre_bash_guard_hook.py" in text
-    # Never the bare name python3 (#572): only version-named rungs and py -3.
-    assert not re.search(r"(?<![\w.])python3(?![\w.])", text), text
+    # Never the bare name python3 as a COMMAND (#572): only version-named
+    # rungs and py -3. The fallback sentence names it in prose, which is fine.
+    for event in ("SessionStart", "PreToolUse"):
+        cmd = json.loads(text)["hooks"][event][0]["hooks"][0]["command"]
+        assert not re.search(r"(?:^|[;&|]|\b(?:then|if|elif|else))\s+python3\s", cmd), cmd
+    assert re.search(r"(?:^|[;&|]|\b(?:then|if|elif|else))\s+python3\s",
+                     "if x; then python3 y; fi")              # positive control
     for gone in ("hooks/session-start.sh", "hooks/pre-bash-guard.sh",
                  "hooks/python-ladder.sh", "hooks/hooks.release.json"):
         assert not (built / gone).exists(), gone
@@ -225,3 +230,31 @@ def test_no_python_at_all_prints_one_line_and_exits_0(tmp_path) -> None:
     assert g.returncode == 0
     doc = json.loads(g.stdout)
     assert "guard did not run" in doc["hookSpecificOutput"]["additionalContext"]
+
+
+def _build_module():
+    spec = importlib.util.spec_from_file_location("build_release_tree_dh2", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_swap_release_hooks_is_a_noop_without_the_key() -> None:
+    mod = _build_module()
+    contents = {"hooks/hooks.json": b"{}"}
+    assert mod.swap_release_hooks(contents, {}) == []
+    assert contents == {"hooks/hooks.json": b"{}"}
+
+
+def test_swap_release_hooks_refuses_a_path_missing_from_the_tree() -> None:
+    """A config naming a .sh that is not there must not ship half-swapped."""
+    mod = _build_module()
+    contents = {"hooks/hooks.json": b"old", "hooks/hooks.release.json": b"new"}
+    cfg = {"release_hooks": {"hooks_json": "hooks/hooks.release.json",
+                             "drop": ["hooks/session-start.sh"]}}
+    with pytest.raises(mod.BuildError):
+        mod.swap_release_hooks(contents, cfg)
+    contents["hooks/session-start.sh"] = b"#!/bin/bash"
+    assert mod.swap_release_hooks(contents, cfg) == [
+        "hooks/hooks.release.json", "hooks/session-start.sh"]
+    assert contents == {"hooks/hooks.json": b"new"}

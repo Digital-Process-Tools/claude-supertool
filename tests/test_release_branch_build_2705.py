@@ -665,29 +665,25 @@ def test_an_unrecognised_consumer_refuses_rather_than_ships_broken():
         mod.inline_python_ladder(contents, _ladder_config())
 
 
-def test_building_this_repository_head_inlines_the_real_ladder(tmp_path):
-    """Integration: the real deny-list and the real ladder/consumers against
-    the real tree -- not a synthetic fixture."""
+def test_building_this_repository_head_ships_no_shell_hook(tmp_path):
+    """Integration: the real deny-list against the real tree. #2734 replaced
+    #2732's ladder inlining: the release hooks.json runs Python directly
+    (release_hooks), so the two .sh hooks and the ladder they sourced do not
+    ship at all, and no shipped hook command names a .sh file."""
     mod = _load()
     cfg = mod.load_config(CONFIG)
     out = tmp_path / "out"
     report = mod.build(REPO_ROOT, "HEAD", out, cfg)
-    assert sorted(report["ladder_inlined"]) == [
-        "hooks/pre-bash-guard.sh", "hooks/session-start.sh"]
-    assert not (out / "hooks" / "python-ladder.sh").exists()
-    for rel in ("hooks/pre-bash-guard.sh", "hooks/session-start.sh"):
-        text = (out / rel).read_text(encoding="utf-8")
-        assert "python-ladder" not in text, (rel, text)
-        # Positive control: the inlined ladder's own functions/variables must
-        # actually be present, not merely absent of "python-ladder" text --
-        # a build that emptied the file would pass the line above too.
-        assert "supertool_python_each" in text, (rel, text)
-        assert "LADDER=" not in text, (rel, text)
-        if BASH is None:
-            pytest.skip("no bash that actually runs a script was found on this host")
-        r = subprocess.run([BASH, "-n", str(out / rel)], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace")
-        assert r.returncode == 0, (rel, r.stderr)
+    assert report["ladder_inlined"] == []
+    for rel in ("hooks/python-ladder.sh", "hooks/pre-bash-guard.sh",
+                "hooks/session-start.sh"):
+        assert not (out / rel).exists(), rel
+        assert rel in report["removed"], rel
+    hooks = json.loads((out / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    commands = [h["command"] for groups in hooks["hooks"].values()
+                for group in groups for h in group["hooks"]]
+    assert commands, "the built hooks.json registers no hook at all"
+    assert not any(".sh" in c for c in commands), commands
 
 
 # -- #2732: README.release.md swapped in for README.md at build time -----------
