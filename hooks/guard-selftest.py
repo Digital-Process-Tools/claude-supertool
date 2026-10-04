@@ -108,8 +108,12 @@ def bash_candidates(environ=None):
     # why the name is fixed; the alias this replaced is the same shape
     # that tripped _syntax_floor_interpreter in claude-supertool's own
     # _supertool.py a round earlier.
-    override = (environ if environ is not None else os.environ).get(
-        "SUPERTOOL_SELFTEST_BASH_CANDIDATES")
+    # No conditional yielding the mapping either: each source is read with
+    # the literal name on its own (#2734).
+    if environ is not None:
+        override = environ.get("SUPERTOOL_SELFTEST_BASH_CANDIDATES")
+    else:
+        override = os.environ.get("SUPERTOOL_SELFTEST_BASH_CANDIDATES")
     if override is not None:
         return [part for part in override.split(os.pathsep) if part]
     git_bin = "C:" + _BACKSLASH + "Program Files" + _BACKSLASH + "Git"
@@ -170,15 +174,23 @@ def wrapper_denies(bash, wrapper, root, command):
     """Run the real wrapper the way Claude Code does. (verdict, detail)"""
     event = json.dumps({"tool_name": "Bash",
                         "tool_input": {"command": command}})
-    env = dict(os.environ)
-    env["CLAUDE_PLUGIN_ROOT"] = root
+    # The child inherits (no `env=`), with the one literal variable set on
+    # this process for the duration of the spawn and restored after (#2734:
+    # no whole-environment copy). Safe here: this script is single-threaded.
+    prior_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    os.environ["CLAUDE_PLUGIN_ROOT"] = root
     try:
         proc = subprocess.run([bash, wrapper], input=event,
                               capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", env=env,
+                              encoding="utf-8", errors="replace",
                               timeout=180)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, "the wrapper could not be spawned: %s" % (exc,)
+    finally:
+        if prior_root is None:
+            os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
+        else:
+            os.environ["CLAUDE_PLUGIN_ROOT"] = prior_root
     if proc.returncode != 0:
         return False, "the wrapper exited %d and produced %r" % (
             proc.returncode, proc.stdout[:120])
@@ -241,8 +253,11 @@ def rule_inventory(root, environ=None):
         return ["  rules       : could not run - hooks/shipped_rules.py "
                 "could not be imported from " + hooks + " (" + str(exc)
                 + "), so nothing here says which rules this install ships"]
-    environ = os.environ if environ is None else environ
-    project = environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # Literal name, read from each source on its own; no alias (#2734).
+    if environ is not None:
+        project = environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    else:
+        project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     try:
         return shipped_rules.inventory(root, project)
     except Exception as exc:  # pragma: no cover - defensive

@@ -166,7 +166,7 @@ def cmd_watch(parts: list[str]) -> int:
         # `SUPERTOOL_WATCH_NAME` the state directory is derived, so naming
         # `SUPERTOOL_WATCH_STATE_DIR` here would send the operator to a knob
         # that is not the one in force. Derived no longer implies that variable
-        # is unset — a poller re-exec'd through `poller_env` is handed the
+        # is unset — a poller re-exec'd through `pin_poller_env` is handed the
         # derivation in it — and `state_dir_provenance` says which of the two
         # this process is (#1534).
         print(f"ERROR: could not claim the slot for {source}:{watcher_id} — its "
@@ -1194,9 +1194,11 @@ def _exec_labelled(source: str, watcher_id: str, only: list[str]) -> None:
     if not sys.executable:
         return
     try:
-        os.execve(sys.executable,
-                  transport.poller_argv(source, watcher_id, only),
-                  transport.poller_env())
+        argv = transport.poller_argv(source, watcher_id, only)
+        # The new image inherits this process's environment: pinned here,
+        # not passed as a copy (#2734).
+        transport.pin_poller_env()
+        os.execv(sys.executable, argv)
     except OSError:
         return
 

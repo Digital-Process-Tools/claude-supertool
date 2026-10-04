@@ -1304,20 +1304,48 @@ GIT_ENV_VARS = (
 _LEAKED_GIT_ENV: List[str] = []
 
 
+def _scrub_process_git_env() -> List[str]:
+    """`scrub_git_env()`'s production half: unset git's repo pointers in
+    THIS process's own environment; return the names removed.
+
+    Operates on `os.environ` itself, never a name bound to it (#2734: the
+    directory's scanner cited `_supertool_presets.py` for "an environment
+    variable read through an alias of the environment object" -- the
+    `env = os.environ` this replaced). Not a copy: removing a variable here
+    unsets it for this process AND for every child it spawns, which is what
+    makes the guard total. One literal-keyed statement per name, same order
+    as `GIT_ENV_VARS`; `tests/test_git_env_scrub_692.py` pins that this
+    half removes exactly that tuple.
+    """
+    removed = []
+    if os.environ.pop("GIT_DIR", None) is not None:
+        removed.append("GIT_DIR")
+    if os.environ.pop("GIT_WORK_TREE", None) is not None:
+        removed.append("GIT_WORK_TREE")
+    if os.environ.pop("GIT_COMMON_DIR", None) is not None:
+        removed.append("GIT_COMMON_DIR")
+    if os.environ.pop("GIT_INDEX_FILE", None) is not None:
+        removed.append("GIT_INDEX_FILE")
+    if os.environ.pop("GIT_OBJECT_DIRECTORY", None) is not None:
+        removed.append("GIT_OBJECT_DIRECTORY")
+    if os.environ.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None) is not None:
+        removed.append("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+    if os.environ.pop("GIT_NAMESPACE", None) is not None:
+        removed.append("GIT_NAMESPACE")
+    return removed
+
+
 def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
     """Delete git's repo pointers from `env`; return the names removed.
 
-    `env` defaults to `os.environ` itself (#2734: so the one production
-    call site in `_supertool.py` passes no argument at all, rather than
-    naming `os.environ` explicitly -- the directory scanner's "receives
-    the environment wholesale" shape) -- not a copy: a `del` there unsets the
-    variable for this process AND for every child it spawns, which is what
-    makes the guard total. A test passes its own dict explicitly (#692,
-    #416); production passes nothing. Typed as a MutableMapping rather
-    than a Dict because `os._Environ` is not a dict.
+    With no argument it acts on this process's own environment, through
+    `_scrub_process_git_env` (#2734: the one production call site in
+    `_supertool.py` passes nothing, and no name is ever bound to
+    `os.environ`). A test passes its own dict explicitly (#692, #416), and
+    only that dict is touched.
     """
     if env is None:
-        env = os.environ
+        return _scrub_process_git_env()
     # Seven literal-keyed statements, no loop (#2734): a `for` over
     # GIT_ENV_VARS (or any tuple, inline or not) still binds `del
     # env[loop_var]` to a non-literal key -- the same dynamic-key shape
@@ -1640,7 +1668,12 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # spawns git in six of its own functions. `os.environ` is scrubbed once in
     # `_main` instead, so this copy is already clean and a preset stays covered
     # by being launched rather than by opting in.
-    env = dict(os.environ)
+    # A whole-environment copy, kept (#2734): every non-reserved op-config
+    # key below is exported under a name built at run time from the user's
+    # config, which cannot be a literal os.environ write, and a batch runs
+    # ops on a ThreadPoolExecutor, where a temporary os.environ write would
+    # race. Spelled as the one literal `os.environ.copy()`.
+    env = os.environ.copy()
     # Which separator produced the argv this op is about to receive (#946).
     # A preset that reconstructs the caller's input — git-commit's spilled
     # message refusal is the one that does — cannot otherwise tell ':::' from

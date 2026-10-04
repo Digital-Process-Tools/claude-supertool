@@ -56,11 +56,11 @@ through the raw environment, with no `.supertool.json` to anchor it to,
 still reaches this module's own refusal above.
 
 **Nothing here is derived, so nothing here needs pinning across the exec.**
-`transport.poller_env` pins the state directory and the socket because those are
+`transport.pin_poller_env` pins the state directory and the socket because those are
 *derived* from `SUPERTOOL_WATCH_NAME` and re-deriving them in the exec'd image
 was not equivalent (#1477/#1534). This value is used exactly as the environment
-carries it, and `poller_env` is `dict(os.environ)` plus those two pins, so the
-search path survives an exec by construction. `tests/test_watch_sources_path_2135.py`
+carries it, and the exec'd image inherits this process's whole environment
+plus those two pins, so the search path survives an exec by construction. `tests/test_watch_sources_path_2135.py`
 pins that property rather than assuming it: an env built from an allowlist would
 drop it, and a re-exec'd poller would answer `unknown source` about the source it
 was already polling.
@@ -156,7 +156,11 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
     """
     # No alias of the whole mapping, and a literal name rather than the
     # module constant (#2734) -- see PATH_ENV's own declaration for why.
-    raw = (env if env is not None else os.environ).get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
+    # No conditional yielding the mapping either: each source on its own.
+    if env is not None:
+        raw = env.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
+    else:
+        raw = os.environ.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
 
     external: list[Path] = []
     refused: list[Refused] = []

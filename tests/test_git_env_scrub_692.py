@@ -172,6 +172,21 @@ def test_scrub_removes_every_pinned_var_and_reports_them():
     assert env == {"PATH": "/usr/bin"}
 
 
+def test_scrub_with_no_argument_unsets_every_pinned_var_in_this_process(monkeypatch):
+    """The production half (#2734) spells each name as its own literal
+    statement on os.environ, separately from the dict half above -- so the
+    two lists can drift. This pins that the no-argument call removes exactly
+    EXPECTED_VARS, in order, from the live environment and leaves the rest."""
+    for name in EXPECTED_VARS:
+        monkeypatch.setenv(name, "/leaked")
+    monkeypatch.setenv("SUPERTOOL_SCRUB_CONTROL_2734", "kept")
+    removed = supertool.scrub_git_env()
+    assert removed == list(EXPECTED_VARS)
+    assert [n for n in EXPECTED_VARS if n in os.environ] == []
+    assert os.environ.get("SUPERTOOL_SCRUB_CONTROL_2734") == "kept"
+    assert supertool.scrub_git_env() == []
+
+
 def test_scrub_reports_nothing_when_the_environment_is_clean():
     env = {"PATH": "/usr/bin"}
     assert supertool.scrub_git_env(env) == []

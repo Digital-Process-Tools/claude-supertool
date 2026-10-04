@@ -395,6 +395,9 @@ def _serve_owned(spec: dict, name: str, sock_name: str, pid_name: str,
     env = os.environ.copy()
     if spec.get("env"):
         env.update(spec["env"])
+    # The copy above is kept (#2734): the server's `env` block names its
+    # variables in the user's config, so they cannot be literal os.environ
+    # writes, and this process runs relay threads beside the child.
     proc = subprocess.Popen(
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
     )

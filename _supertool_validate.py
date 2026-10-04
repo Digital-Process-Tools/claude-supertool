@@ -124,7 +124,12 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _merged_env = {**os.environ, **_prefix_env}
+    # A whole-environment copy, kept (#2734): `_prefix_env`'s names come from
+    # the cmd's own KEY=VALUE prefix, so they cannot be literal os.environ
+    # writes, this mapping also feeds `_expand_env` below, and this runs on
+    # a ThreadPoolExecutor where a temporary os.environ write would race.
+    _merged_env = os.environ.copy()
+    _merged_env.update(_prefix_env)
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     # Pass merged env to child so prefix vars actually reach the subprocess.
     _run_env = _merged_env if _prefix_env else None
@@ -923,7 +928,13 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
     # $VAR / ${VAR} expansion + child env both need spec.env + prefix env.
     _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
-    _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
+    # A whole-environment copy, kept (#2734): the spec's `env` and the cmd's
+    # KEY=VALUE prefix name their variables at run time, so they cannot be
+    # literal os.environ writes, this mapping also feeds `_expand_env` below,
+    # and this runs on a ThreadPoolExecutor where a temporary os.environ
+    # write would race.
+    _merged_env = os.environ.copy()
+    _merged_env.update({str(k): str(v) for k, v in _spec_env_dict.items()})
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     timeout = int(spec.get("timeout", 60))
 
@@ -1875,7 +1886,13 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
     _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
-    _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
+    # A whole-environment copy, kept (#2734): the spec's `env` and the cmd's
+    # KEY=VALUE prefix name their variables at run time, so they cannot be
+    # literal os.environ writes, this mapping also feeds `_expand_env` below,
+    # and this runs on a ThreadPoolExecutor where a temporary os.environ
+    # write would race.
+    _merged_env = os.environ.copy()
+    _merged_env.update({str(k): str(v) for k, v in _spec_env_dict.items()})
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     timeout = int(spec.get("timeout", 30))
     # #2228, self-review (reviewer finding): a `.supertool.json` "formatters"
@@ -2137,7 +2154,12 @@ def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _merged_env = {**os.environ, **_prefix_env}
+    # A whole-environment copy, kept (#2734): `_prefix_env`'s names come from
+    # the cmd's own KEY=VALUE prefix, so they cannot be literal os.environ
+    # writes, this mapping also feeds `_expand_env` below, and this runs on
+    # a ThreadPoolExecutor where a temporary os.environ write would race.
+    _merged_env = os.environ.copy()
+    _merged_env.update(_prefix_env)
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True,
