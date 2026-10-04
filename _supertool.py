@@ -230,7 +230,7 @@ def _load_part(name: str) -> None:
 # rather than scrubbed per call site: every `subprocess.run`/`Popen` in this
 # file that does not pass its own override inherits the live `os.environ`,
 # and every one that DOES build an explicit override does so by copying/
-# merging `os.environ` first (`{**os.environ, ...}` or `os.environ.copy()`) -- so one
+# merging `os.environ` first (`{**os.environ, ...}`, inline at the spawn) -- so one
 # mutation, this early, reaches every call site in THIS process, plus every
 # standalone validator/formatter subprocess this tool launches (they receive
 # their environment as that same merge). `presets/mcp/daemon.py` repeats this

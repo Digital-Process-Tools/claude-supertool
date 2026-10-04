@@ -1071,12 +1071,29 @@ def _in_template_single_quotes(s: str, pos: int) -> bool:
     return in_single
 
 
-def _expand_env(s: str, env: Dict[str, str]) -> str:
-    r"""Safe $VAR / ${VAR} expansion from env (no shell).
+def _expand_env(s: str, extras: Dict[str, str]) -> str:
+    r"""Safe $VAR / ${VAR} expansion from `extras`, then the process env (no shell).
 
-    Replaces $NAME and ${NAME} with values from env. Unknown vars are left
-    literal (vs shell which silently empties them). Used at all argv-form
-    dispatch sites (custom ops, validators, formatters, resolve) so users
+    Replaces $NAME and ${NAME} with the value from `extras` if it names one,
+    else from the process environment. Unknown vars are left literal (vs
+    shell which silently empties them).
+
+    **`extras` is only what the call site adds, never a copy of os.environ
+    (#2734).** The portal's scanner cited every name bound to a copy of the
+    environment that was then read by a run-time key, which is what this
+    function's lookup is. A name not in `extras` is resolved by handing the
+    single token `${NAME}` to `os.path.expandvars`, so the environment read
+    happens inside the stdlib and only that one token is ever expanded there:
+    `%VAR%` (which `ntpath.expandvars` expands), `$$`, digit-led names and the
+    template's own quote spans (which `ntpath.expandvars` refuses to expand
+    inside) never reach it, and the quoting below still applies to the value.
+    `tests/test_expand_env_extras_equivalence_2734.py` holds it to the
+    merged-copy outputs it replaced. **Known gap:** an environment variable
+    whose value is exactly `${ITS_OWN_NAME}` reads as unset and stays as
+    written -- `expandvars` hands back an unchanged token for both, and
+    nothing else tells them apart without reading the mapping by name.
+
+    Used at all argv-form dispatch sites (custom ops, validators, formatters, resolve) so users
     can keep cmd templates that rely on env-var expansion without invoking
     a shell.
 
@@ -1146,11 +1163,18 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     `$`), which is a different, larger change than the one this docstring
     documents.
     """
+    def _lookup(name: str) -> Optional[str]:
+        if name in extras:
+            return extras[name]
+        probe = "${" + name + "}"
+        found = os.path.expandvars(probe)
+        return None if found == probe else found
+
     def _replace(m: "re.Match[str]") -> str:
         name = m.group(1) or m.group(2)
-        if name not in env:
+        value = _lookup(name)
+        if value is None:
             return m.group(0)
-        value = env[name]
         if _in_template_single_quotes(s, m.start()):
             # Already inside a single-quote span the TEMPLATE itself opened
             # (docs/notifiers.md's `bash -c '...$SLACK_WEBHOOK'` pattern) --
@@ -1668,12 +1692,14 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # spawns git in six of its own functions. `os.environ` is scrubbed once in
     # `_main` instead, so this copy is already clean and a preset stays covered
     # by being launched rather than by opting in.
-    # A whole-environment copy, kept (#2734): every non-reserved op-config
-    # key below is exported under a name built at run time from the user's
-    # config, which cannot be a literal os.environ write, and a batch runs
-    # ops on a ThreadPoolExecutor, where a temporary os.environ write would
-    # race. Spelled as the one literal `os.environ.copy()`.
-    env = os.environ.copy()
+    # Only the EXTRAS this launch adds (#2734) -- never a copy of os.environ.
+    # Every non-reserved op-config key below is exported under a name built
+    # at run time from the user's config, and a batch runs ops on a
+    # ThreadPoolExecutor, so neither a literal os.environ write nor a
+    # temporary one is possible. `_expand_env` falls back to the process
+    # environment itself, and the child gets `{**os.environ, **env}` inline
+    # at the spawn, so no local name ever holds the whole environment.
+    env: Dict[str, str] = {}
     # Which separator produced the argv this op is about to receive (#946).
     # A preset that reconstructs the caller's input — git-commit's spilled
     # message refusal is the one that does — cannot otherwise tell ':::' from
@@ -1720,7 +1746,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         # undecodable bytes from taking the whole run down with it.
         result = subprocess.run(
             shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace", env=env,
+            encoding="utf-8", errors="replace", env={**os.environ, **env},
         )
         elapsed = _elapsed_since(t0)
         output = result.stdout

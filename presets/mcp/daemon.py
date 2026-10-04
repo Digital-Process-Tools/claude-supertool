@@ -34,7 +34,7 @@ from typing import Optional, Tuple
 # (`python3 daemon.py SERVER_NAME`), so it cannot rely on inheriting the
 # `FORCE_COLOR` strip `_supertool.py` applies at import -- a process that
 # never imported that module never ran it. Popped here too, before the
-# `env = os.environ.copy()` a few hundred lines down builds the MCP server
+# inline `{**os.environ, ...}` a few hundred lines down builds the MCP server
 # child's environment, so an operator's ambient `FORCE_COLOR` (this repo's
 # own agent harness exports one) cannot land in that long-lived child's
 # stderr regardless of which of the two ways this script was started.
@@ -392,14 +392,13 @@ def _serve_owned(spec: dict, name: str, sock_name: str, pid_name: str,
         argv = shlex.split(cmd)
     else:
         argv = [cmd] + list(args) if isinstance(cmd, str) else list(cmd) + list(args)
-    env = os.environ.copy()
-    if spec.get("env"):
-        env.update(spec["env"])
-    # The copy above is kept (#2734): the server's `env` block names its
-    # variables in the user's config, so they cannot be literal os.environ
-    # writes, and this process runs relay threads beside the child.
+    # The server's `env` block names its variables in the user's config, so
+    # they cannot be literal os.environ writes, and this process runs relay
+    # threads beside the child. Merged inline at the spawn, so no name binds
+    # a copy of os.environ (#2734).
     proc = subprocess.Popen(
-        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**os.environ, **(spec.get("env") or {})},
     )
 
     # Everything from here on is inside the try whose `finally` reaps `proc`.

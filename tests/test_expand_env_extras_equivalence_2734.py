@@ -41,7 +41,18 @@ def _merged_copy(cmd: str, extras: dict) -> str:
     return supertool._expand_env(cmd, {**os.environ, **extras})
 
 
-IMPLEMENTATIONS = [pytest.param(_merged_copy, id="merged-copy")]
+def _extras_only(cmd: str, extras: dict) -> str:
+    """The shape every call site now uses: only the extras, no environ copy.
+
+    `_expand_env` resolves a name the extras do not hold through
+    `os.path.expandvars("${NAME}")`, one token at a time."""
+    return supertool._expand_env(cmd, extras)
+
+
+IMPLEMENTATIONS = [
+    pytest.param(_merged_copy, id="merged-copy"),
+    pytest.param(_extras_only, id="extras-only"),
+]
 
 
 @pytest.fixture
@@ -99,3 +110,15 @@ def test_double_dollar_is_a_literal_dollar_then_a_reference(expand, envvars):
 def test_a_digit_led_name_is_not_a_reference(expand, envvars, monkeypatch):
     monkeypatch.setenv("1", "one")
     assert expand("t $1 ${1}", {}) == "t $1 ${1}"
+
+def test_known_gap_a_value_equal_to_its_own_reference_reads_as_unset(monkeypatch):
+    """Documented in `_expand_env`'s docstring: `expandvars` returns the probe
+    unchanged both for an unset name and for one whose value IS the probe, so
+    the extras-only lookup cannot tell them apart. The merged copy could. This
+    pins the gap so a change to it is a decision, not an accident."""
+    monkeypatch.setenv("ST2734_SELF", "${ST2734_SELF}")
+    monkeypatch.setenv("ST2734_PLAIN", "plain")
+    assert _merged_copy("t $ST2734_SELF", {}) == "t '${ST2734_SELF}'"
+    assert _extras_only("t $ST2734_SELF", {}) == "t $ST2734_SELF"
+    # positive control: the same lookup does resolve an ordinary env value
+    assert _extras_only("t $ST2734_PLAIN", {}) == "t plain"

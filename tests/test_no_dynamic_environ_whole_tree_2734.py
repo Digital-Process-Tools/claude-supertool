@@ -51,6 +51,39 @@ def _is_literal_str(node):
     return isinstance(node, ast.Constant) and isinstance(node.value, str)
 
 
+_SPAWN_FUNCS = ("run", "Popen")
+
+
+def _is_subprocess_spawn(call):
+    func = getattr(call, "func", None)
+    return (isinstance(call, ast.Call) and isinstance(func, ast.Attribute)
+            and func.attr in _SPAWN_FUNCS and isinstance(func.value, ast.Name)
+            and func.value.id == "subprocess")
+
+
+def inline_spawn_env_dicts(tree):
+    """The one whole-environment spelling still allowed (#2734): a dict
+    display `{**os.environ, ...}` written directly as the `env=` keyword of
+    `subprocess.run(...)` / `subprocess.Popen(...)` -- or as either arm of a
+    conditional expression that IS that keyword's value. No name is ever
+    bound to it, which is the hypothesis the portal is testing: its scanner
+    cited a NAME holding a copy of the environment, read by a run-time key."""
+    allowed = set()
+    for call in ast.walk(tree):
+        if not _is_subprocess_spawn(call):
+            continue
+        for kw in call.keywords:
+            if kw.arg != "env":
+                continue
+            value = kw.value
+            arms = [value.body, value.orelse] if isinstance(value, ast.IfExp) else [value]
+            for arm in arms:
+                if (isinstance(arm, ast.Dict) and arm.keys and arm.keys[0] is None
+                        and _is_os_environ(arm.values[0])):
+                    allowed.add(arm)
+    return allowed
+
+
 _SCOPE_TYPES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
@@ -92,7 +125,7 @@ def _is_environ_like(node, aliases):
     return _is_os_environ(node) or (isinstance(node, ast.Name) and node.id in aliases)
 
 
-def _hits_in_scope(scope_node, aliases):
+def _hits_in_scope(scope_node, aliases, allowed_dicts=frozenset()):
     hits = []
     for node in _direct_children_excluding_nested_scopes(scope_node):
         if isinstance(node, ast.Subscript) and _is_environ_like(node.value, aliases):
@@ -123,7 +156,7 @@ def _hits_in_scope(scope_node, aliases):
                         hits.append((node.lineno, "call passes environ wholesale"))
         elif isinstance(node, ast.For) and _is_environ_like(node.iter, aliases):
             hits.append((node.lineno, "for ... in environ -- whole mapping"))
-        elif isinstance(node, ast.Dict):
+        elif isinstance(node, ast.Dict) and node not in allowed_dicts:
             for i, key in enumerate(node.keys):
                 if key is None and _is_environ_like(node.values[i], aliases):
                     hits.append((node.lineno, "{**environ, ...} -- whole mapping"))
@@ -145,9 +178,10 @@ def environ_hits(source):
     except SyntaxError as e:
         return [(0, "SYNTAX_ERROR: " + str(e))]
     hits = []
+    allowed = inline_spawn_env_dicts(tree)
     for scope in _all_scopes(tree):
         aliases = _scope_aliases(scope)
-        hits.extend(_hits_in_scope(scope, aliases))
+        hits.extend(_hits_in_scope(scope, aliases, allowed))
     return hits
 
 
@@ -160,38 +194,17 @@ def environ_hits(source):
 #: sweep below (`environ_shape_hits`) refuses every spelling of the mapping
 #: except a literal-keyed one.
 #:
-#: What remains is whole-mapping copies that build a child process's
-#: environment and could NOT be turned into inheritance (`env=None`) plus a
-#: temporary, restored `os.environ["LITERAL"] = ...`, each with its reason.
-#: Every one is spelled as a single literal `os.environ.copy()`. They are
-#: not "exempt", only "not yet known to be cited". Keyed by the BUILT tree's
-#: path and line.
-_VALIDATE_REASON = (
-    "the keys added come from a `.supertool.json` spec (`env`, or a KEY=VALUE "
-    "prefix on its cmd), so they are named at run time and cannot be written "
-    "as literal os.environ assignments; the same merged mapping feeds "
-    "`_expand_env`'s $VAR expansion of the cmd; and validators/formatters run "
-    "on a ThreadPoolExecutor, so a temporary os.environ write would race"
-)
-WHOLE_ENVIRON_COPIES_KEPT = {
-    "_supertool_validate.py": {
-        131: _VALIDATE_REASON,
-        936: _VALIDATE_REASON,
-        1894: _VALIDATE_REASON,
-        2161: _VALIDATE_REASON,
-    },
-    "_supertool_presets.py": {
-        1676: "the preset launcher exports every non-reserved op-config key as "
-              "a SUPERTOOL_<KEY> variable, a name built at run time from the "
-              "user's config, and ops can run in parallel on a ThreadPoolExecutor "
-              "(`_supertool.py` batch), so a temporary os.environ write would race",
-    },
-    "presets/mcp/daemon.py": {
-        395: "the MCP server's own `env` block from `.supertool.json` is merged "
-             "in: keys named by the user's config, not literals; the daemon is "
-             "multi-threaded",
-    },
-}
+#: Then the portal cited `_supertool_presets.py` again, with no `= os.environ`
+#: left in it: the six kept `x = os.environ.copy()` sites were the remaining
+#: shape -- a name bound to a COPY of the environment, read by a key computed
+#: at run time (`_expand_env` looked `$VAR` names up in it). All six are gone:
+#: `_expand_env` takes only the call site's extras and resolves any other name
+#: through `os.path.expandvars("${NAME}")`, and the child's environment is
+#: written inline as `env={**os.environ, **extra}` at the spawn
+#: (`inline_spawn_env_dicts`). So this is EMPTY, and
+#: `test_no_bound_environ_copy_is_kept` holds it empty. Keyed by the BUILT
+#: tree's path and line, should a reason ever earn an entry again.
+WHOLE_ENVIRON_COPIES_KEPT = {}
 #: The older name, kept so the first sweep reads the same list.
 UNPROBED_SUBPROCESS_ENV_BUILDERS = WHOLE_ENVIRON_COPIES_KEPT
 
@@ -265,6 +278,7 @@ def environ_shape_hits(source):
     except SyntaxError as e:
         return [(0, "SYNTAX_ERROR: " + str(e))]
     os_names = _os_module_names(tree)
+    allowed_dicts = inline_spawn_env_dicts(tree)
     parents = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
@@ -286,6 +300,8 @@ def environ_shape_hits(source):
             continue
         if (isinstance(parent, ast.Subscript) and parent.value is node
                 and _is_literal_str(parent.slice)):
+            continue
+        if isinstance(parent, ast.Dict) and parent in allowed_dicts:
             continue
         if (isinstance(parent, ast.Compare) and node in parent.comparators
                 and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops)
@@ -326,7 +342,27 @@ _SHAPE_POSITIVES = {
     "update": "import os\nos.environ.update({'A': '1'})\n",
     "asname": "import os as _o\nx = _o.environ\n",
     "from": "from os import environ\n",
+    # #2734: the whole-environment merge is allowed ONLY inline as the env=
+    # keyword of subprocess.run/Popen -- every other home for it is a hit.
+    "bound_splat_then_env": (
+        "import os, subprocess\nenv = {**os.environ, 'A': '1'}\n"
+        "subprocess.run(['x'], env=env)\n"),
+    "splat_env_kw_of_other_call": "import os\nf(env={**os.environ, 'A': '1'})\n",
+    "copy_as_env_kw": "import os, subprocess\nsubprocess.run(['x'], env=os.environ.copy())\n",
+    "dict_as_env_kw": "import os, subprocess\nsubprocess.Popen(['x'], env=dict(os.environ))\n",
+    "splat_nested_in_env_kw": (
+        "import os, subprocess\nsubprocess.run(['x'], env={'A': '1', **{**os.environ}})\n"),
+    "splat_not_first_in_env_kw": (
+        "import os, subprocess\nsubprocess.run(['x'], env={'A': '1', **os.environ})\n"),
 }
+
+#: The inline forms the shipped tree now uses -- none is a hit in either sweep.
+_INLINE_SPAWN_ENV_NEGATIVES = (
+    "import os, subprocess\n"
+    "subprocess.run(['x'], env={**os.environ, **extra})\n"
+    "subprocess.Popen(['x'], env={**os.environ, **(spec.get('env') or {})})\n"
+    "subprocess.run(['x'], env=({**os.environ, **p} if p else None))\n"
+)
 
 _SHAPE_NEGATIVES = (
     "import os\nos.environ.get('X')\nos.environ.get('X', '')\n"
@@ -367,22 +403,32 @@ def test_os_environ_is_only_ever_literal_keyed_in_the_shipped_tree(tmp_path):
                     "WHOLE_ENVIRON_COPIES_KEPT:\n" + lines)
 
 
-def test_every_kept_copy_is_one_literal_os_environ_copy_call(tmp_path):
-    """Each kept site is spelled `os.environ.copy()` -- not dict(...) or
-    {**...} -- and is still a hit (no stale line excusing another one)."""
+def test_no_bound_environ_copy_is_kept() -> None:
+    """Zero bound copies (#2734): the allowlist is empty, so any
+    `x = os.environ.copy()` in the shipped tree fails the sweep above."""
+    assert WHOLE_ENVIRON_COPIES_KEPT == {}
+
+
+def test_a_bound_copy_is_a_hit_and_the_inline_spawn_env_is_not() -> None:
+    """Positive control for the allowance beside it: the exact shape the six
+    sites had is caught by both sweeps, and the shape they now have is not."""
+    bound = "import os\nx = os.environ.copy()\n"
+    assert environ_shape_hits(bound)
+    assert environ_hits(bound)
+    assert environ_shape_hits(_INLINE_SPAWN_ENV_NEGATIVES) == []
+    assert environ_hits(_INLINE_SPAWN_ENV_NEGATIVES) == []
+
+
+def test_the_shipped_tree_does_use_the_inline_spawn_env(tmp_path) -> None:
+    """Positive control on the real build: the allowance is exercised, so the
+    clean sweep above is not clean merely because nothing merges anywhere."""
     built = _build_tree(tmp_path)
-    problems = []
-    for rel, lines in WHOLE_ENVIRON_COPIES_KEPT.items():
-        f = built / rel
-        if not f.is_file():
-            problems.append(f"{rel}: file no longer ships")
-            continue
-        hits = dict(environ_shape_hits(f.read_text(encoding="utf-8", errors="replace")))
-        for line, reason in sorted(lines.items()):
-            assert reason, f"{rel}:{line} has no reason"
-            what = hits.get(line)
-            if what is None:
-                problems.append(f"{rel}:{line}: no longer a hit -- remove it")
-            elif what != "os.environ.copy -- not a literal-keyed get/pop":
-                problems.append(f"{rel}:{line}: kept, but spelled as {what!r}")
-    assert not problems, "\n".join(problems)
+    found = {}
+    for f in sorted(built.rglob("*.py")):
+        tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
+        n = len(inline_spawn_env_dicts(tree))
+        if n:
+            found[f.relative_to(built).as_posix()] = n
+    assert found.get("_supertool_presets.py", 0) >= 1, found
+    assert found.get("_supertool_validate.py", 0) >= 4, found
+    assert found.get("presets/mcp/daemon.py", 0) >= 1, found
