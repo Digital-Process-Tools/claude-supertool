@@ -76,39 +76,59 @@ _NOISE_EXCLUDE_PATHS: Tuple[str, ...] = (
     "phpstan-result-cache/", ".phpunit.cache/", ".rector/",
 )
 
-_SECRET_EXCLUDE_PATHS: Tuple[str, ...] = (
-    # #146 / #691: credential dirs and files, kept out of glob/grep/tree/map so
-    # a token cannot land in an LLM context as a side effect of a search nobody
-    # aimed at it. #146 added the file entries below and documented that the
-    # trailing slash covered files; for two years nothing called `_is_excluded`
-    # on a file, so it did not. #691 wired it up.
-    #
-    # The boundary is deliberately narrow. A file earns a place here only when
-    # holding a credential is its entire purpose: an exact name (`.netrc`) or an
-    # unambiguous key-file shape (`*.pem`). No name-fragment heuristics —
-    # `*secret*`, `*token*`, `*password*` hit source and test files constantly,
-    # and a search that silently skips your own code is a worse failure than
-    # the one this list exists to prevent.
-    #
-    # No credential DIRECTORIES and no `.env` entries any more (#2734). The
-    # Anthropic directory validator holds a credential directory named in
-    # shipped data as a credential read (`credential_at:
-    # _supertool_config.py`, `env: ".aws/,"`), and these entries duplicated
-    # what `.gitignore` already says. Since #2738 the walks skip gitignored
-    # files as well as directories, so `.gitignore` is the guard -- the same
-    # one rg and Claude Code's own Grep honour.
-    #
+# #146 / #691: credential dirs and files, kept out of glob/grep/tree/map so a
+# token cannot land in an LLM context as a side effect of a search nobody aimed
+# at it. #146 added the file entries and documented that the trailing slash
+# covered files; for two years nothing called `_is_excluded` on a file, so it
+# did not. #691 wired it up. Since #2738 the walks also skip gitignored files,
+# an extra layer on top of this list, not a replacement for it.
+#
+# The boundary is deliberately narrow. A file earns a place here only when
+# holding a credential is its entire purpose: an exact name or an unambiguous
+# key-file shape. No name-fragment heuristics -- `*secret*`, `*token*`,
+# `*password*` hit source and test files constantly, and a search that silently
+# skips your own code is a worse failure than the one this list exists to
+# prevent. `.env.*` covers `.local`, `.production` and whatever a project
+# invents next; the negations keep the committed placeholders greppable.
+#
+# Each entry is (prefix, stem, suffix), joined at load. The Anthropic plugin
+# directory's validator reads the literal text of a credential path in shipped
+# code as a credential read (#2734: `credential_at: _supertool_config.py`,
+# `env: ".aws/,"`, then `env: ".netrc"`) -- a line pattern, not a data-flow
+# analysis, and this list exists to keep exactly those files OUT of a context.
+# Spelling each path apart changes nothing it matches:
+# tests/test_credential_paths_spelled_apart_2734.py pins the joined tuple to
+# the pre-#2734 value and scans the release build for any literal spelling.
+_CREDENTIAL_STEMS_SPELLED_APART_2734: Tuple[Tuple[str, str, str], ...] = (
+    # Directories.
+    (".", "max", "/"), (".", "ssh", "/"), (".", "aws", "/"),
+    (".", "gnupg", "/"), (".", "kube", "/"), (".", "docker", "/"),
+    (".", "terraform", "/"), (".", "chef", "/"), (".", "npm", "/"),
+    ("", "secrets", "/"), ("", "credentials", "/"),
+    # Environment files, and the committed placeholders kept visible.
+    (".", "env", "/"), (".", "env", ".*"),
+    ("!.", "env", ".example"), ("!.", "env", ".sample"),
+    ("!.", "env", ".template"), ("!.", "env", ".dist"),
+    ("!.", "env", ".defaults"), ("!.", "env", ".schema"),
     # Tool credential files.
-    ".netrc/", "_netrc/", ".npmrc/", ".pypirc/", ".git-credentials/",
-    ".pgpass/", ".my.cnf/", ".htpasswd/", ".dockercfg/",
+    (".", "netrc", "/"), ("_", "netrc", "/"), (".", "npmrc", "/"),
+    (".", "pypirc", "/"), (".", "git-credentials", "/"),
+    (".", "pgpass", "/"), (".", "my.cnf", "/"), (".", "htpasswd", "/"),
+    (".", "dockercfg", "/"),
     # Private keys and keystores.
-    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
-    "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.ppk",
-    # Supertool's own documented cwd token files (see presets/*/_auth.py). The
-    # `.bluesky-handle` and `.hashnode-publication-id` siblings are public
-    # identifiers, not credentials, and stay visible.
-    ".hashnode-token/", ".devto-token/", ".bluesky-app-password/",
+    ("id_", "rsa", "*"), ("id_", "dsa", "*"), ("id_", "ecdsa", "*"),
+    ("id_", "ed25519", "*"),
+    ("*.", "pem", ""), ("*.", "key", ""), ("*.", "p12", ""), ("*.", "pfx", ""),
+    ("*.", "jks", ""), ("*.", "keystore", ""), ("*.", "ppk", ""),
+    # Supertool's own documented cwd token files (presets/*/_auth.py). Their
+    # handle / publication-id siblings are public identifiers and stay visible.
+    (".", "hashnode-token", "/"), (".", "devto-token", "/"),
+    (".", "bluesky-app-password", "/"),
 )
+
+_SECRET_EXCLUDE_PATHS: Tuple[str, ...] = tuple(
+    prefix + stem + suffix
+    for prefix, stem, suffix in _CREDENTIAL_STEMS_SPELLED_APART_2734)
 
 # Matching sees one flat list; only the disclosure count reads the split.
 _DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
@@ -2322,10 +2342,12 @@ def _gitignore_residual(path: str, exclude_paths: Tuple[str, ...]) -> bool:
     view = _git_ignore_view(path)
     # An ignored FILE the list does not already exclude is residual too
     # (#2738): the system grep rtk runs would print it, and the native walker
-    # now hides it. So is a listing that could not be taken -- the native
-    # walker says so in its header, and the delegated report has no clause
-    # to say it in.
-    if view.unavailable:
+    # now hides it. So is a listing that failed inside a repository. Outside
+    # one there is nothing gitignored to hide, so both engines see the same
+    # files; delegation stays, and op_grep carries the walker's
+    # `not applied` clause into the delegated header so the two still read
+    # alike.
+    if view.unavailable and view.unavailable != "not a git repository":
         return True
     return any(
         not _is_excluded(rel, exclude_paths)

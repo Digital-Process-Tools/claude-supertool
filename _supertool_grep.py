@@ -811,9 +811,23 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
                     # The census is a *callable*, not a value: it is a second
                     # full grep over the tree and must not be paid for on a
                     # complete result, which needs no total (#1771).
-                    return _rtk_grep_report(
+                    report = _rtk_grep_report(
                         rtk_out, limit,
                         census=lambda: _rtk_grep_census(pattern, path, excl))
+                    # The native walker's `gitignore filter not applied (not
+                    # a git repository)` clause, carried into the delegated
+                    # header (#2738), so the backend never changes what the
+                    # report admits.
+                    tally = _GitIgnoreTally()
+                    tally.saw(_git_ignore_view(path))
+                    clause = tally.clause()
+                    if clause:
+                        head, sep, rest = report.partition(chr(10))
+                        cut = head.rfind(", limit")
+                        if cut >= 0:
+                            head = head[:cut] + clause + head[cut:]
+                        report = head + sep + rest
+                    return report
                 # An excluded file came back anyway — expected whenever the
                 # list carries a negation, since those wildcards are withheld
                 # from the argv. Printing the filtered lines under the

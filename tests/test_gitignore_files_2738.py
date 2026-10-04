@@ -94,10 +94,12 @@ def test_grep_count_mode_says_how_many_were_hidden(repo: Path) -> None:
 
 
 def test_grep_searches_a_gitignored_directory_named_as_the_root(repo: Path) -> None:
-    """`grep:X:.max/` is where the maintainer keeps its notes. Naming it is
-    deliberate, the way rg searches a path it is handed even when ignored."""
-    out = _fwd(supertool.op_grep("MARK", ".max/", no_auto_read=True))
-    assert "notes.md" in out
+    """Naming an ignored directory is deliberate, the way rg searches a path
+    it is handed even when ignored. `private/` rather than `.max/`: `.max/`
+    is also on the default exclude list, which #2734 kept, and that list
+    prunes it whatever git says."""
+    out = _fwd(supertool.op_grep("MARK", "private/", no_auto_read=True))
+    assert "p.txt" in out
     assert "(1 results in 1 files" in out
 
 
@@ -247,34 +249,38 @@ def test_one_git_listing_per_walk_not_one_per_file(
     assert len(calls) <= 2, calls
 
 
-# -- #2734: .gitignore is now the guard for secret files ----------------------
-
-_REMOVED_SECRET_ENTRIES = (
-    ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
-    ".terraform/", ".chef/", ".npm/", "secrets/", "credentials/",
-    ".env/", ".env.*",
-)
+# -- two layers: the exclude list (kept, #2734) and .gitignore (#2738) --------
 
 
-def test_shipped_defaults_no_longer_name_credential_directories() -> None:
-    """The Anthropic directory validator holds a credential directory named in
-    shipped data as a credential read (#2734: `credential_at:
-    _supertool_config.py`, `env: ".aws/,"`). `.gitignore` is the guard now."""
-    named = [e for e in _REMOVED_SECRET_ENTRIES
-             if e in supertool._DEFAULT_EXCLUDE_PATHS]
-    assert not named, named
-    # Positive control: the noise half of the list is untouched.
-    assert ".git/" in supertool._DEFAULT_EXCLUDE_PATHS
-    assert "node_modules/" in supertool._DEFAULT_EXCLUDE_PATHS
-
-
-def test_a_gitignored_env_is_hidden_by_gitignore_not_by_the_list(repo: Path) -> None:
-    """With default config, `.env` stays out of grep -- and the header credits
-    the gitignore filter, so the guard is the one this file says it is."""
+def test_a_gitignored_env_stays_hidden_with_default_config(repo: Path) -> None:
+    """`.env` is both gitignored here and on the default exclude list; either
+    layer alone hides it. Pinned so neither can be dropped believing the other
+    was the only guard."""
     out = _fwd(supertool.op_grep("MARK_env", ".", no_auto_read=True))
     assert "TOKEN=MARK_env" not in out
-    assert "gitignored files hidden" in out, out
-    # Not the list any more: nothing in this repo is on the credential half.
-    assert "hidden by exclude-paths" not in out, out
     tracked = _fwd(supertool.op_grep("def kept", ".", no_auto_read=True))
     assert "src/tracked.py" in tracked                   # positive control
+
+
+def test_the_delegated_header_carries_the_not_applied_clause(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outside a repo there is nothing gitignored, so grep still delegates to
+    rtk -- and the delegated header admits the same thing the walker's does."""
+    (tmp_path / "a.py").write_text("MARK\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def _stub(args, timeout=30):
+        calls.append(list(args))
+        return "./a.py:1:MARK\n"
+
+    monkeypatch.setattr(supertool, "_CONFIG", {"rtk": True})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    monkeypatch.setattr(supertool, "_RTK_CHECKED", True)
+    monkeypatch.setattr(supertool, "_RTK_PATH", "/fake/bin/rtk")
+    monkeypatch.setattr(supertool, "_rtk_run", _stub)
+    out = supertool.op_grep("MARK", ".", no_auto_read=True)
+    assert calls, "did not delegate outside a repository"
+    head = out.splitlines()[0]
+    assert "delegated to rtk" in head, head
+    assert "gitignore filter not applied (not a git repository)" in head, head
