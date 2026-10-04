@@ -160,7 +160,7 @@ def _check_peer_uid(client_sock: socket.socket) -> bool:
         return True
 
 
-def bridge_client(client_sock: socket.socket, proc: subprocess.Popen, last_activity: list, dbg) -> None:
+def bridge_client(client_sock, proc, last_activity: list, dbg) -> None:
 
 
 

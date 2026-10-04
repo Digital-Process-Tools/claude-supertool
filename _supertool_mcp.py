@@ -1328,7 +1328,12 @@ class MCPClient:
 
     _CONNECT_TIMEOUT_SECONDS = 60
 
-    def spawn(self) -> None:
+    def connect(self) -> None:
+
+
+
+
+
 
         with self._lock:
             if self._sock is not None:
@@ -1505,7 +1510,7 @@ def _mcp_ensure_server(name: str):
     try:
         server = MCPClient(name=name, timeout=int(spec.get("timeout", 30)),
                            socket_path=spec.get("socket_path"))
-        server.spawn()
+        server.connect()
         server.initialize()
     except (OSError, MCPServerError, MCPTimeout, KeyError):
         return None
