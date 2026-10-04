@@ -234,7 +234,7 @@ def closing_ref_verdict(old_body: object, new_body: str,
             f"the published body could not be read "
             f"({old_read_error or 'no detail'}), so whether this update drops a "
             f"closing reference is UNKNOWN. That is not 'nothing was dropped'. "
-            f"Re-run, or pass `{UNLINK}` to write anyway and take the risk "
+            f"Re-run, or add `{UNLINK}` to write anyway and take the risk "
             f"deliberately."))
 
     old_refs = _checks.closing_issue_refs(old_body)

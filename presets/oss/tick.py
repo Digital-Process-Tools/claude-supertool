@@ -296,14 +296,13 @@ def compose(cwd=None, record=None, cache_root=None, run=None, resolve_fn=None):
 
     board = {}
     core_present = _SUPERTOOL_CORE.is_file()
-    for op in _BOARD_OPS:
+    for board_op in _BOARD_OPS:
         if not core_present:
-            board[op] = "unread -- {} not found".format(_SUPERTOOL_CORE)
+            board[board_op] = "unread -- {} not found".format(_SUPERTOOL_CORE)
             continue
-        code, out = _run(
-            [sys.executable, str(_SUPERTOOL_CORE), op], run=run, cwd=cwd, timeout=120
-        )
-        board[op] = "read" if code == 0 else "unread -- {}".format(
+        argv = [sys.executable, str(_SUPERTOOL_CORE), board_op]
+        code, out = _run(argv, run=run, cwd=cwd, timeout=120)
+        board[board_op] = "read" if code == 0 else "unread -- {}".format(
             out.strip() if out else "exit {}".format(code)
         )
     rows["board"] = board
