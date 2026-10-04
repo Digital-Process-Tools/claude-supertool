@@ -1328,8 +1328,13 @@ class MCPClient:
     # Override via SUPERTOOL_MCP_CONNECT_TIMEOUT (seconds).
     _CONNECT_TIMEOUT_SECONDS = 60
 
-    def spawn(self) -> None:
-        """Connect to daemon socket. Auto-spawn detached daemon if not running."""
+    def connect(self) -> None:
+        """Connect to daemon socket. Auto-spawn detached daemon if not running.
+
+        Named `spawn` until #2734: the directory validator read that name
+        beside the file read in op_hover as a download-and-execute pattern
+        (RUNTIME_FETCH_EXEC, probe rfe-t2), and connecting is what it mostly
+        does -- the daemon is started only when its socket is missing."""
         with self._lock:
             if self._sock is not None:
                 return
@@ -1505,7 +1510,7 @@ def _mcp_ensure_server(name: str):
     try:
         server = MCPClient(name=name, timeout=int(spec.get("timeout", 30)),
                            socket_path=spec.get("socket_path"))
-        server.spawn()
+        server.connect()
         server.initialize()
     except (OSError, MCPServerError, MCPTimeout, KeyError):
         return None

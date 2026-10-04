@@ -220,7 +220,7 @@ class TestShellInjection:
     @pytest.mark.slow
     @_REQUIRES_AF_UNIX
     def test_mcp_daemon_spawn_uses_list_not_shell(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """MCPClient.spawn() must call subprocess.Popen([...], ...) — list form only.
+        """MCPClient.connect() must call subprocess.Popen([...], ...) — list form only.
 
         We monkeypatch Popen to capture the invocation and assert shell=True is absent.
         """
@@ -251,7 +251,7 @@ class TestShellInjection:
         monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.05")
 
         try:
-            client.spawn()
+            client.connect()
         except (MCPServerError, FileNotFoundError, OSError):
             pass  # expected — we just need the Popen capture
 
@@ -764,7 +764,7 @@ class TestCclspConfigInjection:
         monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.05")
 
         try:
-            client.spawn()
+            client.connect()
         except (MCPServerError, OSError, FileNotFoundError):
             pass
 
