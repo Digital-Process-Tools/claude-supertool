@@ -1305,7 +1305,7 @@ _LEAKED_GIT_ENV: List[str] = []
 
 
 def _scrub_process_git_env() -> List[str]:
-    """`scrub_git_env()`'s production half: unset git's repo pointers in
+    """The production half of `scrub_git_env` (no argument): unset git's repo pointers in
     THIS process's own environment; return the names removed.
 
     Operates on `os.environ` itself, never a name bound to it (#2734: the
