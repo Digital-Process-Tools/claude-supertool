@@ -101,8 +101,22 @@ def test_every_rung_is_a_literal_command_word() -> None:
     for event in ("SessionStart", "PreToolUse"):
         cmd = _release_command(event)
         assert "$PY" not in cmd and "VIRTUAL_ENV" not in cmd
-        rungs = re.findall(r"(?:if|elif) (\S+(?: -3)?) -c ", cmd)
+        rungs = re.findall(r"(\S+(?: -3)?) \"\$\{CLAUDE_PLUGIN_ROOT\}", cmd)
         assert rungs == VERSIONED + ["py -3"], rungs
+
+
+def test_the_release_hooks_pass_this_repository_s_own_hook_check() -> None:
+    """check_release_tree.py encodes the directory's hook-command rules: no
+    `python -c`, no variable but CLAUDE_PLUGIN_ROOT, every path written from
+    it (so no `/dev/null` redirect). A probe per rung would break both."""
+    spec = importlib.util.spec_from_file_location(
+        "check_release_tree_dh", REPO / ".github" / "scripts" / "check_release_tree.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["check_release_tree_dh"] = mod  # its @dataclass looks itself up
+    spec.loader.exec_module(mod)
+    for event in ("SessionStart", "PreToolUse"):
+        assert mod.hook_command_problems(_release_command(event)) == [], event
+    assert mod.hook_command_problems("python3.12 -c x </dev/null")  # positive control
 
 
 # -- same answers as the .sh hooks ------------------------------------------
@@ -214,7 +228,7 @@ def test_the_ladder_falls_through_to_py_3(tmp_path) -> None:
              env=_env(PATH=str(bindir)))
     assert r.returncode == 0, r.stderr
     assert '"permissionDecision":"deny"' in r.stdout, r.stdout
-    assert marker.read_text(encoding="utf-8").count("called") == 2  # probe + run
+    assert marker.read_text(encoding="utf-8").count("called") == 1
 
 
 def test_no_python_at_all_prints_one_line_and_exits_0(tmp_path) -> None:

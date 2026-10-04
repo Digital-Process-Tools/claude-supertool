@@ -22,8 +22,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import pre_bash_guard  # noqa: E402
-
 _NOTE = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}'
 _DENY = ('{"hookSpecificOutput":{"hookEventName":"PreToolUse",'
          '"permissionDecision":"deny","permissionDecisionReason":"%s"}}')
@@ -50,9 +48,12 @@ def _write(document: str) -> None:
 
 
 def main() -> int:
+    """Always exit 0: hooks.json chains the ladder's rungs with `||`, so a
+    non-zero exit would run the guard again under the next rung."""
     said = []
-    pre_bash_guard._say = lambda verb, text="": said.append((verb, text))
     try:
+        import pre_bash_guard
+        pre_bash_guard._say = lambda verb, text="": said.append((verb, text))
         pre_bash_guard.main()
     except Exception as exc:  # the wrapper's decline, in-process
         said[:] = [("note", "supertool raw-command guard did not run: the guard raised "

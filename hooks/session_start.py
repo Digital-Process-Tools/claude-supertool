@@ -113,9 +113,16 @@ def onboard(bin_path: str) -> None:
 
 
 def main() -> int:
+    """Always exit 0. hooks.json chains the ladder's rungs with `||`, so a
+    non-zero exit would run this file a second time under the next rung --
+    a repeated listing, not a retry. A crash says so once instead."""
     bin_path = _plugin_root() + "/supertool.py"
-    wrapper(bin_path)
-    onboard(bin_path)
+    try:
+        wrapper(bin_path)
+        onboard(bin_path)
+    except Exception as exc:  # pragma: no cover - defensive
+        _say("> supertool's session hook raised " + type(exc).__name__ + ": "
+             + str(exc) + ". The ./supertool wrapper may be missing; 'ops' prints the listing.")
     return 0
 
 
