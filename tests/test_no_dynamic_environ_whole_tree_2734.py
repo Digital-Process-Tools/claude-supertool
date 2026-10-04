@@ -64,10 +64,13 @@ def _is_subprocess_spawn(call):
 def inline_spawn_env_dicts(tree):
     """The one whole-environment spelling still allowed (#2734): a dict
     display `{**os.environ, ...}` written directly as the `env=` keyword of
-    `subprocess.run(...)` / `subprocess.Popen(...)` -- or as either arm of a
-    conditional expression that IS that keyword's value. No name is ever
-    bound to it, which is the hypothesis the portal is testing: its scanner
-    cited a NAME holding a copy of the environment, read by a run-time key."""
+    `subprocess.run(...)` / `subprocess.Popen(...)`. No name is ever bound
+    to it: the scanner cited a NAME holding a copy of the environment, read
+    by a run-time key. NOT as an arm of a conditional expression: on
+    release-preview @ 051b607 the portal cited `_supertool_validate.py` for
+    "the whole environment object", whose only difference from the
+    uncited `_supertool_presets.py` was `env=({**os.environ, **x} if x else
+    None)` -- the conditional shape it already cites as an alias."""
     allowed = set()
     for call in ast.walk(tree):
         if not _is_subprocess_spawn(call):
@@ -75,12 +78,10 @@ def inline_spawn_env_dicts(tree):
         for kw in call.keywords:
             if kw.arg != "env":
                 continue
-            value = kw.value
-            arms = [value.body, value.orelse] if isinstance(value, ast.IfExp) else [value]
-            for arm in arms:
-                if (isinstance(arm, ast.Dict) and arm.keys and arm.keys[0] is None
-                        and _is_os_environ(arm.values[0])):
-                    allowed.add(arm)
+            arm = kw.value
+            if (isinstance(arm, ast.Dict) and arm.keys and arm.keys[0] is None
+                    and _is_os_environ(arm.values[0])):
+                allowed.add(arm)
     return allowed
 
 
