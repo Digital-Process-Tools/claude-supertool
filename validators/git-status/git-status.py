@@ -69,7 +69,7 @@ from spawnable import argv0, spawnable
 
 TOOL = "git-status"
 INSTALL_HINT = ("git not found on PATH — the working-tree delta for this file "
-                "was NOT measured (set $GIT_BIN if git lives elsewhere)")
+                "was NOT measured (point GIT_BIN at it if git lives elsewhere)")
 
 
 

@@ -768,7 +768,7 @@ def _containment_refusal(rel: str, target: Path, root: Path) -> Optional[str]:
         "the %s —\n"
         "       wider than the core's cwd boundary when you call it from a "
         "subdirectory.\n"
-        '       To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add '
+        '       To allow: define SUPERTOOL_ALLOW_OUTSIDE_CWD=1 as an environment variable, or add '
         '`"allow_outside_cwd": true` to .supertool.json.\n'
         % (_BOUNDARY, rel, resolved, base, _BOUNDARY)
     )

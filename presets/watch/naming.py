@@ -160,7 +160,7 @@ def flat_path(path: str) -> str:
     return _untrusted.flat(path, disclose_newline=True)
 
 
-def resolve(env: dict[str, str] | None = None) -> Resolved:
+def resolve(overrides: dict[str, str] | None = None) -> Resolved:
 
 
 
@@ -176,10 +176,10 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
 
 
 
-    if env is not None:
-        raw = (env.get("SUPERTOOL_WATCH_NAME") or "").strip()
-        explicit_sock = env.get("SUPERTOOL_WATCH_SOCK") or ""
-        explicit_state = env.get("SUPERTOOL_WATCH_STATE_DIR") or ""
+    if overrides is not None:
+        raw = (overrides.get("SUPERTOOL_WATCH_NAME") or "").strip()
+        explicit_sock = overrides.get("SUPERTOOL_WATCH_SOCK") or ""
+        explicit_state = overrides.get("SUPERTOOL_WATCH_STATE_DIR") or ""
     else:
         raw = (os.environ.get("SUPERTOOL_WATCH_NAME") or "").strip()
         explicit_sock = os.environ.get("SUPERTOOL_WATCH_SOCK") or ""
@@ -474,7 +474,7 @@ def _flat_list(values: tuple[str, ...]) -> str:
 
 
 def project_notes(resolved: Resolved, declared: Declared | None,
-                  env: dict[str, str] | None = None) -> list[str]:
+                  overrides: dict[str, str] | None = None) -> list[str]:
 
 
 
@@ -528,8 +528,8 @@ def project_notes(resolved: Resolved, declared: Declared | None,
     if declared.state == DECLARED_SILENT:
 
 
-        if env is not None:
-            root = (env.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
+        if overrides is not None:
+            root = (overrides.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
         else:
             root = (os.environ.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
         if root and declared.path and os.path.abspath(root.rstrip(os.sep)) == \

@@ -943,7 +943,7 @@ def _flag_value(raw: str | None) -> bool:
     return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
+def desktop_notify_disabled(overrides: dict[str, str] | None = None) -> bool:
 
 
 
@@ -958,12 +958,12 @@ def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
 
 
 
-    if env is not None:
-        return _flag_value(env.get("SUPERTOOL_WATCH_NO_DESKTOP"))
+    if overrides is not None:
+        return _flag_value(overrides.get("SUPERTOOL_WATCH_NO_DESKTOP"))
     return _flag_value(os.environ.get("SUPERTOOL_WATCH_NO_DESKTOP"))
 
 
-def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
+def desktop_notify_enabled(overrides: dict[str, str] | None = None) -> bool:
 
 
 
@@ -974,10 +974,10 @@ def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
 
 
 
-    if desktop_notify_disabled(env):
+    if desktop_notify_disabled(overrides):
         return False
-    if env is not None:
-        return _flag_value(env.get("SUPERTOOL_WATCH_DESKTOP"))
+    if overrides is not None:
+        return _flag_value(overrides.get("SUPERTOOL_WATCH_DESKTOP"))
     return _flag_value(os.environ.get("SUPERTOOL_WATCH_DESKTOP"))
 
 

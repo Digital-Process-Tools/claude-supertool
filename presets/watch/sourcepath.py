@@ -146,7 +146,7 @@ class Resolved(NamedTuple):
     redundant: tuple[str, ...] = ()
 
 
-def resolve(env: dict[str, str] | None = None) -> Resolved:
+def resolve(overrides: dict[str, str] | None = None) -> Resolved:
 
 
 
@@ -157,8 +157,8 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
 
 
 
-    if env is not None:
-        raw = env.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
+    if overrides is not None:
+        raw = overrides.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
     else:
         raw = os.environ.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
 
