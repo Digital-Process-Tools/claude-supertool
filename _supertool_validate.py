@@ -131,7 +131,7 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     try:
 
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30,
-                           env=({**os.environ, **_prefix_env} if _prefix_env else None),
+                           env={**os.environ, **_prefix_env},
                            encoding="utf-8", errors="replace")
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
     except subprocess.TimeoutExpired:
@@ -2152,7 +2152,7 @@ def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True,
                            text=True, timeout=30,
-                           env=({**os.environ, **_prefix_env} if _prefix_env else None),
+                           env={**os.environ, **_prefix_env},
                            encoding="utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError):
         return None
