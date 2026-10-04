@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-bash-guard.sh\"",
+            "command": "python3.14 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\" || python3.13 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\" || python3.12 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\" || python3.11 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\" || python3.10 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\" || python3.9 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\" || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"supertool raw-command guard did not run: no Python 3 was found (tried python3.14 down to python3.9, then py -3; the bare name python3 is never run, #572). The command proceeded - this is a statement about the guard, not about the command.\"}}'",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\""
+            "command": "python3.14 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\" || python3.13 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\" || python3.12 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\" || python3.11 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\" || python3.10 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\" || python3.9 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\" || py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\" || echo \"> The supertool op listing is not shown: no Python 3 was found. Tried python3.14 down to python3.9, then py -3; the bare name python3 is never run, because on Windows and on a stock macOS it can be a stub that blocks (#572, #1382).\""
           }
         ]
       }

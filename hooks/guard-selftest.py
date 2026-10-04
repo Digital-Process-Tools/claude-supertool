@@ -195,6 +195,32 @@ def wrapper_denies(bash, wrapper, root, command):
     return False, note[:400]
 
 
+def direct_hook_denies(hook_path, command):
+
+
+
+
+    event = json.dumps({"tool_name": "Bash",
+                        "tool_input": {"command": command}})
+    try:
+        proc = subprocess.run([sys.executable, hook_path], input=event,
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=180)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, "the hook could not be spawned: %s" % (exc,)
+    if proc.returncode != 0:
+        return False, "the hook exited %d and produced %r" % (
+            proc.returncode, proc.stdout[:120])
+    try:
+        hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    except (ValueError, KeyError, TypeError):
+        return False, "no hook envelope in %r" % (proc.stdout[:120],)
+    if isinstance(hook, dict) and hook.get("permissionDecision") == "deny":
+        return True, ""
+    return False, str((hook or {}).get("additionalContext")
+                      or "no decision and no note")[:400]
+
+
 def rule_inventory(root, environ=None):
 
 
@@ -247,6 +273,23 @@ def report(root, environ=None):
         lines.append("  state       : nothing to test - no op in the "
                      "effective registry declares a `replaces`, so there is "
                      "no raw command for the guard to deny here")
+        return lines, 0
+
+    direct = os.path.join(root, "hooks", "pre_bash_guard_hook.py")
+    if not os.path.isfile(wrapper) and os.path.isfile(direct):
+
+
+        lines.append("  python      : " + sys.executable)
+        ok, detail = direct_hook_denies(direct, command)
+        if not ok:
+            lines.append("  state       : could not run - the hook did not "
+                         "deny " + repr(command) + ": " + detail)
+            return lines, 1
+        lines.append("  state       : enforcing - the hook denied "
+                     + repr(command) + " run directly, as hooks.json runs it")
+        lines.append("  cannot tell : whether Claude Code has this plugin "
+                     "installed, and which interpreter its ladder resolves. "
+                     "This says the hook can deny, not that it was asked.")
         return lines, 0
 
     candidates = bash_candidates(environ)
