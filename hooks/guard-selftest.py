@@ -108,8 +108,12 @@ def bash_candidates(environ=None):
 
 
 
-    override = (environ if environ is not None else os.environ).get(
-        "SUPERTOOL_SELFTEST_BASH_CANDIDATES")
+
+
+    if environ is not None:
+        override = environ.get("SUPERTOOL_SELFTEST_BASH_CANDIDATES")
+    else:
+        override = os.environ.get("SUPERTOOL_SELFTEST_BASH_CANDIDATES")
     if override is not None:
         return [part for part in override.split(os.pathsep) if part]
     git_bin = "C:" + _BACKSLASH + "Program Files" + _BACKSLASH + "Git"
@@ -170,15 +174,23 @@ def wrapper_denies(bash, wrapper, root, command):
 
     event = json.dumps({"tool_name": "Bash",
                         "tool_input": {"command": command}})
-    env = dict(os.environ)
-    env["CLAUDE_PLUGIN_ROOT"] = root
+
+
+
+    prior_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    os.environ["CLAUDE_PLUGIN_ROOT"] = root
     try:
         proc = subprocess.run([bash, wrapper], input=event,
                               capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", env=env,
+                              encoding="utf-8", errors="replace",
                               timeout=180)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, "the wrapper could not be spawned: %s" % (exc,)
+    finally:
+        if prior_root is None:
+            os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
+        else:
+            os.environ["CLAUDE_PLUGIN_ROOT"] = prior_root
     if proc.returncode != 0:
         return False, "the wrapper exited %d and produced %r" % (
             proc.returncode, proc.stdout[:120])
@@ -241,8 +253,11 @@ def rule_inventory(root, environ=None):
         return ["  rules       : could not run - hooks/shipped_rules.py "
                 "could not be imported from " + hooks + " (" + str(exc)
                 + "), so nothing here says which rules this install ships"]
-    environ = os.environ if environ is None else environ
-    project = environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+    if environ is not None:
+        project = environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    else:
+        project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     try:
         return shipped_rules.inventory(root, project)
     except Exception as exc:  

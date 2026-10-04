@@ -1194,9 +1194,11 @@ def _exec_labelled(source: str, watcher_id: str, only: list[str]) -> None:
     if not sys.executable:
         return
     try:
-        os.execve(sys.executable,
-                  transport.poller_argv(source, watcher_id, only),
-                  transport.poller_env())
+        argv = transport.poller_argv(source, watcher_id, only)
+
+
+        transport.pin_poller_env()
+        os.execv(sys.executable, argv)
     except OSError:
         return
 

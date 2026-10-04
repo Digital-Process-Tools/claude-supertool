@@ -1304,6 +1304,37 @@ GIT_ENV_VARS = (
 _LEAKED_GIT_ENV: List[str] = []
 
 
+def _scrub_process_git_env() -> List[str]:
+
+
+
+
+
+
+
+
+
+
+
+
+    removed = []
+    if os.environ.pop("GIT_DIR", None) is not None:
+        removed.append("GIT_DIR")
+    if os.environ.pop("GIT_WORK_TREE", None) is not None:
+        removed.append("GIT_WORK_TREE")
+    if os.environ.pop("GIT_COMMON_DIR", None) is not None:
+        removed.append("GIT_COMMON_DIR")
+    if os.environ.pop("GIT_INDEX_FILE", None) is not None:
+        removed.append("GIT_INDEX_FILE")
+    if os.environ.pop("GIT_OBJECT_DIRECTORY", None) is not None:
+        removed.append("GIT_OBJECT_DIRECTORY")
+    if os.environ.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None) is not None:
+        removed.append("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+    if os.environ.pop("GIT_NAMESPACE", None) is not None:
+        removed.append("GIT_NAMESPACE")
+    return removed
+
+
 def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
 
 
@@ -1313,11 +1344,8 @@ def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
 
 
 
-
-
-
     if env is None:
-        env = os.environ
+        return _scrub_process_git_env()
 
 
 
@@ -1640,7 +1668,12 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
 
 
 
-    env = dict(os.environ)
+
+
+
+
+
+    env = os.environ.copy()
 
 
 

@@ -928,7 +928,7 @@ NO_DESKTOP_ENV = "SUPERTOOL_WATCH_NO_DESKTOP"
 DESKTOP_ENV = "SUPERTOOL_WATCH_DESKTOP"
 
 
-def _env_flag(name: str, env: dict[str, str] | None) -> bool:
+def _flag_value(raw: str | None) -> bool:
 
 
 
@@ -940,8 +940,7 @@ def _env_flag(name: str, env: dict[str, str] | None) -> bool:
 
 
 
-    return ((env if env is not None else os.environ).get(name) or "").strip().lower() in (
-        "1", "true", "yes", "on")
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
@@ -959,7 +958,9 @@ def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
 
 
 
-    return _env_flag(NO_DESKTOP_ENV, env)
+    if env is not None:
+        return _flag_value(env.get("SUPERTOOL_WATCH_NO_DESKTOP"))
+    return _flag_value(os.environ.get("SUPERTOOL_WATCH_NO_DESKTOP"))
 
 
 def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
@@ -975,7 +976,9 @@ def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
 
     if desktop_notify_disabled(env):
         return False
-    return _env_flag(DESKTOP_ENV, env)
+    if env is not None:
+        return _flag_value(env.get("SUPERTOOL_WATCH_DESKTOP"))
+    return _flag_value(os.environ.get("SUPERTOOL_WATCH_DESKTOP"))
 
 
 def desktop_notify(title: str, message: str) -> None:
@@ -1537,17 +1540,25 @@ def channel_key(state_dir: str | None = None) -> str:
     return digest.hexdigest()[:_CHANNEL_KEY_CHARS]
 
 
-def poller_env() -> dict[str, str]:
-
-    env = dict(os.environ)
-    env[STATE_DIR_ENV] = STATE_DIR
+def pin_poller_env() -> None:
 
 
 
 
 
-    env[SOCK_ENV] = SOCK_PATH
-    return env
+
+
+
+
+
+
+    os.environ["SUPERTOOL_WATCH_STATE_DIR"] = STATE_DIR
+
+
+
+
+
+    os.environ["SUPERTOOL_WATCH_SOCK"] = SOCK_PATH
 
 
 _SCAN_PS_ARGV = ("ps", "-axww", "-o", "pid=,args=")

@@ -175,10 +175,15 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
 
 
 
-    _src = env if env is not None else os.environ
-    raw = (_src.get("SUPERTOOL_WATCH_NAME") or "").strip()
-    explicit_sock = _src.get("SUPERTOOL_WATCH_SOCK") or ""
-    explicit_state = _src.get("SUPERTOOL_WATCH_STATE_DIR") or ""
+
+    if env is not None:
+        raw = (env.get("SUPERTOOL_WATCH_NAME") or "").strip()
+        explicit_sock = env.get("SUPERTOOL_WATCH_SOCK") or ""
+        explicit_state = env.get("SUPERTOOL_WATCH_STATE_DIR") or ""
+    else:
+        raw = (os.environ.get("SUPERTOOL_WATCH_NAME") or "").strip()
+        explicit_sock = os.environ.get("SUPERTOOL_WATCH_SOCK") or ""
+        explicit_state = os.environ.get("SUPERTOOL_WATCH_STATE_DIR") or ""
 
     notes: list[str] = []
     refusal = ""
@@ -521,7 +526,12 @@ def project_notes(resolved: Resolved, declared: Declared | None,
                 f"claims the name {name} — this socket and these poller slots "
                 f"may be another project's fleet"]
     if declared.state == DECLARED_SILENT:
-        root = ((env if env is not None else os.environ).get(ROOT_ENV) or "").strip()
+
+
+        if env is not None:
+            root = (env.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
+        else:
+            root = (os.environ.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
         if root and declared.path and os.path.abspath(root.rstrip(os.sep)) == \
                 os.path.dirname(os.path.abspath(declared.path)):
 

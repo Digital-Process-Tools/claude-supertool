@@ -124,7 +124,12 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _merged_env = {**os.environ, **_prefix_env}
+
+
+
+
+    _merged_env = os.environ.copy()
+    _merged_env.update(_prefix_env)
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
 
     _run_env = _merged_env if _prefix_env else None
@@ -923,7 +928,13 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
 
     _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
-    _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
+
+
+
+
+
+    _merged_env = os.environ.copy()
+    _merged_env.update({str(k): str(v) for k, v in _spec_env_dict.items()})
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     timeout = int(spec.get("timeout", 60))
 
@@ -1875,7 +1886,13 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
     _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
-    _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
+
+
+
+
+
+    _merged_env = os.environ.copy()
+    _merged_env.update({str(k): str(v) for k, v in _spec_env_dict.items()})
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     timeout = int(spec.get("timeout", 30))
 
@@ -2137,7 +2154,12 @@ def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _merged_env = {**os.environ, **_prefix_env}
+
+
+
+
+    _merged_env = os.environ.copy()
+    _merged_env.update(_prefix_env)
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True,

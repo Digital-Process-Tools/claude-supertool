@@ -156,7 +156,11 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
 
 
 
-    raw = (env if env is not None else os.environ).get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
+
+    if env is not None:
+        raw = env.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
+    else:
+        raw = os.environ.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
 
     external: list[Path] = []
     refused: list[Refused] = []

@@ -395,6 +395,9 @@ def _serve_owned(spec: dict, name: str, sock_name: str, pid_name: str,
     env = os.environ.copy()
     if spec.get("env"):
         env.update(spec["env"])
+
+
+
     proc = subprocess.Popen(
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
     )
