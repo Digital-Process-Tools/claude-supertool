@@ -771,7 +771,7 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             _swap = _swap_suggest(
                 "grep", "PATTERN:PATH", "pattern", pattern, path,
                 f"grep:{path}:{pattern}")
-            return _path_not_found(path, op="grep", suggest=_swap,
+            return _path_not_found(path, op_name="grep", suggest=_swap,
                                    call_prefix=f"grep:{pattern}")
 
     excl = _get_exclude_paths("grep", no_exclude)
@@ -1245,7 +1245,7 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
                 "around", "PATTERN:PATH[:N]", "pattern", pattern, path,
                 f"around:{path}:{pattern}[:N]")
         return _path_not_found(path, label="file", suggest=suggest,
-                               op="around")
+                               op_name="around")
 
     def _render(rx: "re.Pattern[str]") -> Tuple[str, bool]:
         """Render the around-window for `rx`. Returns (output, matched) so the

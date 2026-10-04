@@ -53,7 +53,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     # Validate path exists
     if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
-        return _path_not_found(path, op="replace", creates=True)
+        return _path_not_found(path, op_name="replace", creates=True)
 
     candidates = _grep_candidates(path, _get_exclude_paths("replace"))
     if not candidates:
@@ -1979,7 +1979,7 @@ def op_edit(old: str, new: str, path: str) -> str:
         # printed the path and nothing else, so `edit` had neither the `tried:`
         # line #1300 added nor the cwd-drift branch — the two things that make
         # naming a creating op safe rather than a guess.
-        return _path_not_found(path, label="file", op="edit", creates=True)
+        return _path_not_found(path, label="file", op_name="edit", creates=True)
 
     try:
         # surrogateescape: lone bytes that aren't valid UTF-8 round-trip via
@@ -2128,7 +2128,7 @@ def op_json_set(path: str, fields: Dict[str, Any]) -> str:
     if not fields:
         return "ERROR: empty set — nothing to change\n"
     if not os.path.isfile(path):
-        return _path_not_found(path, label="file", op="json-set")
+        return _path_not_found(path, label="file", op_name="json-set")
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = f.read()
@@ -2614,7 +2614,7 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.isfile(path):
-        return _path_not_found(path, label="file", op="replace_lines",
+        return _path_not_found(path, label="file", op_name="replace_lines",
                                creates=True)
     if start < 1:
         return f"ERROR: start ({start}) must be >= 1\n"

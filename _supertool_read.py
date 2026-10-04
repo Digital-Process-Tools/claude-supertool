@@ -125,7 +125,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
-        return _path_not_found(path, label="file", op="read",
+        return _path_not_found(path, label="file", op_name="read",
                                call_prefix="read")
 
     # #1786: set before the branch below runs, so the native path further
@@ -1894,7 +1894,7 @@ def op_stat(path: str) -> str:
 def op_around_line(path: str, line: int, n: int = 10) -> str:
     """Show N lines of context around a specific line number."""
     if not path or not os.path.isfile(path):
-        return _path_not_found(path, label="file", op="around_line")
+        return _path_not_found(path, label="file", op_name="around_line")
     if line < 1:
         return f"ERROR: line number must be >= 1, got {line}\n"
 
@@ -2972,7 +2972,7 @@ def op_map(path: str, no_exclude: bool = False) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.exists(path):
-        return _path_not_found(path, op="map", call_prefix="map")
+        return _path_not_found(path, op_name="map", call_prefix="map")
 
     hidden_files: List[str] = []
     git_tally = _GitIgnoreTally()
