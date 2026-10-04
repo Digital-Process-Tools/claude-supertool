@@ -117,3 +117,39 @@ def test_the_built_tree_spells_no_credential_path(tmp_path) -> None:
                 found.setdefault(path.relative_to(out).as_posix(), []).append(
                     (n, _hits(line)))
     assert not found, found
+
+# The validator cited `env: "op read"` in _supertool_payload.py (release-preview
+# @ a74f82e): `op` followed by a verb is the 1Password CLI's secret-reading
+# command shape (`op read`, `op run`, `op inject`...). Supertool's own messages
+# said "op 'read'" and "this op read the ...", meaning a supertool op.
+SECRET_CLI = re.compile(
+    r"\bop['\" ]+(?:read|run|inject|signin|item)\b")
+
+
+def test_the_secret_cli_scan_catches_each_shape_it_is_for() -> None:
+    for sample in ("for op 'read' missing", "this op read the API",
+                   'op "run" here', "op inject"):
+        assert SECRET_CLI.search(sample), sample
+    assert not SECRET_CLI.search("for the 'read' op")
+    assert not SECRET_CLI.search("this op fetched the first page")
+
+
+def test_the_built_tree_has_no_secret_cli_shape(tmp_path) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "build_release_tree_cli", ROOT / ".github" / "scripts" / "build_release_tree.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    out = tmp_path / "built"
+    mod.build(ROOT, "HEAD", out, mod.load_config(ROOT / ".github" / "release-branch.json"))
+    found = []
+    for path in sorted(out.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if SECRET_CLI.search(line):
+                found.append(f"{path.relative_to(out).as_posix()}:{n}")
+    assert not found, found

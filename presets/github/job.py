@@ -223,7 +223,7 @@ def _render_routed_check(job_id: str, check: dict, mode: str) -> "int | None":
         return None
     routed = (
         f"Routed: you called `gh-job:{job_id}`. That id is not an Actions job, "
-        f"so this op read the checks API instead — the same render as "
+        f"so this op queried the checks API instead — the same render as "
         f"`gh-check:{job_id}`."
     )
     return mod.render_check(job_id, check, routed_from=routed,
