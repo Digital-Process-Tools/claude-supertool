@@ -398,7 +398,7 @@ def _serve_owned(spec: dict, name: str, sock_name: str, pid_name: str,
 
     proc = subprocess.Popen(
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        env={**os.environ, **(spec.get("env") or {})},
+        env={**os.environ, **(spec.get("variables") or {})},
     )
 
 

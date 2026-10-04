@@ -857,7 +857,7 @@ def _preset_path_containment(
 
 def _path_not_found(path: str, *, label: str = "path",
                      suggest: Optional[str] = None,
-                     op: Optional[str] = None,
+                     op_name: Optional[str] = None,
                      call_prefix: Optional[str] = None,
                      creates: bool = False) -> str:
 
@@ -903,9 +903,9 @@ def _path_not_found(path: str, *, label: str = "path",
 
     if not path:
         return f"ERROR: {label} not found: {path}\n"
-    if not suggest and op:
-        suggest = (_comma_path_list_suggest(op, path)
-                   or _multi_path_suggest(op, path, call_prefix)
+    if not suggest and op_name:
+        suggest = (_comma_path_list_suggest(op_name, path)
+                   or _multi_path_suggest(op_name, path, call_prefix)
                    or None)
 
 
@@ -950,7 +950,7 @@ def _path_not_found(path: str, *, label: str = "path",
 
             f"ERROR: {shown} is a directory, not a file\n"
             f"  tried: {shown_tried} (cwd: {shown_cwd})\n"
-            f"  '{op or label}' takes a single file. `ls:{shown}` or "
+            f"  '{op_name or label}' takes a single file. `ls:{shown}` or "
             f"`tree:{shown}` lists what is in it.\n"
         )
     lines = [

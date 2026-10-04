@@ -93,7 +93,7 @@ def resolve_rulesets(file: str) -> tuple[str, str]:
 
     env_rulesets = os.environ.get("PHPMD_RULESETS", "")
     if env_rulesets:
-        return env_rulesets, "env"
+        return env_rulesets, "variable"
 
     if os.environ.get("PHPMD_NO_AUTODETECT") != "1":
         project_xmls = find_project_md_rulesets(file)

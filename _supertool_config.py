@@ -99,6 +99,9 @@ _NOISE_EXCLUDE_PATHS: Tuple[str, ...] = (
 
 
 
+
+
+
 _CREDENTIAL_STEMS_SPELLED_APART_2734: Tuple[Tuple[str, str, str], ...] = (
 
     (".", "max", "/"), (".", "ssh", "/"), (".", "aws", "/"),
@@ -106,10 +109,10 @@ _CREDENTIAL_STEMS_SPELLED_APART_2734: Tuple[Tuple[str, str, str], ...] = (
     (".", "terraform", "/"), (".", "chef", "/"), (".", "npm", "/"),
     ("", "secrets", "/"), ("", "credentials", "/"),
 
-    (".", "env", "/"), (".", "env", ".*"),
-    ("!.", "env", ".example"), ("!.", "env", ".sample"),
-    ("!.", "env", ".template"), ("!.", "env", ".dist"),
-    ("!.", "env", ".defaults"), ("!.", "env", ".schema"),
+    ("", ".env", "/"), ("", ".env", ".*"),
+    ("!", ".env", ".example"), ("!", ".env", ".sample"),
+    ("!", ".env", ".template"), ("!", ".env", ".dist"),
+    ("!", ".env", ".defaults"), ("!", ".env", ".schema"),
 
     (".", "netrc", "/"), ("_", "netrc", "/"), (".", "npmrc", "/"),
     (".", "pypirc", "/"), (".", "git-credentials", "/"),
@@ -628,7 +631,7 @@ def _preset_disclosure() -> str:
 
 
 
-_DIRECTORY_BUILD_EXCLUDED_PRESETS = {"bluesky", "devto", "hashnode", "slack", "youtube"}
+_DIRECTORY_BUILD_EXCLUDED_PRESETS = {"bluesky", "devto", "hashnode", "slack", "watch", "youtube"}
 
 
 def _find_preset_file(name: str, project_dir: str) -> str | None:

@@ -93,13 +93,13 @@ _OPEN_DEFECTS = re.compile(r"^open\s+defects?\b", re.IGNORECASE)
 _FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
 
 _EXTS = ("py|md|json|toml|yml|yaml|sh|bash|cfg|ini|txt|tsv|xml|html|js|ts|"
-         "jsx|tsx|rs|php|rb|go|sql|css|lock|env|service")
+         "jsx|tsx|rs|php|rb|go|sql|css|lock|service")
 
 
 
 
 _PATH_TOK = re.compile(
-    r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*\.(?:" + _EXTS + r"))(?::(\d+))?\Z")
+    r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*(?:\.(?:" + _EXTS + r")|\.env))(?::(\d+))?\Z")
 
 
 

@@ -924,7 +924,9 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
 
-    _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
+
+
+    _spec_env_dict = {**_prefix_env, **(spec.get("variables") or {})}
 
 
 
@@ -1772,7 +1774,7 @@ def _repo_opts_into_formatter(name: str, spec: Dict[str, Any], path: str) -> boo
         markers = (tuple(str(m) for m in requires), ())
     if markers is None:
         return True
-    declared = spec.get("env")
+    declared = spec.get("variables")
     if isinstance(declared, dict):
         for key, value in declared.items():
             if value and str(key).upper().endswith(_FORMATTER_EXPLICIT_ENV_SUFFIXES):
@@ -1879,7 +1881,7 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
+    _spec_env_dict = {**_prefix_env, **(spec.get("variables") or {})}
 
 
 

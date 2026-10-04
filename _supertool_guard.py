@@ -63,15 +63,39 @@ _GUARD_PUNCTUATION = "();<>|&{}"
 
 
 
+
+
+
 _GUARD_PREFIX_WORDS = frozenset({
     "rtk", "command", "builtin", "sudo", "doas", "exec", "nohup", "time",
-    "env", "timeout", "nice", "ionice", "stdbuf", "setsid",
+    "timeout", "nice", "ionice", "stdbuf", "setsid",
 
 
     "do", "then", "else", "elif", "if", "while", "until", "!",
 })
 
 _GUARD_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _guard_wrapper_by_assignment(segment: list) -> bool:
+
+
+
+
+
+
+
+
+    if len(segment) < 3 or _GUARD_ENV_ASSIGNMENT.match(segment[0]):
+        return False
+    if _guard_command_word(segment[0]) in _GUARD_GLOBAL_OPTIONS:
+        return False
+    for token in segment[1:]:
+        if _GUARD_ENV_ASSIGNMENT.match(token):
+            return True
+        if not token.startswith("-") or "=" in token:
+            return False
+    return False
 
 
 
@@ -960,7 +984,8 @@ def _guard_segments_with_origins(
     for index, segment in enumerate(segments):
         wrapped = False
         while segment and (segment[0] in _GUARD_PREFIX_WORDS
-                           or _GUARD_ENV_ASSIGNMENT.match(segment[0])):
+                           or _GUARD_ENV_ASSIGNMENT.match(segment[0])
+                           or _guard_wrapper_by_assignment(segment)):
             segment = segment[1:]
             wrapped = True
         if not segment:

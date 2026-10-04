@@ -111,7 +111,6 @@ DEFAULT_RED_FLAGS = [
 
 
 _FORBIDDEN_STEMS_SPELLED_APART_2734 = {
-    "env": "env",
     "env_kept": ("example", "sample", "template", "dist", "defaults"),
     "ssh_keys": ("rsa", "dsa", "ecdsa", "ed25519"),
     "key_exts": ("pem", "pfx", "p12", "jks", "keystore", "key"),
@@ -122,8 +121,8 @@ _FORBIDDEN_STEMS_SPELLED_APART_2734 = {
 }
 _S = _FORBIDDEN_STEMS_SPELLED_APART_2734
 DEFAULT_FORBIDDEN_PATHS = [
-    {"pattern": r"(^|/)\." + _S["env"] + r"(\.(?!" + "|".join(_S["env_kept"]) + r")[^/]+)*$",
-     "reason": "secret-shaped filename — ." + _S["env"] + " files carry credentials"},
+    {"pattern": r"(^|/)\.env(\.(?!" + "|".join(_S["env_kept"]) + r")[^/]+)*$",
+     "reason": "secret-shaped filename — .env files carry credentials"},
     {"pattern": r"(^|/)id_(" + "|".join(_S["ssh_keys"]) + r")$",
      "reason": "secret-shaped filename — private SSH key"},
     {"pattern": r"\.(" + "|".join(_S["key_exts"]) + r")$",

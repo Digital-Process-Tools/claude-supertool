@@ -1068,7 +1068,7 @@ def _op_vim_impl(path: str, script: str) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.isfile(path):
-        return _path_not_found(path, label="file", op="vim", creates=True)
+        return _path_not_found(path, label="file", op_name="vim", creates=True)
     if not script.strip():
         return "ERROR: empty script\n"
 
