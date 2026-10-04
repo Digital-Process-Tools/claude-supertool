@@ -385,6 +385,40 @@ def swap_release_readme(contents: dict[str, bytes], config: dict) -> bool:
     return True
 
 
+# -- release hooks swap (#2734) ----------------------------------------------------
+#
+# COMMAND_SCRIPT_NOT_FOLLOWED: the directory's scanner holds any hook shell
+# script that runs a further file ("a file that script runs in turn isn't
+# followed"). hooks.json running the interpreter directly cleared it (probe j,
+# claude-directory-publishing/triggers.md). The release tree swaps in a
+# hooks.json whose commands carry a literal interpreter ladder and run
+# hooks/session_start.py and hooks/pre_bash_guard_hook.py directly, and drops
+# the .sh hooks it replaces. The committed tree keeps them: the source plugin
+# goes on running the .sh hooks until the directory build proves itself.
+
+def swap_release_hooks(contents: dict[str, bytes], config: dict) -> list[str]:
+    """Replace contents["hooks/hooks.json"] with the file config["release_hooks"]
+    ["hooks_json"] names, and drop that file and every path in ["drop"] from
+    what ships. Returns the paths dropped -- empty only when the config carries
+    no `release_hooks` key. Raises when a named path is not in the tree, so a
+    stale config cannot ship the .sh hooks with nothing saying so."""
+    spec = config.get("release_hooks")
+    if not spec:
+        return []
+    rel = spec["hooks_json"]
+    for path in [rel, "hooks/hooks.json", *spec.get("drop", [])]:
+        if path not in contents:
+            raise BuildError(
+                f"{path}: config/release_hooks names this path and it is not "
+                "in this tree -- the release hooks would ship half-swapped")
+    contents["hooks/hooks.json"] = contents.pop(rel)
+    dropped = [rel]
+    for path in spec.get("drop", []):
+        contents.pop(path)
+        dropped.append(path)
+    return dropped
+
+
 # -- Python stripping (#2731) ------------------------------------------------------
 
 _SHEBANG = re.compile(r"^#!")
@@ -646,6 +680,11 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
     if changelog and changelog in contents:
         url = f"https://github.com/{slug}/blob/{config['default_branch']}/{changelog}"
         contents[changelog] = cut_changelog(contents[changelog].decode("utf-8"), url).encode("utf-8")
+
+    hooks_dropped = swap_release_hooks(contents, config)
+    if hooks_dropped:
+        kept = [(mode, sha, path) for mode, sha, path in kept if path not in hooks_dropped]
+        removed.extend(hooks_dropped)
 
     ladder_inlined = inline_python_ladder(contents, config)
     if ladder_inlined:

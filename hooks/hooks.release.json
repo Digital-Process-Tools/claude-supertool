@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3.14 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.14 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\"; elif python3.13 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.13 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\"; elif python3.12 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.12 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\"; elif python3.11 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.11 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\"; elif python3.10 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.10 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\"; elif python3.9 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.9 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\"; elif py -3 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_bash_guard_hook.py\"; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"supertool raw-command guard did not run: no Python 3 was found (tried python3.14 to python3.9, then py -3; the bare name python3 is never run, #572). The command proceeded - this is a statement about the guard, not about the command.\"}}'; fi",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3.14 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.14 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"; elif python3.13 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.13 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"; elif python3.12 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.12 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"; elif python3.11 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.11 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"; elif python3.10 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.10 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"; elif python3.9 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then python3.9 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"; elif py -3 -c 'import sys; sys.exit(sys.version_info[0]!=3)' </dev/null >/dev/null 2>&1; then py -3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"; else echo \"> The supertool op listing is not shown: no Python 3 was found. Tried python3.14 to python3.9, then py -3; the bare name python3 is never run, because on Windows and on a stock macOS it can be a stub that blocks (#572, #1382).\"; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
