@@ -355,6 +355,9 @@ _SHAPE_POSITIVES = {
         "import os, subprocess\nsubprocess.run(['x'], env={'A': '1', **{**os.environ}})\n"),
     "splat_not_first_in_env_kw": (
         "import os, subprocess\nsubprocess.run(['x'], env={'A': '1', **os.environ})\n"),
+    # Cited on release-preview @ 051b607 as "the whole environment object".
+    "splat_in_conditional_env_kw": (
+        "import os, subprocess\nsubprocess.run(['x'], env=({**os.environ, **p} if p else None))\n"),
 }
 
 #: The inline forms the shipped tree now uses -- none is a hit in either sweep.
@@ -362,7 +365,6 @@ _INLINE_SPAWN_ENV_NEGATIVES = (
     "import os, subprocess\n"
     "subprocess.run(['x'], env={**os.environ, **extra})\n"
     "subprocess.Popen(['x'], env={**os.environ, **(spec.get('env') or {})})\n"
-    "subprocess.run(['x'], env=({**os.environ, **p} if p else None))\n"
 )
 
 _SHAPE_NEGATIVES = (
