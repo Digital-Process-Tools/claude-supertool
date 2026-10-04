@@ -127,15 +127,12 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
 
 
 
-
-    _merged_env = os.environ.copy()
-    _merged_env.update(_prefix_env)
-    cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
-
-    _run_env = _merged_env if _prefix_env else None
+    cmd = _unshield(_expand_env(cmd, _prefix_env), _shield)
     try:
+
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30,
-                           env=_run_env, encoding="utf-8", errors="replace")
+                           env=({**os.environ, **_prefix_env} if _prefix_env else None),
+                           encoding="utf-8", errors="replace")
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
     except subprocess.TimeoutExpired:
 
@@ -931,11 +928,8 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
 
 
 
-
-
-    _merged_env = os.environ.copy()
-    _merged_env.update({str(k): str(v) for k, v in _spec_env_dict.items()})
-    cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
+    _extra_env = {str(k): str(v) for k, v in _spec_env_dict.items()}
+    cmd = _unshield(_expand_env(cmd, _extra_env), _shield)
     timeout = int(spec.get("timeout", 60))
 
 
@@ -987,7 +981,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
 
 
 
-    run_env = dict(_merged_env)
+    run_env = dict(_extra_env)
     run_env[_MCP_AUTOSPAWN_ENV] = "1" if spec.get("mcp_autospawn") else "0"
 
 
@@ -1005,7 +999,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     _t0 = time.monotonic()
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-                           env=run_env, encoding="utf-8", errors="replace")
+                           env={**os.environ, **run_env}, encoding="utf-8", errors="replace")
         _elapsed = _elapsed_since(_t0)
         out = r.stdout.strip()
         if not out:
@@ -1889,11 +1883,8 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
 
 
 
-
-
-    _merged_env = os.environ.copy()
-    _merged_env.update({str(k): str(v) for k, v in _spec_env_dict.items()})
-    cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
+    _extra_env = {str(k): str(v) for k, v in _spec_env_dict.items()}
+    cmd = _unshield(_expand_env(cmd, _extra_env), _shield)
     timeout = int(spec.get("timeout", 30))
 
 
@@ -1902,13 +1893,13 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
 
 
 
-    run_env = dict(_merged_env)
+    run_env = dict(_extra_env)
     run_env[_VALIDATOR_CONFIG_DIR_ENV] = (
         os.path.dirname(os.path.realpath(_CONFIG_PATH)) if _CONFIG_PATH else ""
     )
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-                           env=run_env, encoding="utf-8", errors="replace")
+                           env={**os.environ, **run_env}, encoding="utf-8", errors="replace")
         stdout = r.stdout.strip()
 
         if stdout:
@@ -2157,14 +2148,12 @@ def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
 
 
 
-
-    _merged_env = os.environ.copy()
-    _merged_env.update(_prefix_env)
-    cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
+    cmd = _unshield(_expand_env(cmd, _prefix_env), _shield)
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True,
                            text=True, timeout=30,
-                           env=(_merged_env if _prefix_env else None), encoding="utf-8", errors="replace")
+                           env=({**os.environ, **_prefix_env} if _prefix_env else None),
+                           encoding="utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError):
         return None
     if r.returncode != 3:

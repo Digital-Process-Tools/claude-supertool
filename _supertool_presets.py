@@ -1071,7 +1071,7 @@ def _in_template_single_quotes(s: str, pos: int) -> bool:
     return in_single
 
 
-def _expand_env(s: str, env: Dict[str, str]) -> str:
+def _expand_env(s: str, extras: Dict[str, str]) -> str:
 
 
 
@@ -1145,12 +1145,36 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _lookup(name: str) -> Optional[str]:
+        if name in extras:
+            return extras[name]
+        probe = "${" + name + "}"
+        found = os.path.expandvars(probe)
+        return None if found == probe else found
 
     def _replace(m: "re.Match[str]") -> str:
         name = m.group(1) or m.group(2)
-        if name not in env:
+        value = _lookup(name)
+        if value is None:
             return m.group(0)
-        value = env[name]
         if _in_template_single_quotes(s, m.start()):
 
 
@@ -1673,7 +1697,9 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
 
 
 
-    env = os.environ.copy()
+
+
+    env: Dict[str, str] = {}
 
 
 
@@ -1720,7 +1746,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
 
         result = subprocess.run(
             shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace", env=env,
+            encoding="utf-8", errors="replace", env={**os.environ, **env},
         )
         elapsed = _elapsed_since(t0)
         output = result.stdout

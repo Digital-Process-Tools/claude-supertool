@@ -392,14 +392,13 @@ def _serve_owned(spec: dict, name: str, sock_name: str, pid_name: str,
         argv = shlex.split(cmd)
     else:
         argv = [cmd] + list(args) if isinstance(cmd, str) else list(cmd) + list(args)
-    env = os.environ.copy()
-    if spec.get("env"):
-        env.update(spec["env"])
+
 
 
 
     proc = subprocess.Popen(
-        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**os.environ, **(spec.get("env") or {})},
     )
 
 
