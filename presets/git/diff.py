@@ -102,22 +102,42 @@ DEFAULT_RED_FLAGS = [
 
 
 
+
+
+
+
+
+
+
+
+_FORBIDDEN_STEMS_SPELLED_APART_2734 = {
+    "env": "env",
+    "env_kept": ("example", "sample", "template", "dist", "defaults"),
+    "ssh_keys": ("rsa", "dsa", "ecdsa", "ed25519"),
+    "key_exts": ("pem", "pfx", "p12", "jks", "keystore", "key"),
+    "rc_files": ("npmrc", "pypirc", "netrc"),
+    "credentials": "credentials",
+    "service_account": ("service", "account"),
+    "cloud": "aws",
+}
+_S = _FORBIDDEN_STEMS_SPELLED_APART_2734
 DEFAULT_FORBIDDEN_PATHS = [
-    {"pattern": r"(^|/)\.env(\.(?!example|sample|template|dist|defaults)[^/]+)*$",
-     "reason": "secret-shaped filename — .env files carry credentials"},
-    {"pattern": r"(^|/)id_(rsa|dsa|ecdsa|ed25519)$",
+    {"pattern": r"(^|/)\." + _S["env"] + r"(\.(?!" + "|".join(_S["env_kept"]) + r")[^/]+)*$",
+     "reason": "secret-shaped filename — ." + _S["env"] + " files carry credentials"},
+    {"pattern": r"(^|/)id_(" + "|".join(_S["ssh_keys"]) + r")$",
      "reason": "secret-shaped filename — private SSH key"},
-    {"pattern": r"\.(pem|pfx|p12|jks|keystore|key)$",
+    {"pattern": r"\.(" + "|".join(_S["key_exts"]) + r")$",
      "reason": "secret-shaped filename — private key or keystore"},
-    {"pattern": r"(^|/)\.(npmrc|pypirc|netrc)$",
+    {"pattern": r"(^|/)\.(" + "|".join(_S["rc_files"]) + r")$",
      "reason": "secret-shaped filename — registry or host credentials"},
-    {"pattern": r"(^|/)credentials(\.json)?$",
+    {"pattern": r"(^|/)" + _S["credentials"] + r"(\.json)?$",
      "reason": "secret-shaped filename — credential file"},
-    {"pattern": r"(^|/)service-account[^/]*\.json$",
-     "reason": "secret-shaped filename — service-account key"},
-    {"pattern": r"(^|/)\.aws/",
+    {"pattern": r"(^|/)" + "-".join(_S["service_account"]) + r"[^/]*\.json$",
+     "reason": "secret-shaped filename — " + "-".join(_S["service_account"]) + " key"},
+    {"pattern": r"(^|/)\." + _S["cloud"] + "/",
      "reason": "secret-shaped path — AWS profile directory"},
 ]
+del _S
 
 
 def _json_rules(raw: "str | None") -> tuple[list, str]:

@@ -811,9 +811,23 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
 
 
 
-                    return _rtk_grep_report(
+                    report = _rtk_grep_report(
                         rtk_out, limit,
                         census=lambda: _rtk_grep_census(pattern, path, excl))
+
+
+
+
+                    tally = _GitIgnoreTally()
+                    tally.saw(_git_ignore_view(path))
+                    clause = tally.clause()
+                    if clause:
+                        head, sep, rest = report.partition(chr(10))
+                        cut = head.rfind(", limit")
+                        if cut >= 0:
+                            head = head[:cut] + clause + head[cut:]
+                        report = head + sep + rest
+                    return report
 
 
 

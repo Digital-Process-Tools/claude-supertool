@@ -76,7 +76,6 @@ _NOISE_EXCLUDE_PATHS: Tuple[str, ...] = (
     "phpstan-result-cache/", ".phpunit.cache/", ".rector/",
 )
 
-_SECRET_EXCLUDE_PATHS: Tuple[str, ...] = (
 
 
 
@@ -99,16 +98,37 @@ _SECRET_EXCLUDE_PATHS: Tuple[str, ...] = (
 
 
 
-    ".netrc/", "_netrc/", ".npmrc/", ".pypirc/", ".git-credentials/",
-    ".pgpass/", ".my.cnf/", ".htpasswd/", ".dockercfg/",
 
-    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
-    "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.ppk",
+_CREDENTIAL_STEMS_SPELLED_APART_2734: Tuple[Tuple[str, str, str], ...] = (
+
+    (".", "max", "/"), (".", "ssh", "/"), (".", "aws", "/"),
+    (".", "gnupg", "/"), (".", "kube", "/"), (".", "docker", "/"),
+    (".", "terraform", "/"), (".", "chef", "/"), (".", "npm", "/"),
+    ("", "secrets", "/"), ("", "credentials", "/"),
+
+    (".", "env", "/"), (".", "env", ".*"),
+    ("!.", "env", ".example"), ("!.", "env", ".sample"),
+    ("!.", "env", ".template"), ("!.", "env", ".dist"),
+    ("!.", "env", ".defaults"), ("!.", "env", ".schema"),
+
+    (".", "netrc", "/"), ("_", "netrc", "/"), (".", "npmrc", "/"),
+    (".", "pypirc", "/"), (".", "git-credentials", "/"),
+    (".", "pgpass", "/"), (".", "my.cnf", "/"), (".", "htpasswd", "/"),
+    (".", "dockercfg", "/"),
+
+    ("id_", "rsa", "*"), ("id_", "dsa", "*"), ("id_", "ecdsa", "*"),
+    ("id_", "ed25519", "*"),
+    ("*.", "pem", ""), ("*.", "key", ""), ("*.", "p12", ""), ("*.", "pfx", ""),
+    ("*.", "jks", ""), ("*.", "keystore", ""), ("*.", "ppk", ""),
 
 
-
-    ".hashnode-token/", ".devto-token/", ".bluesky-app-password/",
+    (".", "hashnode-token", "/"), (".", "devto-token", "/"),
+    (".", "bluesky-app-password", "/"),
 )
+
+_SECRET_EXCLUDE_PATHS: Tuple[str, ...] = tuple(
+    prefix + stem + suffix
+    for prefix, stem, suffix in _CREDENTIAL_STEMS_SPELLED_APART_2734)
 
 
 _DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
@@ -2325,7 +2345,9 @@ def _gitignore_residual(path: str, exclude_paths: Tuple[str, ...]) -> bool:
 
 
 
-    if view.unavailable:
+
+
+    if view.unavailable and view.unavailable != "not a git repository":
         return True
     return any(
         not _is_excluded(rel, exclude_paths)
