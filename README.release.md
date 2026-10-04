@@ -19,7 +19,7 @@ GitLab and Claude Code's own session log; presets add more per project.
 
 ```
 /plugin marketplace add Digital-Process-Tools/claude-marketplace
-/plugin install supertool@dpt-plugins
+/plugin install supertool-cli@dpt-plugins
 ```
 
 ## A few of the operations
@@ -36,7 +36,7 @@ GitLab and Claude Code's own session log; presets add more per project.
 This build does not ship `bluesky`, `devto`, `hashnode`, `slack` or `youtube`:
 each one reads a credential (an API token, a session cookie) and sends it to
 its own vendor's API, which the Anthropic directory's own review holds on.
-`/plugin install supertool@dpt-plugins` (above) installs the full set from
+`/plugin install supertool-cli@dpt-plugins` (above) installs the full set from
 `master` instead. A project config that still names one of these presets gets
 a message saying so, rather than a bare "not found".
 

@@ -56,7 +56,7 @@ From the DPT marketplace:
 
 ```
 /plugin marketplace add Digital-Process-Tools/claude-marketplace
-/plugin install supertool@dpt-plugins
+/plugin install supertool-cli@dpt-plugins
 ```
 
 This auto-registers `hooks/session-start.sh` via the plugin's `hooks/hooks.json` — no manual `settings.json` editing. **Restart your Claude Code session afterwards**: the hook only fires at session start, so a session already running when you install it does not pick it up mid-conversation.
