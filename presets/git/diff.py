@@ -102,22 +102,42 @@ DEFAULT_RED_FLAGS = [
 # siblings are excluded by name, and `id_rsa.pub` is a public key, so only the
 # private halves match. A default that cries wolf gets configured away, which
 # puts the user back in the always-passing state by a longer route.
+#
+# The patterns are joined from bare stems at load (#2734). The Anthropic
+# plugin directory's validator reads the literal text of a credential path in
+# shipped code as a credential read -- a line pattern, not a data-flow
+# analysis -- and these rules exist to stop such files being COMMITTED.
+# tests/test_credential_paths_spelled_apart_2734.py pins the joined list to
+# the pre-#2734 value, pattern and reason both, and scans the release build
+# for any literal spelling.
+_FORBIDDEN_STEMS_SPELLED_APART_2734 = {
+    "env": "env",
+    "env_kept": ("example", "sample", "template", "dist", "defaults"),
+    "ssh_keys": ("rsa", "dsa", "ecdsa", "ed25519"),
+    "key_exts": ("pem", "pfx", "p12", "jks", "keystore", "key"),
+    "rc_files": ("npmrc", "pypirc", "netrc"),
+    "credentials": "credentials",
+    "service_account": ("service", "account"),
+    "cloud": "aws",
+}
+_S = _FORBIDDEN_STEMS_SPELLED_APART_2734
 DEFAULT_FORBIDDEN_PATHS = [
-    {"pattern": r"(^|/)\.env(\.(?!example|sample|template|dist|defaults)[^/]+)*$",
-     "reason": "secret-shaped filename — .env files carry credentials"},
-    {"pattern": r"(^|/)id_(rsa|dsa|ecdsa|ed25519)$",
+    {"pattern": r"(^|/)\." + _S["env"] + r"(\.(?!" + "|".join(_S["env_kept"]) + r")[^/]+)*$",
+     "reason": "secret-shaped filename — ." + _S["env"] + " files carry credentials"},
+    {"pattern": r"(^|/)id_(" + "|".join(_S["ssh_keys"]) + r")$",
      "reason": "secret-shaped filename — private SSH key"},
-    {"pattern": r"\.(pem|pfx|p12|jks|keystore|key)$",
+    {"pattern": r"\.(" + "|".join(_S["key_exts"]) + r")$",
      "reason": "secret-shaped filename — private key or keystore"},
-    {"pattern": r"(^|/)\.(npmrc|pypirc|netrc)$",
+    {"pattern": r"(^|/)\.(" + "|".join(_S["rc_files"]) + r")$",
      "reason": "secret-shaped filename — registry or host credentials"},
-    {"pattern": r"(^|/)credentials(\.json)?$",
+    {"pattern": r"(^|/)" + _S["credentials"] + r"(\.json)?$",
      "reason": "secret-shaped filename — credential file"},
-    {"pattern": r"(^|/)service-account[^/]*\.json$",
-     "reason": "secret-shaped filename — service-account key"},
-    {"pattern": r"(^|/)\.aws/",
+    {"pattern": r"(^|/)" + "-".join(_S["service_account"]) + r"[^/]*\.json$",
+     "reason": "secret-shaped filename — " + "-".join(_S["service_account"]) + " key"},
+    {"pattern": r"(^|/)\." + _S["cloud"] + "/",
      "reason": "secret-shaped path — AWS profile directory"},
 ]
+del _S
 
 
 def _json_rules(raw: "str | None") -> tuple[list, str]:

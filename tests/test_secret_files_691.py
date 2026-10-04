@@ -37,9 +37,9 @@ import supertool
 
 # basename -> content. The needle is always FAKE_<something>.
 SECRET_FILES = {
-    # No `.env` family here since #2734: those entries left the default list,
-    # and a gitignored `.env` is hidden by the gitignore filter instead
-    # (tests/test_gitignore_files_2738.py). This tree is not a git repo.
+    ".env": "TOK=FAKE_root_env_value\n",
+    ".env.production": "K=FAKE_env_production_value\n",
+    ".env.local": "K=FAKE_env_local_value\n",
     ".netrc": "machine example.com password FAKE_netrc_value\n",
     ".npmrc": "//registry.npmjs.org/:_authToken=FAKE_npmrc_value\n",
     ".git-credentials": "https://u:FAKE_gitcred_value@github.com\n",
@@ -80,14 +80,13 @@ def _make_secret_tree(root: Path) -> None:
         (root / name).write_text(body, encoding="utf-8")
     sub = root / "sub"
     sub.mkdir()
-    (sub / ".netrc").write_text("machine x password FAKE_nested_netrc_value\n",
-                                encoding="utf-8")
+    (sub / ".env").write_text("TOK=FAKE_nested_env_value\n", encoding="utf-8")
     (sub / "lib.py").write_text(
         'X = "FAKE_nested_source_value"\n', encoding="utf-8")
 
 
 def _assert_no_secret(out: str) -> None:
-    leaked = [n for n in SECRET_NEEDLES + ("FAKE_nested_netrc_value",) if n in out]
+    leaked = [n for n in SECRET_NEEDLES + ("FAKE_nested_env_value",) if n in out]
     # Report the count and the *filenames*, never the values themselves.
     assert not leaked, f"{len(leaked)} secret value(s) reached the output"
 
@@ -337,7 +336,7 @@ def test_no_exclude_still_shows_everything(
     _make_secret_tree(tmp_path)
     monkeypatch.chdir(tmp_path)
     out = supertool.op_grep("FAKE", ".", limit=100, no_exclude=True)
-    assert "FAKE_netrc_value" in out
+    assert "FAKE_root_env_value" in out
     assert "FAKE_pem_value" in out
 
 
@@ -345,12 +344,12 @@ def test_naming_the_file_explicitly_still_works(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Parity with `read`: an excluded path you name yourself is still searched.
-    Blocking it would buy nothing — `read:.netrc` was never gated — and would
+    Blocking it would buy nothing — `read:.env` was never gated — and would
     break the deliberate case."""
     _make_secret_tree(tmp_path)
     monkeypatch.chdir(tmp_path)
-    out = supertool.op_grep("FAKE", ".netrc", limit=10)
-    assert "FAKE_netrc_value" in out
+    out = supertool.op_grep("FAKE", ".env", limit=10)
+    assert "FAKE_root_env_value" in out
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +366,7 @@ def test_grep_report_discloses_how_many_files_were_hidden(
     header = out.splitlines()[0]
     assert "hidden by exclude-paths" in header
     m = re.search(r"(\d+) files hidden by exclude-paths", header)
-    assert m and int(m.group(1)) == len(SECRET_FILES) + 1  # + sub/.netrc
+    assert m and int(m.group(1)) == len(SECRET_FILES) + 1  # + sub/.env
 
 
 def test_a_gitfile_is_hidden_without_being_counted(
@@ -385,7 +384,7 @@ def test_a_gitfile_is_hidden_without_being_counted(
     assert "hidden" not in out
 
     # ...and a credential alongside it still counts.
-    (tmp_path / ".netrc").write_text("password FAKE_netrc\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("K=FAKE_env\n", encoding="utf-8")
     out = supertool.op_grep("FAKE", ".", limit=10)
     assert "1 files hidden by exclude-paths" in out
 
@@ -422,7 +421,7 @@ def test_glob_report_discloses_how_many_files_were_hidden(
 ) -> None:
     _make_secret_tree(tmp_path)
     monkeypatch.chdir(tmp_path)
-    out = supertool.op_glob("**/*.pem", no_auto_read=True)
+    out = supertool.op_glob("**/.env*", no_auto_read=True)
     assert re.search(r"\d+ files hidden by exclude-paths", out)
 
 
@@ -586,14 +585,14 @@ def test_a_worktree_gitfile_is_not_counted_as_a_hidden_file(
 def test_the_count_reports_credential_files_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_grep: None
 ) -> None:
-    """One `.netrc` and one worktree gitfile hidden. The header says 1, not 2."""
+    """One `.env` and one worktree gitfile hidden. The header says 1, not 2."""
     _write_gitfile(tmp_path)
-    (tmp_path / ".netrc").write_text("password FAKE_netrc_value\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("TOK=FAKE_root_env_value\n", encoding="utf-8")
     (tmp_path / "app.py").write_text(
         'X = "FAKE_source_value"\n', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     out = supertool.op_grep("FAKE", ".", limit=10)
-    assert "FAKE_netrc_value" not in out
+    assert "FAKE_root_env_value" not in out
     m = re.search(r"(\d+) files hidden by exclude-paths", out)
     assert m and int(m.group(1)) == 1
 
@@ -655,7 +654,7 @@ def test_glob_does_not_count_a_worktree_gitfile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_gitfile(tmp_path)
-    (tmp_path / ".netrc").write_text("password FAKE_netrc_value\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("TOK=FAKE_root_env_value\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     out = supertool.op_glob(".*", no_auto_read=True)
     m = re.search(r"(\d+) files hidden by exclude-paths", out)
@@ -670,7 +669,7 @@ class TestDisclosableExclusion:
 
     def test_a_credential_entry_is_disclosable(self) -> None:
         excl = supertool._get_exclude_paths("grep")
-        for name in (".netrc", "certs/server.pem", ".hashnode-token"):
+        for name in (".env", ".netrc", "certs/server.pem", ".hashnode-token"):
             assert supertool._is_disclosable_exclusion(name, excl), name
 
     def test_every_built_in_noise_default_is_non_disclosable(self) -> None:
@@ -705,12 +704,3 @@ class TestDisclosableExclusion:
         """It was never hidden, so there is nothing to disclose."""
         excl = supertool._get_exclude_paths("grep")
         assert not supertool._is_disclosable_exclusion(".env.example", excl)
-
-
-@pytest.fixture(autouse=True)
-def _no_gitignore_clause_outside_a_repo(monkeypatch):
-    """These trees are not git repositories. Since #2738 such a walk says
-    `gitignore filter not applied (not a git repository)` and declines rtk
-    delegation; that is pinned in tests/test_gitignore_files_2738.py. This
-    file pins the exclude list, so the gitignore filter is switched off."""
-    monkeypatch.setenv("SUPERTOOL_NO_GITIGNORE", "1")

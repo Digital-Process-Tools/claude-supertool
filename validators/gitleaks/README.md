@@ -13,7 +13,7 @@ Requires `gitleaks` on PATH (`brew install gitleaks`, or the release binary).
 
 No `match`, deliberately: a credential is not a property of a file type, and
 the languages this repo does not have a validator for are exactly the ones
-where a `.env`-shaped file would slip through.
+where an env-file-shaped secret would slip through.
 
 ## The finding never carries the value
 

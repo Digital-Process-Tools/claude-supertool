@@ -10,7 +10,7 @@ they worked, which is the fast path and the common one.
 
 **The fixture trap this suite exists to avoid.** Every wildcard entry
 (`*.pem`, `.env.*`, `id_rsa*`) is already withheld from the argv, because the
-default list carried negations (`!.env.example`, until #2734) and system grep cannot
+default list carries negations (`!.env.example`) and system grep cannot
 express them. So a tree containing a `server.pem` *already* comes back from
 grep, is caught by the post-filter, and triggers the native redo and an honest
 report — on master. A test built on that tree passes against the defect. The
@@ -35,10 +35,10 @@ import supertool
 # genuinely suppressed. Deliberately no `*.pem` / `.env.local`: those take the
 # already-honest path and would mask the defect. See the module docstring.
 LITERAL_SECRETS = {
-    ".npmrc": "//registry.npmjs.org/:_authToken=FAKE_npmrc_value\n",
+    ".env": "TOK=FAKE_root_env_value\n",
     ".netrc": "machine example.com password FAKE_netrc_value\n",
 }
-NESTED_SECRET = ("sub/.netrc", "machine x password FAKE_nested_netrc_value\n")
+NESTED_SECRET = ("sub/.env", "TOK=FAKE_nested_env_value\n")
 
 VISIBLE = {
     "app.py": 'TOKEN_NAME = "FAKE_source_value"\n',
@@ -218,13 +218,3 @@ def test_a_noise_only_tree_still_takes_the_delegated_report(
     assert "delegated to rtk" in out, "fell back to the native walker"
     assert "FAKE_dep_value" not in out
     assert _hidden_count(out) is None
-
-
-@pytest.fixture(autouse=True)
-def _no_gitignore_clause_outside_a_repo(monkeypatch):
-    """These pin header shapes and rtk delegation in tmp dirs that are not git
-    repositories. Since #2738 such a walk says `gitignore filter not applied
-    (not a git repository)` and declines delegation; that is pinned in
-    tests/test_gitignore_files_2738.py, so it is switched off here rather
-    than threaded through every exact header below."""
-    monkeypatch.setenv("SUPERTOOL_NO_GITIGNORE", "1")

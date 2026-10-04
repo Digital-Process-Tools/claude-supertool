@@ -162,7 +162,7 @@ The gate is narrow because the rejoin is normally right. Measured over the 165 d
 
 Only a walk that would have *descended into* an ignored tree is pruned. Deliberately entering one is not.
 
-**Files too, since [#2738](https://github.com/Digital-Process-Tools/claude-supertool/issues/2738).** Until then only ignored directories were pruned, and ignored *files* were searched, on the grounds that the secret-file case belonged to `exclude-paths`. That list named credential directories in shipped data, which the Anthropic plugin directory's validator holds as a credential read, so the `.env` and credential-directory entries were removed ([#2734](https://github.com/Digital-Process-Tools/claude-supertool/issues/2734)) and `.gitignore` is the guard — the one `rg` and Claude Code's own Grep honour. The same single `git ls-files` call answers both: one per walk root, never one per file. A gitignored file you name directly (`grep:X:.env`, `glob:.env`, `map:ignored.py`) is read, exactly as before. Pruning shrinks the walk, so `scanned N` drops with it and stays an honest denominator.
+**Files too, since [#2738](https://github.com/Digital-Process-Tools/claude-supertool/issues/2738).** Until then only ignored directories were pruned, and ignored *files* were searched, on the grounds that the secret-file case belonged to `exclude-paths`. Both layers now apply: the [credential entries in `exclude-paths`](../configuration.md#excluding-paths-from-traversal-ops) hide those files whether or not a repository ignores them, and `.gitignore` hides whatever else the repository says it does not track — the guard `rg` and Claude Code's own Grep honour. The same single `git ls-files` call answers both directories and files: one per walk root, never one per file. A gitignored file you name directly (`grep:X:.env`, `glob:.env`, `map:ignored.py`) is read, exactly as before. Pruning shrinks the walk, so `scanned N` drops with it and stays an honest denominator.
 
 Three ways out, in descending scope:
 
@@ -172,7 +172,7 @@ Three ways out, in descending scope:
 | `SUPERTOOL_NO_GITIGNORE=1` | one invocation |
 | `:no-exclude` on the op | one call — also drops `.git/`, `node_modules/` and the rest of `exclude-paths` |
 
-Outside a git repo, without `git` on `PATH`, or when the query fails or times out, nothing is pruned — an unanswerable question yields "no opinion", never "skip it" — **and the header says so**: `gitignore filter not applied (not a git repository)`. A walk that could not be filtered must not render like one that was. For the same reason `grep` does not delegate to rtk then: the delegated report has nowhere to say it, and rtk runs the system grep, which knows nothing about `.gitignore`.
+Outside a git repo, without `git` on `PATH`, or when the query fails or times out, nothing is pruned — an unanswerable question yields "no opinion", never "skip it" — **and the header says so**: `gitignore filter not applied (not a git repository)`. A walk that could not be filtered must not render like one that was. Inside a repository whose listing failed, `grep` does not delegate to rtk: rtk runs the system grep, which knows nothing about `.gitignore`. Outside a repository there is nothing gitignored to hide, so delegation stays and the delegated header carries the same clause.
 
 ## Delegated to rtk
 
