@@ -895,7 +895,7 @@ def _op_config_key_collisions(project_ops: Dict[str, Any]
             by_env.setdefault(f"SUPERTOOL_{key.upper()}", []).append(
                 (op_name, value))
     collisions: Dict[str, List[str]] = {}
-    for env, pairs in by_env.items():
+    for var_name, pairs in by_env.items():
         ops_here = sorted({op for op, _ in pairs})
         if len(ops_here) < 2:
             continue
@@ -906,7 +906,7 @@ def _op_config_key_collisions(project_ops: Dict[str, Any]
             except TypeError:
                 fingerprints.add(repr(value))
         if len(fingerprints) > 1:
-            collisions[env] = ops_here
+            collisions[var_name] = ops_here
     return collisions
 
 
@@ -1343,9 +1343,9 @@ def _is_compact() -> bool:
 
 def _notifier_debug_enabled() -> bool:
     """Env SUPERTOOL_NOTIFIER_DEBUG=1 wins over JSON `notifier_debug: true`."""
-    env = os.environ.get("SUPERTOOL_NOTIFIER_DEBUG")
-    if env is not None:
-        return env.strip().lower() in ("1", "true", "yes", "on")
+    override = os.environ.get("SUPERTOOL_NOTIFIER_DEBUG")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
     return bool(_load_config().get("notifier_debug", False))
 
 
@@ -1567,8 +1567,8 @@ def _parallel_workers() -> int:
       true/false → 4 / 0 (back-compat with bool config)
     Default: 0 (off).
     """
-    env = os.environ.get("SUPERTOOL_PARALLEL")
-    raw: object = env if env is not None else _load_config().get("parallel", 0)
+    override = os.environ.get("SUPERTOOL_PARALLEL")
+    raw: object = override if override is not None else _load_config().get("parallel", 0)
     if isinstance(raw, bool):
         return 4 if raw else 0
     if isinstance(raw, int):
@@ -1587,12 +1587,12 @@ def _parallel_workers() -> int:
         try:
             n = int(s)
         except ValueError:
-            if env is not None:
+            if override is not None:
                 _env_notice(f"note: SUPERTOOL_PARALLEL={raw!r} is not a whole number "
                             f"or true/false - ignoring it and using 0 (sequential).")
             return 0
         if n < 0:
-            if env is not None:
+            if override is not None:
                 _env_notice(f"note: SUPERTOOL_PARALLEL={raw!r} is below the minimum of 0 "
                             f"- ignoring it and using 0 (sequential).")
             return 0

@@ -146,7 +146,7 @@ class Resolved(NamedTuple):
     redundant: tuple[str, ...] = ()
 
 
-def resolve(env: dict[str, str] | None = None) -> Resolved:
+def resolve(overrides: dict[str, str] | None = None) -> Resolved:
     """The directories to search, in precedence order. Shipped is always first.
 
     Reads a mapping and stats each entry; creates nothing. Called per lookup
@@ -157,8 +157,8 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
     # No alias of the whole mapping, and a literal name rather than the
     # module constant (#2734) -- see PATH_ENV's own declaration for why.
     # No conditional yielding the mapping either: each source on its own.
-    if env is not None:
-        raw = env.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
+    if overrides is not None:
+        raw = overrides.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
     else:
         raw = os.environ.get("SUPERTOOL_WATCH_SOURCES_PATH") or ""
 

@@ -253,7 +253,7 @@ def test_the_scrub_is_reported_on_a_builtin_op(tmp_path):
 
     r = _run_op("read:tracked.txt", repo_b, git_dir=repo_a / ".git")
 
-    assert "scrubbed inherited git env" in r.stdout, r.stdout + r.stderr
+    assert "scrubbed inherited git variables" in r.stdout, r.stdout + r.stderr
     assert "GIT_DIR" in r.stdout
 
 
@@ -263,7 +263,7 @@ def test_a_clean_environment_produces_no_notice_on_a_builtin_op(tmp_path):
 
     r = _run_op("read:tracked.txt", repo_b)
 
-    assert "scrubbed inherited git env" not in r.stdout, r.stdout
+    assert "scrubbed inherited git variables" not in r.stdout, r.stdout
 
 
 def test_the_notice_is_said_once_per_call_not_once_per_op(tmp_path):
@@ -278,7 +278,7 @@ def test_the_notice_is_said_once_per_call_not_once_per_op(tmp_path):
         cwd=str(repo_b), capture_output=True, text=True, timeout=180, env=env, encoding="utf-8", errors="replace",
     )
 
-    assert r.stdout.count("scrubbed inherited git env") == 1, r.stdout
+    assert r.stdout.count("scrubbed inherited git variables") == 1, r.stdout
 
 
 # --------------------------------------------------------------------------

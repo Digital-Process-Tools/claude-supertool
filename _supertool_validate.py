@@ -1772,9 +1772,9 @@ def _repo_opts_into_formatter(name: str, spec: Dict[str, Any], path: str) -> boo
         markers = (tuple(str(m) for m in requires), ())
     if markers is None:
         return True
-    env = spec.get("env")
-    if isinstance(env, dict):
-        for key, value in env.items():
+    declared = spec.get("env")
+    if isinstance(declared, dict):
+        for key, value in declared.items():
             if value and str(key).upper().endswith(_FORMATTER_EXPLICIT_ENV_SUFFIXES):
                 return True
     import fnmatch

@@ -49,8 +49,8 @@ _MAX_SAFE_PATH_LEN = 4096
 _ALLOW_OUTSIDE_HINT = (
     "For a one-off call, no config edit and no residue: prefix the call "
     "with `cwd:PATH` to move the boundary there for this call only "
-    "(#1784). To allow it for every future call: set "
-    "SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
+    "(#1784). To allow it for every future call: define "
+    "SUPERTOOL_ALLOW_OUTSIDE_CWD=1 as an environment variable, or add "
     '`"allow_outside_cwd": true` to .supertool.json.'
 )
 
@@ -995,7 +995,7 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
     set env this way — `subprocess.run(shlex.split(cmd), shell=False)` treats
     the assignment as a literal argv[0], yielding ENOENT.
     """
-    env: Dict[str, str] = {}
+    assignments: Dict[str, str] = {}
     tokens = shlex.split(cmd, posix=True)
     idx = 0
     # `\Z` with DOTALL, not `$`. Two effects, and the second is the wider one.
@@ -1013,15 +1013,15 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
         m = _kv.match(tokens[idx])
         if not m:
             break
-        env[m.group(1)] = m.group(2)
+        assignments[m.group(1)] = m.group(2)
         idx += 1
-    if not env:
+    if not assignments:
         return {}, cmd
     # Rebuild remaining cmd as shell-safe string so callers can keep using
     # shlex.split on it (the placeholder-substituted file path already
     # passed through shlex.quote upstream, so it survives a second pass).
     remaining = " ".join(shlex.quote(t) for t in tokens[idx:])
-    return env, remaining
+    return assignments, remaining
 
 
 
@@ -1359,8 +1359,8 @@ def _scrub_process_git_env() -> List[str]:
     return removed
 
 
-def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
-    """Delete git's repo pointers from `env`; return the names removed.
+def scrub_git_env(target: Optional[MutableMapping[str, str]] = None) -> List[str]:
+    """Delete git's repo pointers from `target`; return the names removed.
 
     With no argument it acts on this process's own environment, through
     `_scrub_process_git_env` (#2734: the one production call site in
@@ -1368,7 +1368,7 @@ def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
     `os.environ`). A test passes its own dict explicitly (#692, #416), and
     only that dict is touched.
     """
-    if env is None:
+    if target is None:
         return _scrub_process_git_env()
     # Seven literal-keyed statements, no loop (#2734): a `for` over
     # GIT_ENV_VARS (or any tuple, inline or not) still binds `del
@@ -1380,27 +1380,27 @@ def scrub_git_env(env: Optional[MutableMapping[str, str]] = None) -> List[str]:
     # `GIT_ENV_VARS == EXPECTED_VARS` pin is the guard that these seven
     # literals and the tuple above can never drift apart silently.
     removed = []
-    if "GIT_DIR" in env:
+    if "GIT_DIR" in target:
         removed.append("GIT_DIR")
-        del env["GIT_DIR"]
-    if "GIT_WORK_TREE" in env:
+        del target["GIT_DIR"]
+    if "GIT_WORK_TREE" in target:
         removed.append("GIT_WORK_TREE")
-        del env["GIT_WORK_TREE"]
-    if "GIT_COMMON_DIR" in env:
+        del target["GIT_WORK_TREE"]
+    if "GIT_COMMON_DIR" in target:
         removed.append("GIT_COMMON_DIR")
-        del env["GIT_COMMON_DIR"]
-    if "GIT_INDEX_FILE" in env:
+        del target["GIT_COMMON_DIR"]
+    if "GIT_INDEX_FILE" in target:
         removed.append("GIT_INDEX_FILE")
-        del env["GIT_INDEX_FILE"]
-    if "GIT_OBJECT_DIRECTORY" in env:
+        del target["GIT_INDEX_FILE"]
+    if "GIT_OBJECT_DIRECTORY" in target:
         removed.append("GIT_OBJECT_DIRECTORY")
-        del env["GIT_OBJECT_DIRECTORY"]
-    if "GIT_ALTERNATE_OBJECT_DIRECTORIES" in env:
+        del target["GIT_OBJECT_DIRECTORY"]
+    if "GIT_ALTERNATE_OBJECT_DIRECTORIES" in target:
         removed.append("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-        del env["GIT_ALTERNATE_OBJECT_DIRECTORIES"]
-    if "GIT_NAMESPACE" in env:
+        del target["GIT_ALTERNATE_OBJECT_DIRECTORIES"]
+    if "GIT_NAMESPACE" in target:
         removed.append("GIT_NAMESPACE")
-        del env["GIT_NAMESPACE"]
+        del target["GIT_NAMESPACE"]
     return removed
 
 
@@ -1424,7 +1424,7 @@ def _git_env_notice(removed: List[str]) -> str:
     if not removed:
         return ""
     return (
-        f"scrubbed inherited git env: {', '.join(removed)} — this call acted "
+        f"scrubbed inherited git variables: {', '.join(removed)} — this call acted "
         f"on the repo at {os.getcwd()}, not the one those variables named "
         f"(#692, #714)\n"
     )
@@ -1699,13 +1699,13 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # temporary one is possible. `_expand_env` falls back to the process
     # environment itself, and the child gets `{**os.environ, **env}` inline
     # at the spawn, so no local name ever holds the whole environment.
-    env: Dict[str, str] = {}
+    extras: Dict[str, str] = {}
     # Which separator produced the argv this op is about to receive (#946).
     # A preset that reconstructs the caller's input — git-commit's spilled
     # message refusal is the one that does — cannot otherwise tell ':::' from
     # ':' from a payload whose fields were never split, and rejoining on the
     # wrong one hands back a suggestion that silently rewrites the message.
-    env["SUPERTOOL_ARG_SEP"] = _ARG_SEP[0]
+    extras["SUPERTOOL_ARG_SEP"] = _ARG_SEP[0]
     if isinstance(entry, dict):
         for k, v in entry.items():
             if k not in _RESERVED_KEYS:
@@ -1725,14 +1725,14 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
                 # Non-scalars (lists/dicts, e.g. "job_patterns") are JSON-encoded
                 # so the receiving preset can json.loads them back — str() would
                 # emit a Python repr that json.loads can't parse.
-                env[f"SUPERTOOL_{k.upper()}"] = v if isinstance(v, str) else json.dumps(v)
+                extras[f"SUPERTOOL_{k.upper()}"] = v if isinstance(v, str) else json.dumps(v)
 
     _prefix_env, cmd = _extract_env_prefix(cmd)
     # Unshield the prefix VALUES too: `KEY={dir} cmd` puts caller data in one,
     # and it has to reach the child's environment as the real path (#1734).
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    env.update(_prefix_env)
-    cmd = _unshield(_expand_env(cmd, env), _shield)
+    extras.update(_prefix_env)
+    cmd = _unshield(_expand_env(cmd, extras), _shield)
 
     t0 = time.monotonic()
     try:
@@ -1746,7 +1746,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         # undecodable bytes from taking the whole run down with it.
         result = subprocess.run(
             shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace", env={**os.environ, **env},
+            encoding="utf-8", errors="replace", env={**os.environ, **extras},
         )
         elapsed = _elapsed_since(t0)
         output = result.stdout

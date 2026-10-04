@@ -943,7 +943,7 @@ def _flag_value(raw: str | None) -> bool:
     return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
+def desktop_notify_disabled(overrides: dict[str, str] | None = None) -> bool:
     """Whether the operator opted the desktop transport out.
 
     One predicate so `desktop_notify` and every board disclosure read the same
@@ -958,12 +958,12 @@ def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
     reading of `SUPERTOOL_PLAIN` -- the closest existing boolean env knob --
     so the same word means the same thing across both.
     """
-    if env is not None:
-        return _flag_value(env.get("SUPERTOOL_WATCH_NO_DESKTOP"))
+    if overrides is not None:
+        return _flag_value(overrides.get("SUPERTOOL_WATCH_NO_DESKTOP"))
     return _flag_value(os.environ.get("SUPERTOOL_WATCH_NO_DESKTOP"))
 
 
-def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
+def desktop_notify_enabled(overrides: dict[str, str] | None = None) -> bool:
     """Whether `desktop_notify` should actually shell out (#2544).
 
     Off unless asked for: `False` unless `SUPERTOOL_WATCH_DESKTOP` (or its
@@ -974,10 +974,10 @@ def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
     "yes please" (the issue's own wording); an operator who already opted out
     keeps getting silence regardless of what the opt-in says.
     """
-    if desktop_notify_disabled(env):
+    if desktop_notify_disabled(overrides):
         return False
-    if env is not None:
-        return _flag_value(env.get("SUPERTOOL_WATCH_DESKTOP"))
+    if overrides is not None:
+        return _flag_value(overrides.get("SUPERTOOL_WATCH_DESKTOP"))
     return _flag_value(os.environ.get("SUPERTOOL_WATCH_DESKTOP"))
 
 

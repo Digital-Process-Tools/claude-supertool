@@ -42,7 +42,7 @@ import * as net from "node:net";
  * than setting neither (#1309). `SUPERTOOL_WATCH_NAME` derives both.
  *
  * This end matters more than it looks. A name reaches every poller, `radar` and
- * `channel:health` through supertool's config-to-env route, and it cannot reach
+ * `channel:health` through supertool's config-to-variable route, and it cannot reach
  * here at all: this server is spawned by the harness from `.mcp.json`. If it
  * only understood a full socket path, a name would configure three of four
  * surfaces — the half-configured state, through a new door. So it reads the
@@ -962,7 +962,7 @@ function refuse(reason: string): never {
       `  Taking it would leave the other server listening on an unnamed inode:\n` +
       `  alive, watchers all green, and unreachable — a dead radar that reads as\n` +
       `  a healthy one (#550). One session with a channel beats two half-blind.\n` +
-      `  To give this session its own: set SUPERTOOL_WATCH_SOCK to an unused path,\n` +
+      `  To give this session its own: point SUPERTOOL_WATCH_SOCK at an unused path,\n` +
       `  here and on every poller that feeds it. Or stop the other session.\n`,
   );
   writeRefusalMarker(reason);

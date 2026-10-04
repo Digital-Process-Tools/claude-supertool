@@ -52,7 +52,7 @@ def _fleet_warned(lines: list[str]) -> bool:
 
 def test_a_name_derived_for_this_root_is_not_reported_as_another_projects_fleet() -> None:
     env = {naming.ROOT_ENV: "/repo/root"}
-    lines = naming.project_notes(_resolved(), _declared_silent(), env=env)
+    lines = naming.project_notes(_resolved(), _declared_silent(), overrides=env)
     assert not _fleet_warned(lines), lines
     assert lines, "silence with no reason said is the failure this file exists to close"
 
@@ -63,7 +63,7 @@ def test_the_derivation_marker_is_normalised_before_comparison() -> None:
     the exact string form this reads the config path in."""
     env = {naming.ROOT_ENV: "/repo/root/"}
     lines = naming.project_notes(_resolved(), _declared_silent("/repo/root/.supertool.json"),
-                                 env=env)
+                                 overrides=env)
     assert not _fleet_warned(lines), lines
 
 
@@ -73,7 +73,7 @@ def test_the_derivation_marker_is_normalised_before_comparison() -> None:
 
 def test_no_marker_at_all_still_warns() -> None:
     """The must-fire twin: fixing #1785 must not go silent by default."""
-    lines = naming.project_notes(_resolved(), _declared_silent(), env={})
+    lines = naming.project_notes(_resolved(), _declared_silent(), overrides={})
     assert _fleet_warned(lines), lines
 
 
@@ -82,7 +82,7 @@ def test_a_marker_naming_a_different_root_still_warns() -> None:
     one repo and leaked into a sibling checkout must still be caught."""
     env = {naming.ROOT_ENV: "/some/other/repo"}
     lines = naming.project_notes(_resolved(), _declared_silent("/repo/root/.supertool.json"),
-                                 env=env)
+                                 overrides=env)
     assert _fleet_warned(lines), lines
 
 
@@ -92,7 +92,7 @@ def test_declared_no_config_is_unaffected() -> None:
     declared = naming.Declared(state=naming.DECLARED_NO_CONFIG, path="", names=(),
                                declaring_ops=(), silent_ops=tuple(naming.WATCH_OPS))
     env = {naming.ROOT_ENV: "/anything"}
-    lines = naming.project_notes(_resolved(), declared, env=env)
+    lines = naming.project_notes(_resolved(), declared, overrides=env)
     assert _fleet_warned(lines), lines
 
 
@@ -106,5 +106,5 @@ def test_a_real_disagreement_still_warns_regardless_of_the_marker() -> None:
                                names=("theirs",), declaring_ops=("radar",),
                                silent_ops=())
     env = {naming.ROOT_ENV: "/repo/root"}
-    lines = naming.project_notes(_resolved(), declared, env=env)
+    lines = naming.project_notes(_resolved(), declared, overrides=env)
     assert any("not this project" in line for line in lines), lines

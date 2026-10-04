@@ -284,7 +284,7 @@ def test_the_scrub_is_reported_not_silent(tmp_path):
     r = _run_op("git-commit:::reported:::new.txt", repo_b,
                 git_dir=repo_a / ".git")
 
-    assert "scrubbed inherited git env" in r.stdout, r.stdout
+    assert "scrubbed inherited git variables" in r.stdout, r.stdout
     assert "GIT_DIR" in r.stdout
 
 
@@ -295,7 +295,7 @@ def test_a_clean_environment_produces_no_scrub_notice(tmp_path):
 
     r = _run_op("git-commit:::quiet:::new.txt", repo_b)
 
-    assert "scrubbed inherited git env" not in r.stdout, r.stdout
+    assert "scrubbed inherited git variables" not in r.stdout, r.stdout
 
 
 # --------------------------------------------------------------------------
