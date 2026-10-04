@@ -1482,7 +1482,7 @@ def main() -> int:
             hint = (
                 "narrow the slice or raise GL_JOB_RAW_MAX_LINES=N"
                 if raw_end is not None
-                else "pass START:END to slice further, or raise GL_JOB_RAW_MAX_LINES=N"
+                else "give START:END to slice further, or raise GL_JOB_RAW_MAX_LINES=N"
             )
             print(
                 f"\n## Raw lines {start}-{start + cap - 1} of {total} "
