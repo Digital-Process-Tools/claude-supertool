@@ -248,7 +248,7 @@ class TestValidatorProvenance:
         captured = self._run(
             monkeypatch, tmp_path,
             {"cmd": "echo {file}", "cache": False,
-             "env": {"MY_VALIDATOR_VAR": "kept"}},
+             "variables": {"MY_VALIDATOR_VAR": "kept"}},
         )
         env = captured["env"]
         assert env.get("MY_VALIDATOR_VAR") == "kept"

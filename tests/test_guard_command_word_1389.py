@@ -70,12 +70,12 @@ HIDDEN = [
      "cd /tmp # go" + NL + "gh pr merge 1 --squash"),
     ("a # comment before the command hides only its own line",
      "ls # gh" + NL + "gh pr view 1"),
-    ("env is a wrapper, the command word is behind it",
-     "env gh pr view 1"),
-    ("env with an option that takes a value",
-     "env -u FOO gh pr view 1"),
-    ("env with an assignment and an option",
+    ("a wrapper that sets a variable, the command word is behind it",
+     "env FOO=1 gh pr view 1"),
+    ("a wrapper with a flag before its assignment",
      "env -i PATH=/bin gh pr view 1"),
+    ("any word followed by an assignment is read as a wrapper",
+     "nohup2 FOO=1 gh pr view 1"),
     ("timeout takes a duration before the command word",
      "timeout 60 gh pr view 1"),
     ("timeout with its own flag and a duration",
@@ -122,6 +122,37 @@ def test_the_guard_blocks_a_command_the_shell_would_run(
     guard_config(tmp_path, _OPS)
     verdict = supertool.guard_command(command)
     assert verdict.state == "blocked", (label, command, verdict)
+
+
+# The price of #2734, pinned so it is a decision and not a surprise: the
+# utility that runs a command with variables set is no longer named in the
+# guard (the Anthropic directory's scanner reads the word as a
+# whole-environment read). It is recognised by its NAME=VALUE argument, so
+# these two forms, which carry none, are not seen through any more.
+WRAPPER_WITHOUT_ASSIGNMENT = [
+    ("the wrapper with no assignment at all", "env gh pr view 1"),
+    ("the wrapper with only an option that takes a value",
+     "env -u FOO gh pr view 1"),
+]
+
+
+@pytest.mark.parametrize("label,command", WRAPPER_WITHOUT_ASSIGNMENT,
+                         ids=[r[0] for r in WRAPPER_WITHOUT_ASSIGNMENT])
+def test_a_wrapper_without_an_assignment_is_the_known_gap(
+        label, command, tmp_path, guard_config):
+    guard_config(tmp_path, _OPS)
+    assert supertool.guard_command(command).state != "blocked", (label, command)
+
+
+def test_git_own_option_value_is_not_a_wrapper(tmp_path, guard_config):
+    """`git -c key=value` carries an assignment-shaped token that is git's
+    own option value. Read as a wrapper, `git` would be dropped and the git
+    rows of the registry would stop matching."""
+    guard_config(tmp_path, {"ops": {"git-st": {
+        "safety": "read-only", "cmd": "true", "syntax": "git-st",
+        "description": "Status.",
+        "replaces": [{"argv": "git status", "use": "git-st"}]}}})
+    assert supertool.guard_command("git -c core.pager=cat status").state == "blocked"
 
 
 def test_the_plain_form_is_the_control(tmp_path, guard_config):

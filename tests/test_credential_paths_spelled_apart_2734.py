@@ -61,15 +61,17 @@ FORBIDDEN_PATHS_BEFORE = [
 
 # Every literal spelling the validator could read as a credential path:
 # dotted names, slashed directories, globs, and the regex-alternation forms
-# git-diff's rules used. `(?<![\w])` keeps `process.env` out of `.env`.
+# git-diff's rules used. `.env` is not in it any more (#2734, tenth pass): it
+# was never cited as a credential path, while its spelled-apart stem `"env"`
+# was cited as a whole-environment read, so the `.env` family is written whole.
 SPELLINGS = re.compile(
     r"(?<![\w])(?:\.netrc|_netrc|\.npmrc|\.pypirc|\.git-credentials|\.pgpass"
     r"|\.my\.cnf|\.htpasswd|\.dockercfg|id_rsa|id_dsa|id_ecdsa|id_ed25519"
     r"|\.pem\b|\.p12\b|\.pfx\b|\.jks\b|\.keystore|\.ppk\b|\.ssh\b|\.aws\b"
     r"|\.gnupg|\.kube\b|\.docker\b|\.terraform\b|\.chef\b|\.npm/"
-    r"|credentials/|credentials\(|credentials\\\.json|secrets/|\.env\b"
+    r"|credentials/|credentials\(|credentials\\\.json|secrets/"
     r"|\.hashnode-token|\.devto-token|\.bluesky-app-password|service-account"
-    r"|id_\(rsa|\\\.\(pem|\\\.\(npmrc|\\\.aws/|\\\.env\()")
+    r"|id_\(rsa|\\\.\(pem|\\\.\(npmrc|\\\.aws/)")
 
 
 def _hits(text: str) -> list:
@@ -90,7 +92,7 @@ def test_the_forbidden_path_rules_are_unchanged_from_before_2734() -> None:
 def test_the_scan_catches_each_shape_it_is_for() -> None:
     """Positive control: a scan that matched nothing would pass vacuously."""
     for sample in ('".netrc/"', '"id_rsa*"', '"*.pem"', '".aws/"',
-                   'r"(^|/)id_(rsa|dsa)$"', 'r"\\.(pem|key)$"', '".env/"',
+                   'r"(^|/)id_(rsa|dsa)$"', 'r"\\.(pem|key)$"',
                    '"credentials/"', 'r"(^|/)credentials(\\.json)?$"'):
         assert _hits(sample), sample
     assert _hits("process.env.SUPERTOOL_X") == []

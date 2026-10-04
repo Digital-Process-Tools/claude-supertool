@@ -389,19 +389,18 @@ def test_the_committed_config_parses_and_names_the_brief_deny_list():
                   "notifiers/claude-channel/install.sh",
                   "notifiers/cursor-witness/"):
         assert entry in cfg["deny"], entry
-    # Positive control: the MCP server's own command script, the thing
-    # .mcp.json actually runs, must not be denied by the directory sweep
-    # above -- only the human-facing setup docs beside it are.
-    assert "notifiers/claude-channel/" not in cfg["deny"]
+    # #2734, tenth pass: the claude-channel notifier and the .mcp.json that
+    # registers it no longer ship (release-branch.json's _env_word_why).
+    assert "notifiers/claude-channel/" in cfg["deny"]
+    assert cfg["release_manifest_drop_keys"] == ["channels"]
     # Positive control: nothing the plugin runs is denied.
     for runtime in ("hooks/", "presets/", "validators/", "formatters/", "notifiers/",
                     ".claude-plugin/"):
         assert runtime not in cfg["deny"], runtime
-    # _shipped_reference.py and .mcp.json are deliberately NOT denied (#2705): the
-    # first is the fallback _shipped_config() reads once .supertool.json is denied,
-    # the second registers the claude-channel notifier the manifest declares.
+    # _shipped_reference.py is deliberately NOT denied (#2705): it is the
+    # fallback _shipped_config() reads once .supertool.json is denied.
     assert "_shipped_reference.py" not in cfg["deny"]
-    assert ".mcp.json" not in cfg["deny"]
+    assert ".mcp.json" in cfg["deny"]
     assert cfg["budget"]["max_files"] == 512
     assert cfg["budget"]["max_file_bytes"] == 262144
     # #2706 used to hold _supertool.py's size exception here while its split
@@ -451,9 +450,14 @@ def test_credential_forwarding_presets_do_not_ship(tmp_path):
     mod = _load()
     cfg = mod.load_config(CONFIG)
     excluded = sorted(supertool._DIRECTORY_BUILD_EXCLUDED_PRESETS)
-    assert excluded == ["bluesky", "devto", "hashnode", "slack", "youtube"], excluded
+    assert excluded == ["bluesky", "devto", "hashnode", "slack", "watch", "youtube"], excluded
     for name in excluded:
         assert f"presets/{name}.json" in cfg["deny"], name
+        if name == "watch":
+            # Only the op manifest and the modules no other preset imports:
+            # gh-prs, gl-mrs, gl-runners and doctor import transport from
+            # presets/watch/ (#2734).
+            continue
         assert f"presets/{name}/" in cfg["deny"], name
     # The slack watch source dynamically loads presets/slack/_auth.py and
     # presets/slack/_api.py by file path at import time -- denying
@@ -469,7 +473,16 @@ def test_credential_forwarding_presets_do_not_ship(tmp_path):
     mod.build(REPO_ROOT, "HEAD", out, cfg)
     for name in excluded:
         assert not (out / "presets" / f"{name}.json").exists(), name
-        assert not (out / "presets" / name).exists(), name
+        if name != "watch":
+            assert not (out / "presets" / name).exists(), name
+    for gone in ("channel.py", "radar.py", "sources", "README.md"):
+        assert not (out / "presets" / "watch" / gone).exists(), gone
+    assert (out / "presets" / "watch" / "transport.py").is_file()
+    assert not (out / ".mcp.json").exists()
+    assert not (out / "notifiers" / "claude-channel").exists()
+    manifest = json.loads((out / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert "channels" not in manifest, manifest
+    assert manifest["name"], manifest
     for source in ("slack", "bluesky-engagement", "devto-engagement"):
         assert not (out / "presets" / "watch" / "sources" / source).exists(), source
     # Positive control: a sibling preset this issue does not touch still
@@ -477,7 +490,7 @@ def test_credential_forwarding_presets_do_not_ship(tmp_path):
     # warns an empty-tree build would otherwise pass unnoticed.
     assert (out / "presets" / "github.json").is_file()
     assert (out / "presets" / "github").is_dir()
-    assert (out / "presets" / "watch" / "sources" / "gh-run").is_dir()
+    assert (out / "presets" / "gitlab").is_dir()
 
 
 def test_cli_builds_and_reports(tmp_path):

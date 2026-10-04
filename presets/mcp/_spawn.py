@@ -218,7 +218,7 @@ def _spec_tokens(spec: dict) -> list:
     else:
         tokens = []
     tokens += [str(a) for a in (spec.get("args") or [])]
-    variables = spec.get("env")
+    variables = spec.get("variables")
     if isinstance(variables, dict):
         tokens += [str(v) for v in variables.values()]
     return tokens

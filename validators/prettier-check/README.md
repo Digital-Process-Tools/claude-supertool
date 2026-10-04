@@ -23,7 +23,7 @@ Three states, not two. `ok=true` if the file is already formatted; `ok=false` wi
       "hooks_into": [],
       "rollback_on_fail": false,
       "timeout": 15,
-      "env": {
+      "variables": {
         "PRETTIER_BIN": "./node_modules/.bin/prettier",
         "PRETTIER_CONFIG": ".prettierrc"
       }
@@ -43,7 +43,7 @@ Three states, not two. `ok=true` if the file is already formatted; `ok=false` wi
   "hooks_into": [],
   "rollback_on_fail": false,
   "timeout": 15,
-  "env": {
+  "variables": {
     "PRETTIER_BIN": "prettier",
     "PRETTIER_CONFIG": ".prettierrc"
   }

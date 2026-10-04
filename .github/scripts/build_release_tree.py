@@ -641,6 +641,26 @@ def strip_py(source: bytes, path: str) -> bytes:
 
 # -- build ------------------------------------------------------------------------
 
+def drop_manifest_keys(contents: dict, config: dict) -> list:
+    """Remove top-level keys from the shipped plugin manifest (#2734).
+
+    `channels` names the claude-channel MCP server, which the directory build
+    no longer carries; a manifest declaring a server its own tree does not
+    ship is a broken install, not a smaller one. Returns the keys removed."""
+    keys = list(config.get("release_manifest_drop_keys") or [])
+    path = ".claude-plugin/plugin.json"
+    if not keys or path not in contents:
+        return []
+    doc = json.loads(contents[path].decode("utf-8"))
+    dropped = [k for k in keys if k in doc]
+    if not dropped:
+        return []
+    for key in dropped:
+        del doc[key]
+    contents[path] = (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    return dropped
+
+
 def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
     repo, out = Path(repo), Path(out)
     if out.exists() and any(out.iterdir()):
@@ -698,6 +718,8 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
         kept = [(mode, sha, path) for mode, sha, path in kept if path != readme_path]
         removed.append(readme_path)
 
+    manifest_dropped = drop_manifest_keys(contents, config)
+
     rewritten: dict[str, int] = {}
     if config.get("rewrite_links", True):
         removed_set = set(removed)
@@ -753,6 +775,7 @@ def build(repo: Path, ref: str, out: Path, config: dict) -> dict:
     return {"ref": ref, "commit": commit, "kept": len(kept), "removed": removed,
             "rewritten": rewritten, "unused_deny": unused, "unused_keep": unused_keep,
             "ladder_inlined": ladder_inlined, "readme_swapped": readme_swapped,
+            "manifest_dropped": manifest_dropped,
             "stripped_before_bytes": stripped_before, "stripped_after_bytes": stripped_after}
 
 

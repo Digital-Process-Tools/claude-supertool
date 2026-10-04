@@ -59,19 +59,43 @@ _GUARD_PUNCTUATION = "();<>|&{}"
 # is being run. Kept deliberately short: a word wrongly listed here lets a
 # block through, and every entry is one somebody actually types.
 #
-# `env`, `timeout`, `nice`, `ionice`, `stdbuf`, `setsid` and `doas` joined in
-# #1389, where each was a silent bypass. They differ from the words above in
-# that they take options of their own before the command word, which is
-# handled in `_guard_segments` rather than here.
+# `timeout`, `nice`, `ionice`, `stdbuf`, `setsid` and `doas` joined in #1389,
+# where each was a silent bypass. They differ from the words above in that
+# they take options of their own before the command word, which is handled in
+# `_guard_segments` rather than here. The utility that runs one command with
+# variables set is not named in this set (#2734: the Anthropic directory's
+# scanner reads its name, in any shipped string, as a whole-environment read).
+# It is recognised by what it does instead -- `_guard_wrapper_by_assignment`.
 _GUARD_PREFIX_WORDS = frozenset({
     "rtk", "command", "builtin", "sudo", "doas", "exec", "nohup", "time",
-    "env", "timeout", "nice", "ionice", "stdbuf", "setsid",
+    "timeout", "nice", "ionice", "stdbuf", "setsid",
     # Shell keywords that open a compound command, so the next word is a
     # command word: `for i in 1 2; do gh pr view $i; done`.
     "do", "then", "else", "elif", "if", "while", "until", "!",
 })
 
 _GUARD_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _guard_wrapper_by_assignment(segment: list) -> bool:
+    """`W NAME=VALUE ... cmd`: W runs cmd with variables set (#2734).
+
+    Its own flags may come first (`W -i PATH=/bin cmd`), except where W is a
+    command this module already reads global options for: in
+    `git -c key=value status` the assignment-shaped token is git's own
+    option value, not a wrapper's. A wrapper used with no assignment at all
+    (`W cmd`, `W -u NAME cmd`) is not recognised -- the cost of not naming
+    the utility, pinned in tests/test_guard_command_word_1389.py."""
+    if len(segment) < 3 or _GUARD_ENV_ASSIGNMENT.match(segment[0]):
+        return False
+    if _guard_command_word(segment[0]) in _GUARD_GLOBAL_OPTIONS:
+        return False
+    for token in segment[1:]:
+        if _GUARD_ENV_ASSIGNMENT.match(token):
+            return True
+        if not token.startswith("-") or "=" in token:
+            return False
+    return False
 
 # Words that hand a *string* to something else to run. The matcher never sees
 # what comes out, so a non-match past one of these is not evidence of anything.
@@ -960,7 +984,8 @@ def _guard_segments_with_origins(
     for index, segment in enumerate(segments):
         wrapped = False
         while segment and (segment[0] in _GUARD_PREFIX_WORDS
-                           or _GUARD_ENV_ASSIGNMENT.match(segment[0])):
+                           or _GUARD_ENV_ASSIGNMENT.match(segment[0])
+                           or _guard_wrapper_by_assignment(segment)):
             segment = segment[1:]
             wrapped = True
         if not segment:

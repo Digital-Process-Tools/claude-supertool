@@ -21,13 +21,21 @@ Two families, both failing here:
       `export NAME` as a command, or `set NAME` / `set $NAME` as an
       instruction to set a variable.
 
-`KEPT_LITERALS` is the short list of string literals that ARE the word for a
-reason a rename would break: a config schema key users already write
-(`.mcp.json`'s and a validator spec's `"env"` block), the `env` command word
-the raw-command guard has to recognise, `git --config-env`, the `.env`
-credential stems a deny-list exists to keep out of reads, and phpmd's
-`ruleset_source` value in its JSON output. Counted exactly, both ways: a new
-occurrence fails, and so does a kept one that went away.
+`KEPT_LITERALS` is empty, and stays counted exactly both ways (#2734, tenth
+pass). It used to excuse 21 literals "a rename would break"; release-preview
+@ b5e56fd cited the first of them, and probe-n @ 3525eeb (the three validator
+spec keys renamed) moved the citation to the next, a regex word in
+claims/check.py (claude-directory-publishing/triggers.md, 2026-10-04). Every
+excused literal was a live hold waiting its turn. What replaced each one:
+  - `.mcp.json`'s server `"env"` block, the claude-channel notifier and the
+    watch/mcp/claims presets: out of the directory build (release-branch.json).
+  - a validator or formatter spec's block: the key is `variables` now.
+  - the guard's `env` wrapper word and `git --config-env`: a wrapper is any word
+    followed by a NAME=VALUE assignment (_guard_segments).
+  - the `.env` credential stems: written whole, `.env`, the way a path reads.
+  - phpmd's `ruleset_source`: `"variable"`.
+Shipped markdown and JSON are swept too: the scanner reads every file, and a
+validator README's `"env": {` example is the same word.
 """
 from __future__ import annotations
 
@@ -48,7 +56,11 @@ _SPAWN_NAMES = ("run", "Popen", "call", "check_call", "check_output")
 #: patterns it defines.
 _E = "e" + "nv"
 _STRING_PATTERNS = {
-    "bare " + _E: re.compile(r"\b" + _E + r"\b"),
+    # Bounded like claude-directory-publishing's sweep-py.sh needle: `.env`,
+    # `--config-env`, `env-var` and an `env=` keyword were never what the
+    # scanner cited (probe-m @ 2a76b15 removed every `env=` spawn argument and
+    # the citation did not move); a quoted or regex-delimited word was.
+    "bare " + _E: re.compile(r"(?<![A-Za-z0-9_.-])" + _E + r"(?![A-Za-z0-9_.=-])"),
     "print" + _E: re.compile(r"\bprint" + _E + r"\b"),
     "export -p": re.compile(r"\bexport -p\b"),
     "export as a command": re.compile(r"\bexport\s+\$?[A-Z_][A-Z0-9_]*\b"),
@@ -61,18 +73,7 @@ _NODE_API = re.compile(r"\bprocess\." + _E + r"\b")
 _Q = '"' + _E + '"'
 #: rel path -> {exact string token -> how many times it occurs}. See the
 #: module docstring for why each stays.
-KEPT_LITERALS = {
-    "_supertool_config.py": {_Q: 8},  # the .env credential stems
-    "_supertool_guard.py": {_Q: 1, '"--config-' + _E + '"': 1},
-    "_supertool_validate.py": {_Q: 3},  # a validator spec's block key
-    "presets/claims/check.py": {
-        '"jsx|tsx|rs|php|rb|go|sql|css|lock|' + _E + '|service"': 1},
-    "presets/git/diff.py": {_Q: 4},  # the .env stems, spelled apart
-    "presets/mcp/_spawn.py": {_Q: 1},  # .mcp.json's server block key
-    "presets/mcp/daemon.py": {_Q: 1},
-    "presets/watch/channel.py": {_Q: 1},
-    "validators/phpmd/phpmd.py": {_Q: 1},  # ruleset_source in the JSON
-}
+KEPT_LITERALS: dict = {}
 
 
 def _build_tree(tmp_path: Path) -> Path:
@@ -152,7 +153,7 @@ def _sweep(built: Path) -> dict:
         src = f.read_text(encoding="utf-8", errors="replace")
         if f.suffix == ".py":
             found[rel] = (identifier_hits(src), string_hits(src))
-        elif f.suffix in (".ts", ".mjs", ".js", ".sh") or f.name == "hooks.json":
+        elif f.suffix in (".ts", ".mjs", ".js", ".sh", ".md", ".json", ".toml"):
             found[rel] = ([], text_hits(src))
     return found
 
@@ -255,6 +256,8 @@ def test_string_sweep_lets_ordinary_words_through(source) -> None:
 
 def test_text_sweep_exempts_node_api_but_not_the_word() -> None:
     assert not text_hits("const s = process." + _E + ".SUPERTOOL_WATCH_SOCK;\n")
-    assert text_hits("// through the config-to-" + _E + " route\n")
+    assert text_hits("// through the " + _E + " route\n")
+    assert text_hits('    "' + _E + '": {\n')
+    assert not text_hits("rules for .env files\n")
     assert text_hits("msg = `set SUPERTOOL_WATCH_SOCK to a path`;\n")
     assert not text_hits("#!/usr/bin/" + _E + " node\n")

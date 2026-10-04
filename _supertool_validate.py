@@ -923,8 +923,10 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     # templates use this to set MCP_*_WORKING_DIR before the python invocation).
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    # $VAR / ${VAR} expansion + child env both need spec.env + prefix env.
-    _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
+    # $VAR / ${VAR} expansion + child env both need spec.variables + prefix
+    # env. The spec key was `env` until #2734: the directory's scanner reads
+    # that string as a whole-environment read.
+    _spec_env_dict = {**_prefix_env, **(spec.get("variables") or {})}
     # Only the extras, never a copy of os.environ (#2734): `_expand_env` falls
     # back to the process environment itself, and the child's environment is
     # merged inline at the spawn below.
@@ -1772,7 +1774,7 @@ def _repo_opts_into_formatter(name: str, spec: Dict[str, Any], path: str) -> boo
         markers = (tuple(str(m) for m in requires), ())
     if markers is None:
         return True
-    declared = spec.get("env")
+    declared = spec.get("variables")
     if isinstance(declared, dict):
         for key, value in declared.items():
             if value and str(key).upper().endswith(_FORMATTER_EXPLICIT_ENV_SUFFIXES):
@@ -1879,7 +1881,7 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
+    _spec_env_dict = {**_prefix_env, **(spec.get("variables") or {})}
     # Only the extras, never a copy of os.environ (#2734): `_expand_env` falls
     # back to the process environment itself, and the child's environment is
     # merged inline at the spawn below.

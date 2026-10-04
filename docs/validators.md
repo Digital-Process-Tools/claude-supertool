@@ -73,7 +73,7 @@ If your LSP genuinely re-reads the file on every query, opt back in through the 
 "lsp-diag": {
   "cmd": "{python} {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
   "match": "*.{py,php,js,ts,jsx,tsx}",
-  "env": { "SUPERTOOL_LSP_RESYNC_ON_QUERY": "1" }
+  "variables": { "SUPERTOOL_LSP_RESYNC_ON_QUERY": "1" }
 }
 ```
 
@@ -929,7 +929,7 @@ Pass tool-specific config without shell exports:
   "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
   "rollback_on_fail": false,
   "timeout": 60,
-  "env": {
+  "variables": {
     "PHPSTAN_BIN": "./vendor/bin/phpstan",
     "PHPSTAN_CONFIG": "phpstan.neon",
     "PHPSTAN_LEVEL": "8"

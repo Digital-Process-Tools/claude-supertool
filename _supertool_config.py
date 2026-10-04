@@ -91,7 +91,10 @@ _NOISE_EXCLUDE_PATHS: Tuple[str, ...] = (
 # prevent. `.env.*` covers `.local`, `.production` and whatever a project
 # invents next; the negations keep the committed placeholders greppable.
 #
-# Each entry is (prefix, stem, suffix), joined at load. The Anthropic plugin
+# Each entry is (prefix, stem, suffix), joined at load, except the `.env`
+# family, which is written whole: a bare stem `"env"` is a string the same
+# scanner reads as a whole-environment read (#2734, probe-n @ 3525eeb), and
+# `.env` is simply how the path reads. The Anthropic plugin
 # directory's validator reads the literal text of a credential path in shipped
 # code as a credential read (#2734: `credential_at: _supertool_config.py`,
 # `env: ".aws/,"`, then `env: ".netrc"`) -- a line pattern, not a data-flow
@@ -106,10 +109,10 @@ _CREDENTIAL_STEMS_SPELLED_APART_2734: Tuple[Tuple[str, str, str], ...] = (
     (".", "terraform", "/"), (".", "chef", "/"), (".", "npm", "/"),
     ("", "secrets", "/"), ("", "credentials", "/"),
     # Environment files, and the committed placeholders kept visible.
-    (".", "env", "/"), (".", "env", ".*"),
-    ("!.", "env", ".example"), ("!.", "env", ".sample"),
-    ("!.", "env", ".template"), ("!.", "env", ".dist"),
-    ("!.", "env", ".defaults"), ("!.", "env", ".schema"),
+    ("", ".env", "/"), ("", ".env", ".*"),
+    ("!", ".env", ".example"), ("!", ".env", ".sample"),
+    ("!", ".env", ".template"), ("!", ".env", ".dist"),
+    ("!", ".env", ".defaults"), ("!", ".env", ".schema"),
     # Tool credential files.
     (".", "netrc", "/"), ("_", "netrc", "/"), (".", "npmrc", "/"),
     (".", "pypirc", "/"), (".", "git-credentials", "/"),
@@ -628,7 +631,7 @@ def _preset_disclosure() -> str:
 #: way. Checked against that file by `tests/test_release_branch_build_2705.py`
 #: rather than duplicated there -- a second copy of this list is the defect
 #: this comment exists to prevent.
-_DIRECTORY_BUILD_EXCLUDED_PRESETS = {"bluesky", "devto", "hashnode", "slack", "youtube"}
+_DIRECTORY_BUILD_EXCLUDED_PRESETS = {"bluesky", "devto", "hashnode", "slack", "watch", "youtube"}
 
 
 def _find_preset_file(name: str, project_dir: str) -> str | None:

@@ -382,7 +382,7 @@ def test_a_formatter_template_can_still_use_a_dollar_var(tmp_path):
     spec = {
         "cmd": "{python} -c " + json.dumps(_RECORDER) + " "
                + json.dumps(str(record)) + " $" + _TPL_NAME,
-        "env": {_TPL_NAME: _TPL_VALUE},
+        "variables": {_TPL_NAME: _TPL_VALUE},
     }
     supertool._formatter_run_one("probe", spec, str(target))
     assert record.exists(), "formatter never ran — nothing was observed"
@@ -420,7 +420,7 @@ def test_a_validator_template_can_still_use_a_dollar_var(tmp_path):
     record = tmp_path / "seen-validator-ctl.json"
     spec = {"cmd": "{python} -c " + json.dumps(_RECORDER) + " "
                    + json.dumps(str(record)) + " $" + _TPL_NAME,
-            "env": {_TPL_NAME: _TPL_VALUE},
+            "variables": {_TPL_NAME: _TPL_VALUE},
             "cache": False}
     run_one_or_skip("probe", spec, str(target))
     assert record.exists(), "validator never ran — nothing was observed"

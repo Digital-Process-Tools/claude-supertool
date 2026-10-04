@@ -93,13 +93,13 @@ _OPEN_DEFECTS = re.compile(r"^open\s+defects?\b", re.IGNORECASE)
 _FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
 
 _EXTS = ("py|md|json|toml|yml|yaml|sh|bash|cfg|ini|txt|tsv|xml|html|js|ts|"
-         "jsx|tsx|rs|php|rb|go|sql|css|lock|env|service")
+         "jsx|tsx|rs|php|rb|go|sql|css|lock|service")
 # Same reasoning as `_OP_TOK`, and the same anchor. #1188's guard could not see
 # this one until #1241 taught it to read a `+` splice: a whole-value test on
 # author-controlled bytes does not stop being one because the check cannot read
 # it, and for a while this sat three lines from a twin the guard did flag.
 _PATH_TOK = re.compile(
-    r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*\.(?:" + _EXTS + r"))(?::(\d+))?\Z")
+    r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*(?:\.(?:" + _EXTS + r")|\.env))(?::(\d+))?\Z")
 
 # `\Z`, and deliberately not an `anchored-ok` waiver -- writing that sentence
 # used to trip the guard itself, which demanded a reason for an exit nobody had

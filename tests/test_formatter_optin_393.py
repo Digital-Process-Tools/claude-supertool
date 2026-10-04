@@ -66,7 +66,7 @@ def test_explicit_env_standard_counts_as_opt_in(tmp_path: Path) -> None:
     f = root / "Foo.php"
     f.write_text("<?php\\n")
     spec = {"cmd": "phpcbf {file}", "match": "*.php", "hooks_into": ["edit"],
-            "env": {"PHPCBF_STANDARD": "PSR12"}}
+            "variables": {"PHPCBF_STANDARD": "PSR12"}}
     assert supertool._repo_opts_into_formatter("phpcbf", spec, str(f))
 
 
