@@ -955,7 +955,7 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
             if name in _DIRECTORY_BUILD_EXCLUDED_PRESETS:
                 config.setdefault("_preset_warnings", []).append(
                     f"preset {name!r} is not in this build (directory "
-                    f"install); install supertool@dpt-plugins for it"
+                    f"install); install supertool-cli@dpt-plugins for it"
                 )
             else:
                 config.setdefault("_preset_warnings", []).append(
