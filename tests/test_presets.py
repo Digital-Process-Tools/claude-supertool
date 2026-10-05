@@ -182,7 +182,7 @@ class TestMergePresets:
         assert "devto" in warning
         assert "not in this build" in warning
         assert "directory install" in warning
-        assert "dpt-plugins" in warning
+        assert "supertool-cli@dpt-plugins" in warning
 
     def test_ordinary_missing_preset_keeps_the_generic_message(
             self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -23,6 +23,7 @@
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
+    "PRIVACY.md",
     "pyproject.toml",
     "supertool-banner.webp",
     "notifiers/claude-channel/README.md",

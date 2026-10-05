@@ -39,7 +39,7 @@ Supertool merges preset ops at startup — project-level ops always override on 
 credential and send it to their own vendor's API -- the shape the Anthropic
 plugin directory's own review holds on. `.github/release-branch.json` denies
 them from the `release` branch that directory listing tracks; `master` and
-the DPT marketplace install (`/plugin install supertool@dpt-plugins`) carry
+the DPT marketplace install (`/plugin install supertool-cli@dpt-plugins`) carry
 all five as usual ([docs/releasing.md](../releasing.md)). A project config
 that names one of these presets on an install missing them gets told why,
 rather than a bare "not found" ([#2734](https://github.com/Digital-Process-Tools/claude-supertool/issues/2734)).
