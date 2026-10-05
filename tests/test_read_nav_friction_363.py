@@ -180,7 +180,9 @@ def test_glob_direct_match_does_not_announce_retry(tmp_path, restore_cwd) -> Non
 def test_glob_genuine_zero_stays_zero(tmp_path, restore_cwd) -> None:
     os.chdir(tmp_path)
     out = supertool.op_glob("Nope/**/*.php", no_auto_read=True)
-    assert "(0 files)" in out
+    # tmp_path is no git repository, so #2738 says the gitignore filter did
+    # not run: "(0 files, gitignore filter not applied ...)". Still a zero.
+    assert out.lstrip().startswith("(0 files")
 
 
 # ---------------------------------------------------------------------------

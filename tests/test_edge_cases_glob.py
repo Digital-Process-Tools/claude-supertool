@@ -345,7 +345,7 @@ def test_symlink_to_file_outside_cwd_refused_by_default(
     out = supertool.op_glob("*.txt", no_auto_read=True)
     assert "escapes cwd" in out, out
     assert "link.txt" not in out, out
-    assert "(0 files)" not in out, (
+    assert "(0 files" not in out, (
         "a refusal rendered as an empty result set is the absence the tool "
         f"manufactured, indistinguishable from an empty directory: {out!r}"
     )

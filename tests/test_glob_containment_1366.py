@@ -70,7 +70,7 @@ def _assert_refused(out: str) -> None:
     assert "escapes cwd" in out, (
         "the refusal has to name containment, the same word `read` uses for "
         "the same target:" + NL + out)
-    assert "(0 files)" not in out, (
+    assert "(0 files" not in out, (
         "a refusal rendered as an empty result set is the absence the tool "
         "manufactured — indistinguishable from an empty directory:" + NL + out)
 

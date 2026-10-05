@@ -133,7 +133,7 @@ def test_glob_double_star_in_middle_segment(tmp_path: Path, monkeypatch) -> None
     monkeypatch.chdir(tmp_path)
     out = supertool.op_glob("**/TestHelper/**/ConversationHelper*")
     assert "ConversationHelper.class.php" in out, f"got: {out!r}"
-    assert "(0 files)" not in out
+    assert "(0 files" not in out
 
 
 def test_glob_question_mark_is_wildcard(tmp_path: Path, monkeypatch) -> None:

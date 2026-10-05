@@ -123,7 +123,7 @@ class TestGlobRefusesRatherThanInventingAZero:
             self, home: Path) -> None:
         (home / "a.txt").write_text(MARK, encoding="utf-8")
         out = supertool.dispatch("glob:~/*.txt")
-        assert "(0 files)" not in out, out
+        assert "(0 files" not in out, out
         assert "unsupported path form" in out, out
         assert "absolute path" in out, out
 

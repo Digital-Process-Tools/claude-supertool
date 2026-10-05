@@ -89,7 +89,7 @@ def test_op_glob_brace_returns_both_extensions(tmp_files: Path) -> None:
 def test_op_glob_brace_repro_from_issue(tmp_files: Path) -> None:
     """Exact failure mode from issue #161 — should now return matches."""
     out = supertool.op_glob("**/*.{json,xml}:no-auto-read".split(":")[0], no_auto_read=True)
-    assert "(0 files)" not in out
+    assert "(0 files" not in out
 
 
 def test_op_glob_no_braces_unchanged(tmp_files: Path) -> None:
