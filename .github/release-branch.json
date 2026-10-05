@@ -48,6 +48,7 @@
     "presets/watch/README.md",
     "presets/watch/channel.py",
     "presets/watch/radar.py",
+    "presets/watch/watch-mine.sh",
     "presets/watch/sources/",
     "validators/SCHEMA.md",
     "validators/git-status/README.md",
