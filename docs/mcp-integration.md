@@ -112,7 +112,7 @@ Edit `.supertool.json`:
     "php-lsp": {
       "cmd": "cclsp",
       "match": "*.{php,class.php}",
-      "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
+      "variables": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
       "tools": {
         "resolve": "find_workspace_symbols",
         "refs":    "find_references",
@@ -128,7 +128,7 @@ Edit `.supertool.json`:
 
 - `cmd` — what the daemon spawns (an MCP server)
 - `match` — glob; supertool routes ops on matching files through this server
-- `env` — environment for the spawned MCP server
+- `variables` — variables for the spawned MCP server (named `env` before 0.66.0; a spec still using it gets a warning)
 - `tools` — maps supertool op names to MCP tool names exposed by the server. Omit any op you don't want to use; that op falls back to the heuristic path (where one exists)
 - `timeout` — request timeout in seconds (LSP cold-start can be slow; 60s is comfortable)
 - `infra_patterns` — list of substrings that mark a tool result as an infrastructure condition (timeout/overload) rather than a real diagnostic. Some servers (cclsp) swallow their own internal timeout and hand it back as normal text content (e.g. `orchestrator timeout after 3s`) with the MCP `isError` flag unset — without this, `diag` would count that text as a phantom `+1` diagnostic that reads like the edit caused a regression (#346). Matched results are returned prefixed `op: …` so adapters drop them. Defaults to `["orchestrator timeout", "timed out after"]`; the structural `isError` flag is always honored regardless
@@ -567,7 +567,7 @@ binary, the wiring is the same.
    declaring the LSP in `.claude/cclsp.json`.
 
 2. **Add an `mcp` entry to `.supertool.json`** — pick a name, point `cmd` at the MCP
-   server binary, set `match` to the file glob, declare `env` if the server needs it,
+   server binary, set `match` to the file glob, declare `variables` if the server needs them,
    map supertool ops to MCP tool names in `tools`:
 
    ```json
@@ -575,7 +575,7 @@ binary, the wiring is the same.
      "<name>": {
        "cmd": "<mcp-server-binary> [args]",
        "match": "*.<ext>",
-       "env": { ... },
+       "variables": { ... },
        "tools": {
          "resolve": "<MCP tool for symbol→file>",
          "refs":    "<MCP tool for find references>",
@@ -593,7 +593,7 @@ binary, the wiring is the same.
      this process.
    - `match` — fnmatch glob; supertool routes ops on matching `from_file` paths through
      this server. Brace expansion (`*.{php,class.php}`) supported.
-   - `env` — extra env vars passed to the spawned MCP server. Merged onto `os.environ`.
+   - `variables` — extra variables passed to the spawned MCP server, merged onto `os.environ`. Named `env` before 0.66.0 (#2734).
    - `tools` — maps supertool op (`resolve`/`refs`/etc.) to the MCP `tool` name the
      server exposes via `tools/list`. Without this, the op falls through to the
      heuristic path.
@@ -656,7 +656,7 @@ pip install "python-lsp-server[all]"
 "python-lsp": {
   "cmd": "cclsp",
   "match": "*.{py,pyi}",
-  "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
+  "variables": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
   "tools": {
     "resolve": "find_workspace_symbols",
     "refs":    "find_references",
@@ -685,7 +685,7 @@ npm install -g typescript typescript-language-server
 "ts-lsp": {
   "cmd": "cclsp",
   "match": "*.{ts,tsx,js,jsx}",
-  "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
+  "variables": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
   "tools": {
     "resolve": "find_workspace_symbols",
     "refs":    "find_references",
