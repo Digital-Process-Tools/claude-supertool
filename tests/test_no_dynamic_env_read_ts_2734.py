@@ -44,7 +44,12 @@ def test_the_pattern_catches_the_shape_it_is_for() -> None:
 def test_no_shipped_script_reads_the_environment_by_a_variable_name(tmp_path) -> None:
     built = _build(tmp_path)
     scripts = [p for p in built.rglob("*") if p.suffix in SUFFIXES and p.is_file()]
-    assert any(p.name == "channel.ts" for p in scripts), "channel.ts no longer ships -- re-derive this test"
+    # The tenth pass denied notifiers/claude-channel/, and with it every
+    # script in these languages: the sweep below has nothing to read today.
+    # Pinned so it cannot go quietly vacuous: a script that comes back turns
+    # this red, and the sweep then applies to it.
+    shipped = sorted(p.relative_to(built).as_posix() for p in scripts)
+    assert shipped == [], f"a TS/JS script ships again, re-derive this pin: {shipped}"
     found = {}
     for p in scripts:
         hits = _hits(p.read_text(encoding="utf-8", errors="replace"))
