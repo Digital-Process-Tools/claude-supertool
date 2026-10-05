@@ -1818,6 +1818,14 @@ def _stale_base_advisory(target: str, remote: str) -> None:
               "consider rebasing (stale base under review)")
 
 
+def _watch_op_shipped() -> bool:
+
+
+
+    presets = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.isfile(os.path.join(presets, "watch.json"))
+
+
 def _watch_advisory(lookup: MrLookup, flags: set[str]) -> None:
 
 
@@ -1838,6 +1846,12 @@ def _watch_advisory(lookup: MrLookup, flags: set[str]) -> None:
 
 
 
+    if not _watch_op_shipped():
+        if "watch" in flags:
+            print("⚠ :watch requested, but the watch op is not in this build "
+                  "(directory install); install supertool-cli@dpt-plugins for it. "
+                  "Nothing is being watched.")
+        return
     if not lookup.answered and "watch" in flags:
         print(f"⚠ :watch requested, but whether this branch has an open MR/PR "
               f"is UNKNOWN — {lookup.reason}. Nothing is being watched, and "

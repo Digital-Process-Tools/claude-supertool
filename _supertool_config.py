@@ -1121,6 +1121,34 @@ def _config_trust_violation(candidate: str) -> Optional[str]:
     return None
 
 
+def _unread_variable_blocks(config: Dict[str, Any]) -> List[str]:
+
+
+
+
+
+
+
+    found = []
+    for section in ("validators", "formatters", "mcp"):
+        block = config.get(section)
+        if not isinstance(block, dict):
+            continue
+        for name, spec in block.items():
+            if not isinstance(spec, dict) or "variables" in spec:
+                continue
+            for key, value in spec.items():
+                if not isinstance(value, dict) or not value:
+                    continue
+                if all(isinstance(k, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", k)
+                       and isinstance(v, (str, int, float)) for k, v in value.items()):
+                    found.append(
+                        f"{section}.{name}: key {key!r} holds NAME=value pairs that "
+                        f"nothing reads -- a spawned tool's variables go under "
+                        f'"variables" (renamed in 0.66.0, #2734)')
+    return found
+
+
 def _load_config() -> Dict[str, Any]:
 
 
@@ -1198,6 +1226,7 @@ def _load_config() -> Dict[str, Any]:
                         for srv_name, spec in mcp_block.items():
                             if isinstance(spec, dict) and "cmd" in spec:
                                 _mcp_specs[srv_name] = spec
+                    _CONFIG_WARNINGS.extend(_unread_variable_blocks(_CONFIG))
                     return _CONFIG
             except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
 
