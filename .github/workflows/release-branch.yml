@@ -131,12 +131,14 @@ jobs:
           # Two deselects reach into .github/, denied from this tree on purpose
           # (#2705) -- they assert something about the checkout's own dev
           # tooling, not about runtime behaviour, so they cannot pass here.
+          # No file here may load a preset the deny-list drops: test_preset_loader.py
+          # did (devto/bluesky/hashnode) and failed v0.66.0's verify (#2749);
+          # tests/test_release_equiv_slice_2749.py now checks that on every PR.
           select=(
             "tests/test_entry_point_shim_931.py"
             "tests/test_console_entry_point_442.py"
             "tests/test_part_loader_2706.py"
             "tests/test_part_loader_concatenated_ruff_2706.py"
-            "tests/test_preset_loader.py"
             "tests/test_edit_ops.py"
             "tests/test_batch_op.py"
             "tests/test_dispatch_verdict_stale_1359.py"
