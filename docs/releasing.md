@@ -65,8 +65,8 @@ the releaser agent rather than typed by a person.
    Two jobs rather than one so the smoke test -- which runs the plugin's own hooks --
    never holds a token that can push.
 5. **Publish the GitHub release** (the maintainer loop's `scripts/release_publish.py`,
-   reading `CHANGELOG.md` from the local `master` checkout -- never from the release
-   tree, whose `CHANGELOG.md` is cut to the latest section only).
+   reading `CHANGELOG.md` from the local `master` checkout; the release tree carries
+   none).
 6. **The directory picks up the new `release` commit** once the listing's tracked
    branch is pointed at it, through the push webhook or a periodic scan. A version
    with a policy hold waits for an Anthropic reviewer.
@@ -143,9 +143,10 @@ straight from git (`git ls-tree` and `git cat-file`; never the working tree, and
   only; nothing else under `.claude/` ships. `smoke_release_tree.py` now fails
   the build if `hooks/guard-selftest.py` reports the rule "not loaded" in the
   tree it just built.
-- **It cuts `CHANGELOG.md`** to the latest released `## [x.y.z]` section, skipping
-  `[Unreleased]` even when it has entries, plus that section's link and a link to the
-  full file on `master`.
+- **It ships no `CHANGELOG.md`** (0.66.0). Cut to its latest section it repeated in
+  prose the words the directory scanner holds on, and named a shipped path in backticks,
+  which `check_release_tree.py` refuses. `cut_changelog` still runs for a config that
+  names a `changelog`; this one no longer does.
 - **It rewrites links** in every shipped `.md` file that point at a removed path
   (README's `docs/` links) to absolute URLs on `master`: `raw.githubusercontent.com`
   for images, `github.com/.../blob/master` for everything else. Links to files that
