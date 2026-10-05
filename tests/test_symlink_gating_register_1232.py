@@ -312,6 +312,7 @@ REGISTER = {
     'tests/test_session_start_stale_symlink_2071.py::test_a_shape_matching_target_that_does_not_exist_is_not_recognised': P,
     'tests/test_session_start_stale_symlink_2071.py::test_own_stale_symlink_is_recognised_and_repointed': P,
     'tests/test_session_start_stale_symlink_2071.py::test_the_current_symlink_is_still_left_alone_silently': P,
+    'tests/test_renamed_plugin_symlink_2746.py::_setup': P,
     'tests/test_stat.py::test_stat_broken_symlink': B,
     'tests/test_stat.py::test_stat_symlink': B,
     'tests/test_symlink_capability_1143.py::test_the_probe_agrees_with_the_filesystem': E,

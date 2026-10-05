@@ -67,7 +67,7 @@ Two consequences worth stating plainly:
 - **For `.py`, the syntax guarantee is unaffected** — `py-syntax` above is in-process, reads the file itself, and cannot go stale.
 - **For `.php`, `.ts`, `.js`, `.jsx`, `.tsx`, `lsp-diag` was never a post-edit syntax check** and now stops looking like one. If you want a real guarantee for those, configure a parse check with `rollback_on_fail: true` from the table below. The green row that used to be there was not covering you.
 
-If your LSP genuinely re-reads the file on every query, opt back in through the validator's `env` block:
+If your LSP genuinely re-reads the file on every query, opt back in through the validator's `variables` block:
 
 ```json
 "lsp-diag": {
@@ -915,7 +915,7 @@ Full list of `.supertool.json` validator config fields:
 | `timeout`          | Seconds. Default 60.                                                                    |
 | `opt_in`           | If true, validator only runs on explicit request via the `validate` op.                |
 | `tier`             | `"fast"` (default) or `"slow"`. `slow` defers the validator to end-of-call, deduped by `(validator, path)` — runs once per unique pair regardless of how many ops touched the file. See [Slow tier](#slow-tier--defer-to-end-of-call). |
-| `env`              | Optional `{KEY: VAL}` block merged into the subprocess environment. Values are coerced to strings. Useful for pointing wrappers at a project-local binary or config without touching the system environment. |
+| `variables`        | Optional `{KEY: VAL}` block (named `env` before 0.66.0, #2734; a spec still using it gets a warning) merged into the subprocess environment. Values are coerced to strings. Useful for pointing wrappers at a project-local binary or config without touching the system environment. |
 | `mcp_autospawn`    | `true` lets this validator **create** a warm MCP daemon. Default `false`: a validator may use a daemon that is already warm but may not start one, because a cold MCP server indexes for 30-60s (longer on big repos) while the validator's own budget is measured in seconds — the validator is killed, the orphaned daemon keeps its index resident for the full `idle_timeout`. Set `true` only when the validator's `timeout` genuinely covers a cold start. See [MCP integration → daemon lifetime](mcp-integration.md). |
 
 ### env — usage
@@ -937,7 +937,7 @@ Pass tool-specific config without shell exports:
 }
 ```
 
-The `env` block is merged on top of the inherited process environment (`os.environ | spec.env`), so unset keys fall through to whatever the shell already has.
+The `variables` block is merged on top of the inherited process environment (`os.environ | spec.variables`), so unset keys fall through to whatever the shell already has.
 
 ## Slow tier — defer to end of call
 

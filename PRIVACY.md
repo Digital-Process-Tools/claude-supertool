@@ -40,7 +40,7 @@ Ops beyond the built-in file ops are off until a project's `.supertool.json` ena
 
 ### In your system's temporary directory
 
-- `supertool-calls.log`: one line per supertool call, with the time, your login name, a process id, the number of ops, the output size, and **the full command arguments as typed**. Text passed inline to a write op (for example the content of a `paste`) is therefore recorded here. Content passed on standard input (the `@-` form) is not. This file is written on every call, including the calls the session-start hook makes.
+- `supertool-calls.log`: one line per supertool call, with the time, your login name, a process id, how Claude Code was started (its entrypoint value, such as `cli`), the number of ops, the output size, and **the full command arguments as typed**. Text passed inline to a write op (for example the content of a `paste`) is therefore recorded here. Content passed on standard input (the `@-` form) is not. This file is written on every call, including the calls the session-start hook makes.
 - `supertool-images-<user id>-gh/` and `supertool-images-<user id>/`: images attached to GitHub or GitLab issues, downloaded when you read an issue with `gh-issue` or `gl-issue`.
 - `supertool-images-<user id>-traces/`: full CI job logs, when you ask the GitLab job or pipeline ops to save them to disk.
 - `supertool-classify-cache-<user id>/`: the verdict of the content classifier described below, keyed by a hash of the text. The text itself is not stored.

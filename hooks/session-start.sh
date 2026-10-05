@@ -50,8 +50,22 @@ in_foreign_supertool_tree() {
 # #737's refusal above is about a `supertool.py` the checkout owns, which
 # this is not: nothing here is read or executed, only two path strings are
 # compared.
-own_stale_symlink_version() {
+# The plugin was installed as `supertool` before #2736 renamed it
+# supertool-cli. A link into `<marketplace>/supertool/<version>/` is still this
+# hook's own handwriting (#2746): prints the former name, or fails.
+former_name_of() {
     local target="$1" plugin_dir target_dir
+    plugin_dir="$(dirname "$(dirname "$BIN")")"
+    target_dir="$(dirname "$(dirname "$target")")"
+    [ "$(basename "$target")" = "$(basename "$BIN")" ] && [ -n "$target_dir" ] || return 1
+    [ "$(dirname "$target_dir")" = "$(dirname "$plugin_dir")" ] || return 1
+    [ "$target_dir" != "$plugin_dir" ] || return 1
+    [ "$(basename "$target_dir")" = "supertool" ] || return 1
+    basename "$target_dir"
+}
+
+own_stale_symlink_version() {
+    local target="$1" plugin_dir target_dir former
     # A shape match alone is not proof: a symlink can name a version segment
     # that was never installed, including bytes an attacker chose (this
     # target is data a project's own tracked symlink can carry, same as any
@@ -63,6 +77,10 @@ own_stale_symlink_version() {
     plugin_dir="$(dirname "$(dirname "$BIN")")"
     target_dir="$(dirname "$(dirname "$target")")"
     [ "$(basename "$target")" = "$(basename "$BIN")" ] || return 1
+    if former="$(former_name_of "$target")"; then
+        echo "$former $(basename "$(dirname "$target")")"
+        return 0
+    fi
     [ -n "$target_dir" ] && [ "$target_dir" = "$plugin_dir" ] || return 1
     basename "$(dirname "$target")"
 }
@@ -86,6 +104,8 @@ elif [ -L "./supertool" ] && OLD_VERSION="$(own_stale_symlink_version "$(readlin
     else
         echo "> ./supertool pointed at this plugin's own $OLD_VERSION — its own symlink from an earlier release, not a stranger's file. The plugin is now $NEW_VERSION, but repointing it failed; calls will still be answered by $OLD_VERSION until this is fixed by hand."
     fi
+elif [ -L "./supertool" ] && [ ! -e "./supertool" ] && former_name_of "$(readlink "./supertool")" > /dev/null; then
+    echo "> ./supertool points at $(readlink "./supertool"), under this plugin's former name, and that version is no longer installed. Repoint it: ln -sf $BIN ./supertool"
 elif [ -e "./supertool" ] || [ -L "./supertool" ]; then
     echo "> ./supertool already exists here and is not the plugin symlink — leaving it untouched."
 else
