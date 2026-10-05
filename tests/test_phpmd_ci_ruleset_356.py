@@ -135,4 +135,4 @@ def test_explicit_env_ruleset_disables_autodetect(tmp_path: Path) -> None:
     ruleset = sentinel.read_text(encoding="utf-8")
     assert ruleset == "codesize"
     data = json.loads(r.stdout.strip())
-    assert data["ruleset_source"] == "env"
+    assert data["ruleset_source"] == "variable"

@@ -179,8 +179,8 @@ def pr_only() -> list[str]:
     """The `only=` every per-PR poller this source forks should carry.
 
     Computed from `SUPERTOOL_RADAR_TIERS`, which is present in this process's
-    own environment exactly when radar forked it -- `poller_env()` copies the
-    whole environment into every poller it execs, radar's `pr_exclude_events`
+    own environment exactly when radar forked it -- every poller it execs
+    inherits the whole environment (`pin_poller_env()` only adds two pins), radar's `pr_exclude_events`
     included, the same channel every other piece of tier config already
     travels through. A feed started by hand (`watch:github-pr-feed:...`) has
     no such variable set, `read_tiers()` then answers `{}`, and this resolves

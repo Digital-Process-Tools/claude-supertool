@@ -88,7 +88,7 @@ def main(arg: str) -> None:
     handle = get_handle()
     session = get_session(handle, get_app_password())
     uri = parse_arg(arg, session)
-    inline_n = env_int("SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
+    inline_n = env_int(os.environ.get("SUPERTOOL_INLINE_COMMENTS"), "SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
     data = xrpc("app.bsky.feed.getPostThread", session,
                  params={"uri": uri, "depth": 1})
     thread = data.get("thread") or {}

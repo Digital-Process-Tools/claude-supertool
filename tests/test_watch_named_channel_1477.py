@@ -194,13 +194,18 @@ def test_transport_and_channel_resolve_the_same_paths_under_a_name():
     assert got["t_state"] == got["c_state"] == naming.state_dir_for("oss1477"), got
 
 
-def test_an_exec_carries_the_resolved_paths_rather_than_re_deriving_them():
-    """`poller_env` pins what the parent resolved. A poller that re-derived from
+def test_an_exec_carries_the_resolved_paths_rather_than_re_deriving_them(monkeypatch):
+    """`pin_poller_env` pins what the parent resolved. A poller that re-derived from
     the name would move if the name variable failed to survive the exec — a
     fork inherits monkeypatched module state, an exec does not (the reason
-    STATE_DIR was pinned there in the first place)."""
+    STATE_DIR was pinned there in the first place). It writes this process's
+    own environment, which the exec inherits (#2734), so both names are
+    registered with monkeypatch first and restored after."""
     import transport  # noqa: PLC0415
-    env = transport.poller_env()
+    for name in (naming.STATE_DIR_ENV, naming.SOCK_ENV):
+        monkeypatch.setenv(name, os.environ.get(name, ""))
+    transport.pin_poller_env()
+    env = dict(os.environ)
     assert env[naming.STATE_DIR_ENV] == transport.STATE_DIR
     assert env[naming.SOCK_ENV] == transport.SOCK_PATH
 

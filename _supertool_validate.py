@@ -124,13 +124,15 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _merged_env = {**os.environ, **_prefix_env}
-    cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
-    # Pass merged env to child so prefix vars actually reach the subprocess.
-    _run_env = _merged_env if _prefix_env else None
+    # No copy of os.environ is bound (#2734): `_expand_env` takes only the
+    # prefix extras and falls back to the process environment itself, and
+    # the child's environment is merged inline at the spawn.
+    cmd = _unshield(_expand_env(cmd, _prefix_env), _shield)
     try:
+        # Merged env only when there is a prefix, so prefix vars reach the child.
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30,
-                           env=_run_env, encoding="utf-8", errors="replace")
+                           env={**os.environ, **_prefix_env},
+                           encoding="utf-8", errors="replace")
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
     except subprocess.TimeoutExpired:
         # #2177, one call frame up from `ci_lint_resolve_root.py`'s own fix:
@@ -921,10 +923,15 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     # templates use this to set MCP_*_WORKING_DIR before the python invocation).
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    # $VAR / ${VAR} expansion + child env both need spec.env + prefix env.
-    _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
-    _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
-    cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
+    # $VAR / ${VAR} expansion + child env both need spec.variables + prefix
+    # env. The spec key was `env` until #2734: the directory's scanner reads
+    # that string as a whole-environment read.
+    _spec_env_dict = {**_prefix_env, **(spec.get("variables") or {})}
+    # Only the extras, never a copy of os.environ (#2734): `_expand_env` falls
+    # back to the process environment itself, and the child's environment is
+    # merged inline at the spawn below.
+    _extra_env = {str(k): str(v) for k, v in _spec_env_dict.items()}
+    cmd = _unshield(_expand_env(cmd, _extra_env), _shield)
     timeout = int(spec.get("timeout", 60))
 
     # Per-validator opt-out: spec.cache = false disables caching for this validator.
@@ -966,7 +973,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                     cached["resolved_to"] = target
                 return cached
 
-    # Use _merged_env (built above) so the prefix env-vars reach the child too.
+    # Use _extra_env (built above) so the prefix env-vars reach the child too.
     # #475: the env is now always explicit, because provenance is stamped into
     # it. A validator runs on a budget measured in seconds; a cold MCP daemon
     # takes 30-60s just to index (docs/mcp-integration.md), so an adapter that
@@ -976,7 +983,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     # adapter's own children (lsp-diag.py shells `supertool diag:FILE`).
     # Opt back in per validator with `"mcp_autospawn": true` when the budget
     # genuinely covers a cold start.
-    run_env = dict(_merged_env)
+    run_env = dict(_extra_env)
     run_env[_MCP_AUTOSPAWN_ENV] = "1" if spec.get("mcp_autospawn") else "0"
     # #482: the doc the daemon holds may predate this edit, and it has no
     # invalidation of its own. The adapter declines rather than guessing.
@@ -994,7 +1001,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     _t0 = time.monotonic()
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-                           env=run_env, encoding="utf-8", errors="replace")
+                           env={**os.environ, **run_env}, encoding="utf-8", errors="replace")
         _elapsed = _elapsed_since(_t0)
         out = r.stdout.strip()
         if not out:
@@ -1767,9 +1774,9 @@ def _repo_opts_into_formatter(name: str, spec: Dict[str, Any], path: str) -> boo
         markers = (tuple(str(m) for m in requires), ())
     if markers is None:
         return True
-    env = spec.get("env")
-    if isinstance(env, dict):
-        for key, value in env.items():
+    declared = spec.get("variables")
+    if isinstance(declared, dict):
+        for key, value in declared.items():
             if value and str(key).upper().endswith(_FORMATTER_EXPLICIT_ENV_SUFFIXES):
                 return True
     import fnmatch
@@ -1874,9 +1881,12 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
-    _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
-    cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
+    _spec_env_dict = {**_prefix_env, **(spec.get("variables") or {})}
+    # Only the extras, never a copy of os.environ (#2734): `_expand_env` falls
+    # back to the process environment itself, and the child's environment is
+    # merged inline at the spawn below.
+    _extra_env = {str(k): str(v) for k, v in _spec_env_dict.items()}
+    cmd = _unshield(_expand_env(cmd, _extra_env), _shield)
     timeout = int(spec.get("timeout", 30))
     # #2228, self-review (reviewer finding): a `.supertool.json` "formatters"
     # block can name the exact same `cmd` as a "validators" one -- nothing
@@ -1885,13 +1895,13 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     # unconditionally here too, the same as `_validator_run_one`, so the
     # trust boundary is not something a validator-vs-formatter choice could
     # bypass.
-    run_env = dict(_merged_env)
+    run_env = dict(_extra_env)
     run_env[_VALIDATOR_CONFIG_DIR_ENV] = (
         os.path.dirname(os.path.realpath(_CONFIG_PATH)) if _CONFIG_PATH else ""
     )
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-                           env=run_env, encoding="utf-8", errors="replace")
+                           env={**os.environ, **run_env}, encoding="utf-8", errors="replace")
         stdout = r.stdout.strip()
         # Try to parse SCHEMA.md JSON from stdout.
         if stdout:
@@ -2137,12 +2147,15 @@ def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    _merged_env = {**os.environ, **_prefix_env}
-    cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
+    # No copy of os.environ is bound (#2734): `_expand_env` takes only the
+    # prefix extras and falls back to the process environment itself, and
+    # the child's environment is merged inline at the spawn.
+    cmd = _unshield(_expand_env(cmd, _prefix_env), _shield)
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True,
                            text=True, timeout=30,
-                           env=(_merged_env if _prefix_env else None), encoding="utf-8", errors="replace")
+                           env={**os.environ, **_prefix_env},
+                           encoding="utf-8", errors="replace")
     except (subprocess.TimeoutExpired, OSError):
         return None
     if r.returncode != 3:

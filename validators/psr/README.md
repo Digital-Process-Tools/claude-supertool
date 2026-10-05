@@ -23,7 +23,7 @@ Runs [PHP CodeSniffer](https://github.com/squizlabs/PHP_CodeSniffer) on a single
       "hooks_into": [],
       "rollback_on_fail": false,
       "timeout": 30,
-      "env": {
+      "variables": {
         "PSR_BIN": "./vendor/bin/phpcs",
         "PSR_STANDARD": "PSR12",
         "PSR_SEVERITY": "9",

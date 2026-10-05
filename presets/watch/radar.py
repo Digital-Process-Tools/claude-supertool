@@ -242,7 +242,9 @@ def read_tiers(raw: str | None = None) -> tuple[dict[str, dict], list[str]]:
     Nothing here raises. A config this cannot parse yields no tiers plus a
     complaint, which reaches the reader as the refusal plus the reason.
     """
-    raw = os.environ.get(TIERS_ENV, "") if raw is None else raw
+    # Literal name, not the module constant (#2734) -- see TIERS_ENV's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_RADAR_TIERS", "") if raw is None else raw
     raw = raw.strip()
     if not raw:
         return {}, []

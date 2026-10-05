@@ -1,6 +1,6 @@
 """#475 — a caller that cannot wait for a cold daemon must not create one.
 
-The leak: `MCPClient.spawn()` fires a detached `daemon.py --detach` on the first
+The leak: `MCPClient.connect()` fires a detached `daemon.py --detach` on the first
 connect miss, then the daemon reparents to init and lives for the full
 `IDLE_TIMEOUT_SEC` (600s) regardless of whether the caller is still alive. When
 the caller is a validator with a 3s budget, the caller is killed long before a
@@ -75,7 +75,7 @@ class TestAutoSpawnProvenance:
         client = _client_that_will_miss(monkeypatch)
 
         with pytest.raises(MCPServerError):
-            client.spawn()
+            client.connect()
 
         assert popen_calls == [], (
             "#475: a caller that cannot wait for a cold daemon must not create one"
@@ -101,7 +101,7 @@ class TestAutoSpawnProvenance:
         client = _client_that_will_miss(monkeypatch)
 
         with pytest.raises(MCPServerError):
-            client.spawn()
+            client.connect()
 
         assert sleeps == [], (
             f"#475: suppressed spawn must fail fast, not poll a path nobody will "
@@ -130,7 +130,7 @@ class TestAutoSpawnProvenance:
         client = MCPClient(name="py-lsp", timeout=1)
         client._sock_path = f"/tmp/st-475-{uuid.uuid4().hex[:8]}.sock"
         client._auto_spawn = True
-        client.spawn()
+        client.connect()
 
         assert client._sock is not None, "warm daemon must still be connected to"
         assert connects, "expected a connect attempt against the warm socket"
@@ -154,7 +154,7 @@ class TestAutoSpawnProvenance:
         client = _client_that_will_miss(monkeypatch)
 
         with pytest.raises(MCPServerError):
-            client.spawn()
+            client.connect()
 
         assert popen_calls, (
             "interactive callers must keep auto-spawn — the warm daemon has to "
@@ -176,7 +176,7 @@ class TestAutoSpawnProvenance:
         monkeypatch.setenv("SUPERTOOL_MCP_AUTOSPAWN", value)
         client = _client_that_will_miss(monkeypatch)
         with pytest.raises(MCPServerError):
-            client.spawn()
+            client.connect()
 
 
 class TestValidatorProvenance:
@@ -248,7 +248,7 @@ class TestValidatorProvenance:
         captured = self._run(
             monkeypatch, tmp_path,
             {"cmd": "echo {file}", "cache": False,
-             "env": {"MY_VALIDATOR_VAR": "kept"}},
+             "variables": {"MY_VALIDATOR_VAR": "kept"}},
         )
         env = captured["env"]
         assert env.get("MY_VALIDATOR_VAR") == "kept"

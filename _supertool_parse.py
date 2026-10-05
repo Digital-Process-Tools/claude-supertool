@@ -672,7 +672,9 @@ def _read_only_declared() -> bool:
     Same truthy spellings as `_mixed_tree_allowed()` beside it, so one
     convention answers "is this env var set" everywhere in this file.
     """
-    return (os.environ.get(_READ_ONLY_ENV) or "").strip().lower() in (
+    # Literal name, not the module constant (#2734) -- see _READ_ONLY_ENV's
+    # own declaration for why.
+    return (os.environ.get("SUPERTOOL_READ_ONLY") or "").strip().lower() in (
         "1", "true", "yes", "on")
 
 

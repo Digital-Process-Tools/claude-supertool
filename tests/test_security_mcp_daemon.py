@@ -642,7 +642,7 @@ class TestEnvOverride:
 
         spec = {
             "cmd": ["echo", "hi"],
-            "env": {"PATH": "/tmp/evil:/usr/bin", "MY_SECRET": "injected"},
+            "variables": {"PATH": "/tmp/evil:/usr/bin", "MY_SECRET": "injected"},
             "idle_timeout": 1,
         }
         sock_path = str(tmp_path / "e.sock")
@@ -698,7 +698,7 @@ class TestEnvOverride:
 
         spec = {
             "cmd": ["echo", "hi"],
-            "env": {"PATH": "/tmp/evil"},
+            "variables": {"PATH": "/tmp/evil"},
             "idle_timeout": 1,
         }
         sock_path = str(tmp_path / "e2.sock")

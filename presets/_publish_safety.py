@@ -266,7 +266,7 @@ def require_confirm(action: str, preview: str, *, force: bool = False) -> None:
     sys.stderr.write(
         f"ERROR: {action} requires explicit confirmation.\n"
         f"  Preview: {head!r}\n"
-        f"  To proceed: append |force, set SUPERTOOL_NO_PUBLISH_CONFIRM=1,\n"
+        f"  To proceed: append |force, define SUPERTOOL_NO_PUBLISH_CONFIRM=1 as an environment variable,\n"
         f"  or add `\"no_publish_confirm\": true` to .supertool.json.\n"
     )
     sys.exit(2)

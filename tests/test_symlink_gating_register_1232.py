@@ -259,6 +259,7 @@ REGISTER = {
     'tests/test_edge_cases_glob.py::test_symlink_loop_does_not_infinite_loop': A,
     'tests/test_edge_cases_glob.py::test_symlink_to_dir_outside_cwd_traversed_with_followlinks_false': A,
     'tests/test_edge_cases_glob.py::test_symlink_to_file_outside_cwd_included_under_explicit_opt_out': A,
+    'tests/test_direct_hooks_2734.py::test_session_start_relinks_its_own_stale_symlink': P,
     'tests/test_edge_cases_glob.py::test_symlink_to_file_outside_cwd_refused_by_default': A,
     'tests/test_edge_cases_paste_security.py::test_paste_symlink_follows_to_target': B,
     'tests/test_edge_cases_paste_security.py::test_paste_symlink_target_updated_not_replaced': B,

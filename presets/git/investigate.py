@@ -125,8 +125,8 @@ def main() -> int:
         return 1
 
     path = sys.argv[1]
-    commits = env_int("SUPERTOOL_COMMITS", DEFAULT_COMMITS, minimum=1)
-    blame_recent = env_int("SUPERTOOL_BLAME_RECENT", DEFAULT_BLAME_RECENT, minimum=0)
+    commits = env_int(os.environ.get("SUPERTOOL_COMMITS"), "SUPERTOOL_COMMITS", DEFAULT_COMMITS, minimum=1)
+    blame_recent = env_int(os.environ.get("SUPERTOOL_BLAME_RECENT"), "SUPERTOOL_BLAME_RECENT", DEFAULT_BLAME_RECENT, minimum=0)
 
     # Check file exists in repo
     if not os.path.exists(path):

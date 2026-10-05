@@ -825,3 +825,13 @@ def test_grep_delegated_exact_count_is_not_marked(tmp_path: Path, rtk: _RtkStub)
     assert ("(3 results in 1 files, scanned ? files — delegated to rtk, "
             "limit 3)\n") in out
     assert "TRUNCATED" not in out
+
+
+@pytest.fixture(autouse=True)
+def _no_gitignore_clause_outside_a_repo(monkeypatch):
+    """These pin header shapes and rtk delegation in tmp dirs that are not git
+    repositories. Since #2738 such a walk says `gitignore filter not applied
+    (not a git repository)` and declines delegation; that is pinned in
+    tests/test_gitignore_files_2738.py, so it is switched off here rather
+    than threaded through every exact header below."""
+    monkeypatch.setenv("SUPERTOOL_NO_GITIGNORE", "1")

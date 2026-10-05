@@ -16,7 +16,7 @@ Runs [PHPMD](https://phpmd.org/) on a single file and emits SCHEMA.md-compliant 
 
 When `PHPMD_RULESETS` is not set (and `PHPMD_NO_AUTODETECT` is not `1`), the adapter walks up from the file being validated looking for a `gitlab-ci/md/*.xml` directory — the project's CI phpmd ruleset. If found, it runs phpmd with those project XML files **plus** the built-in categories the project does not override (a project XML named `design.xml` supersedes the built-in `design`), mirroring what CI enforces so a local finding matches a CI finding.
 
-The emitted JSON carries a `ruleset_source` field recording which path was taken: `"project"` (auto-detected CI XMLs), `"env"` (explicit `PHPMD_RULESETS`), or `"default"` (built-in fallback).
+The emitted JSON carries a `ruleset_source` field recording which path was taken: `"project"` (auto-detected CI XMLs), `"variable"` (explicit `PHPMD_RULESETS`), or `"default"` (built-in fallback).
 
 ## Example `.supertool.json` snippet
 
@@ -29,7 +29,7 @@ The emitted JSON carries a `ruleset_source` field recording which path was taken
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,
       "timeout": 30,
-      "env": {
+      "variables": {
         "PHPMD_BIN": "./vendor/bin/phpmd",
         "PHPMD_RULESETS": "cleancode,codesize,unusedcode",
         "PHPMD_EXCLUDE": "src/Generated/"

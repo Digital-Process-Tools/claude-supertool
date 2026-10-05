@@ -86,14 +86,14 @@ def resolve_rulesets(file: str) -> tuple[str, str]:
     """Decide the phpmd ruleset argument and its provenance for `file`.
 
     Precedence:
-      1. Explicit PHPMD_RULESETS env  -> ("env")
+      1. Explicit PHPMD_RULESETS      -> ("variable")
       2. Auto-detected project XMLs   -> ("project"), mixed with the built-in
          categories the project does not override (matching CI)
       3. Built-in default             -> ("default")
     """
     env_rulesets = os.environ.get("PHPMD_RULESETS", "")
     if env_rulesets:
-        return env_rulesets, "env"
+        return env_rulesets, "variable"
 
     if os.environ.get("PHPMD_NO_AUTODETECT") != "1":
         project_xmls = find_project_md_rulesets(file)

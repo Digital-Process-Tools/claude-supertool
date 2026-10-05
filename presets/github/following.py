@@ -20,7 +20,7 @@ def main(arg: str) -> int:
     # (#1727). A junk limit falls back to the default, as it always did for
     # every other non-numeric argument.
     n = (int(arg) if _digits.is_ascii_int(arg.strip())
-         else env_int("SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1))
+         else env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1))
     result = subprocess.run(
         ["gh", "api", f"user/following?per_page={min(n, 100)}"],
         capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",

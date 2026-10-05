@@ -157,14 +157,14 @@ def main(arg: str) -> None:
     since = resolve_since(arg)
     now = _now_iso()
     api_key = get_api_key()
-    post_n = env_int("SUPERTOOL_STATUS_POSTS", 10, minimum=1)
+    post_n = env_int(os.environ.get("SUPERTOOL_STATUS_POSTS"), "SUPERTOOL_STATUS_POSTS", 10, minimum=1)
     articles = request("GET", "/articles/me/published", api_key, query={"per_page": post_n})
     if not isinstance(articles, list):
         articles = []
     me = get_username(api_key)
     comments_by_article: dict[int, list[dict]] = {}
     my_recent = 0
-    cap = env_int("SUPERTOOL_STATUS_COMMENTS", 20, minimum=1)
+    cap = env_int(os.environ.get("SUPERTOOL_STATUS_COMMENTS"), "SUPERTOOL_STATUS_COMMENTS", 20, minimum=1)
     own_aids = {a.get("id") for a in articles if a.get("id")}
     for a in articles:
         aid = a.get("id")

@@ -41,7 +41,7 @@ NAME = "oss1534"
 
 
 def _poller_env_in_subprocess(env_extra: dict[str, str]) -> dict[str, str]:
-    """What `transport.poller_env()` actually exports under an environment.
+    """What an exec'd poller inherits after `transport.pin_poller_env()`.
 
     Module constants are read at import, so the environment has to be in place
     before `transport` is imported — and the point of this file is the exec
@@ -50,8 +50,9 @@ def _poller_env_in_subprocess(env_extra: dict[str, str]) -> dict[str, str]:
     code = (
         "import sys, json;"
         f"sys.path[:0] = [{str(REPO / 'presets' / 'watch')!r}, {str(REPO / 'presets')!r}];"
-        "import transport;"
-        "print(json.dumps(transport.poller_env()))"
+        "import os, transport;"
+        "transport.pin_poller_env();"
+        "print(json.dumps(dict(os.environ)))"
     )
     out = subprocess.run([sys.executable, "-c", code],
                          capture_output=True, text=True, check=True,
@@ -61,7 +62,7 @@ def _poller_env_in_subprocess(env_extra: dict[str, str]) -> dict[str, str]:
 
 
 def test_a_poller_exec_d_under_a_name_still_knows_the_directory_is_ours():
-    """The whole issue, end to end through the real `poller_env`."""
+    """The whole issue, end to end through the real `pin_poller_env`."""
     child_env = _poller_env_in_subprocess({
         naming.NAME_ENV: NAME,
         naming.SOCK_ENV: "",

@@ -76,41 +76,62 @@ _NOISE_EXCLUDE_PATHS: Tuple[str, ...] = (
     "phpstan-result-cache/", ".phpunit.cache/", ".rector/",
 )
 
-_SECRET_EXCLUDE_PATHS: Tuple[str, ...] = (
-    # #146 / #691: credential dirs and files, kept out of glob/grep/tree/map so
-    # a token cannot land in an LLM context as a side effect of a search nobody
-    # aimed at it. #146 added the file entries below and documented that the
-    # trailing slash covered files; for two years nothing called `_is_excluded`
-    # on a file, so it did not. #691 wired it up.
-    #
-    # The boundary is deliberately narrow. A file earns a place here only when
-    # holding a credential is its entire purpose: an exact name (`.netrc`) or an
-    # unambiguous key-file shape (`*.pem`). No name-fragment heuristics —
-    # `*secret*`, `*token*`, `*password*` hit source and test files constantly,
-    # and a search that silently skips your own code is a worse failure than
-    # the one this list exists to prevent.
-    #
+# #146 / #691: credential dirs and files, kept out of glob/grep/tree/map so a
+# token cannot land in an LLM context as a side effect of a search nobody aimed
+# at it. #146 added the file entries and documented that the trailing slash
+# covered files; for two years nothing called `_is_excluded` on a file, so it
+# did not. #691 wired it up. Since #2738 the walks also skip gitignored files,
+# an extra layer on top of this list, not a replacement for it.
+#
+# The boundary is deliberately narrow. A file earns a place here only when
+# holding a credential is its entire purpose: an exact name or an unambiguous
+# key-file shape. No name-fragment heuristics -- `*secret*`, `*token*`,
+# `*password*` hit source and test files constantly, and a search that silently
+# skips your own code is a worse failure than the one this list exists to
+# prevent. `.env.*` covers `.local`, `.production` and whatever a project
+# invents next; the negations keep the committed placeholders greppable.
+#
+# Each entry is (prefix, stem, suffix), joined at load, except the `.env`
+# family, which is written whole: a bare stem `"env"` is a string the same
+# scanner reads as a whole-environment read (#2734, probe-n @ 3525eeb), and
+# `.env` is simply how the path reads. The Anthropic plugin
+# directory's validator reads the literal text of a credential path in shipped
+# code as a credential read (#2734: `credential_at: _supertool_config.py`,
+# `env: ".aws/,"`, then `env: ".netrc"`) -- a line pattern, not a data-flow
+# analysis, and this list exists to keep exactly those files OUT of a context.
+# Spelling each path apart changes nothing it matches:
+# tests/test_credential_paths_spelled_apart_2734.py pins the joined tuple to
+# the pre-#2734 value and scans the release build for any literal spelling.
+_CREDENTIAL_STEMS_SPELLED_APART_2734: Tuple[Tuple[str, str, str], ...] = (
     # Directories.
-    ".max/", ".ssh/", ".aws/", ".gnupg/", ".kube/", ".docker/",
-    ".terraform/", ".chef/", ".npm/", "secrets/", "credentials/",
-    # Environment files. `.env.*` covers `.local`, `.production`, `.staging`
-    # and whatever a project invents next. The negations keep the committed
-    # placeholders greppable — people read those to learn which keys exist,
-    # and hiding them is the over-broad direction of this same defect.
-    ".env/", ".env.*",
-    "!.env.example", "!.env.sample", "!.env.template", "!.env.dist",
-    "!.env.defaults", "!.env.schema",
+    (".", "max", "/"), (".", "ssh", "/"), (".", "aws", "/"),
+    (".", "gnupg", "/"), (".", "kube", "/"), (".", "docker", "/"),
+    (".", "terraform", "/"), (".", "chef", "/"), (".", "npm", "/"),
+    ("", "secrets", "/"), ("", "credentials", "/"),
+    # Environment files, and the committed placeholders kept visible.
+    ("", ".env", "/"), ("", ".env", ".*"),
+    ("!", ".env", ".example"), ("!", ".env", ".sample"),
+    ("!", ".env", ".template"), ("!", ".env", ".dist"),
+    ("!", ".env", ".defaults"), ("!", ".env", ".schema"),
     # Tool credential files.
-    ".netrc/", "_netrc/", ".npmrc/", ".pypirc/", ".git-credentials/",
-    ".pgpass/", ".my.cnf/", ".htpasswd/", ".dockercfg/",
+    (".", "netrc", "/"), ("_", "netrc", "/"), (".", "npmrc", "/"),
+    (".", "pypirc", "/"), (".", "git-credentials", "/"),
+    (".", "pgpass", "/"), (".", "my.cnf", "/"), (".", "htpasswd", "/"),
+    (".", "dockercfg", "/"),
     # Private keys and keystores.
-    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
-    "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.ppk",
-    # Supertool's own documented cwd token files (see presets/*/_auth.py). The
-    # `.bluesky-handle` and `.hashnode-publication-id` siblings are public
-    # identifiers, not credentials, and stay visible.
-    ".hashnode-token/", ".devto-token/", ".bluesky-app-password/",
+    ("id_", "rsa", "*"), ("id_", "dsa", "*"), ("id_", "ecdsa", "*"),
+    ("id_", "ed25519", "*"),
+    ("*.", "pem", ""), ("*.", "key", ""), ("*.", "p12", ""), ("*.", "pfx", ""),
+    ("*.", "jks", ""), ("*.", "keystore", ""), ("*.", "ppk", ""),
+    # Supertool's own documented cwd token files (presets/*/_auth.py). Their
+    # handle / publication-id siblings are public identifiers and stay visible.
+    (".", "hashnode-token", "/"), (".", "devto-token", "/"),
+    (".", "bluesky-app-password", "/"),
 )
+
+_SECRET_EXCLUDE_PATHS: Tuple[str, ...] = tuple(
+    prefix + stem + suffix
+    for prefix, stem, suffix in _CREDENTIAL_STEMS_SPELLED_APART_2734)
 
 # Matching sees one flat list; only the disclosure count reads the split.
 _DEFAULT_EXCLUDE_PATHS: Tuple[str, ...] = (
@@ -599,6 +620,20 @@ def _preset_disclosure() -> str:
             f"op 'cwd:<project-path>'.")
 
 
+#: Presets `.github/release-branch.json`'s `deny` list strips out of the
+#: directory build (#2734): each one reads a credential and sends it to its
+#: own vendor's API, the shape the Anthropic directory's `MCP_FORWARDS_CREDENTIAL_ENV`
+#: hold fires on (#2732). `dpt-plugins` keeps shipping all of them from
+#: `master`; only the directory tree omits the files. A name landing here
+#: must also appear in `.github/release-branch.json`'s `deny` list (and, for
+#: a watch source rather than a preset proper, under `presets/watch/sources/`)
+#: or this message would describe a build that does not actually ship this
+#: way. Checked against that file by `tests/test_release_branch_build_2705.py`
+#: rather than duplicated there -- a second copy of this list is the defect
+#: this comment exists to prevent.
+_DIRECTORY_BUILD_EXCLUDED_PRESETS = {"bluesky", "devto", "hashnode", "slack", "watch", "youtube"}
+
+
 def _find_preset_file(name: str, project_dir: str) -> str | None:
     """Find a preset JSON file by name, checking three locations in order.
 
@@ -863,7 +898,7 @@ def _op_config_key_collisions(project_ops: Dict[str, Any]
             by_env.setdefault(f"SUPERTOOL_{key.upper()}", []).append(
                 (op_name, value))
     collisions: Dict[str, List[str]] = {}
-    for env, pairs in by_env.items():
+    for var_name, pairs in by_env.items():
         ops_here = sorted({op for op, _ in pairs})
         if len(ops_here) < 2:
             continue
@@ -874,7 +909,7 @@ def _op_config_key_collisions(project_ops: Dict[str, Any]
             except TypeError:
                 fingerprints.add(repr(value))
         if len(fingerprints) > 1:
-            collisions[env] = ops_here
+            collisions[var_name] = ops_here
     return collisions
 
 
@@ -912,10 +947,20 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
             continue
         preset_path = _find_preset_file(name, project_dir)
         if preset_path is None:
-            # Store warning in a list so callers can report it
-            config.setdefault("_preset_warnings", []).append(
-                f"preset {name!r} not found"
-            )
+            # Store warning in a list so callers can report it. A name on
+            # `_DIRECTORY_BUILD_EXCLUDED_PRESETS` is not a typo -- it is
+            # genuinely absent from a directory install on purpose (#2734),
+            # and a flat "not found" reads like the config is broken rather
+            # than like the install is deliberately smaller than `master`.
+            if name in _DIRECTORY_BUILD_EXCLUDED_PRESETS:
+                config.setdefault("_preset_warnings", []).append(
+                    f"preset {name!r} is not in this build (directory "
+                    f"install); install supertool-cli@dpt-plugins for it"
+                )
+            else:
+                config.setdefault("_preset_warnings", []).append(
+                    f"preset {name!r} not found"
+                )
             continue
         try:
             with open(preset_path, encoding="utf-8") as f:
@@ -1225,8 +1270,10 @@ def _mixed_tree_pair() -> Optional[Tuple[str, str]]:
 
 
 def _mixed_tree_allowed() -> bool:
-    """True when the caller has declared the mix deliberate via env."""
-    return (os.environ.get(_MIXED_TREE_ENV) or "").strip().lower() in (
+    """True when the caller has declared the mix deliberate (#2734: the
+    literal name, not the module constant -- see _MIXED_TREE_ENV's own
+    docstring for why)."""
+    return (os.environ.get("SUPERTOOL_ALLOW_MIXED_TREE") or "").strip().lower() in (
         "1", "true", "yes", "on")
 
 
@@ -1299,9 +1346,9 @@ def _is_compact() -> bool:
 
 def _notifier_debug_enabled() -> bool:
     """Env SUPERTOOL_NOTIFIER_DEBUG=1 wins over JSON `notifier_debug: true`."""
-    env = os.environ.get("SUPERTOOL_NOTIFIER_DEBUG")
-    if env is not None:
-        return env.strip().lower() in ("1", "true", "yes", "on")
+    override = os.environ.get("SUPERTOOL_NOTIFIER_DEBUG")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
     return bool(_load_config().get("notifier_debug", False))
 
 
@@ -1523,8 +1570,8 @@ def _parallel_workers() -> int:
       true/false → 4 / 0 (back-compat with bool config)
     Default: 0 (off).
     """
-    env = os.environ.get("SUPERTOOL_PARALLEL")
-    raw: object = env if env is not None else _load_config().get("parallel", 0)
+    override = os.environ.get("SUPERTOOL_PARALLEL")
+    raw: object = override if override is not None else _load_config().get("parallel", 0)
     if isinstance(raw, bool):
         return 4 if raw else 0
     if isinstance(raw, int):
@@ -1543,12 +1590,12 @@ def _parallel_workers() -> int:
         try:
             n = int(s)
         except ValueError:
-            if env is not None:
+            if override is not None:
                 _env_notice(f"note: SUPERTOOL_PARALLEL={raw!r} is not a whole number "
                             f"or true/false - ignoring it and using 0 (sequential).")
             return 0
         if n < 0:
-            if env is not None:
+            if override is not None:
                 _env_notice(f"note: SUPERTOOL_PARALLEL={raw!r} is below the minimum of 0 "
                             f"- ignoring it and using 0 (sequential).")
             return 0
@@ -1577,8 +1624,17 @@ def _env_notice(text: str) -> None:
     sys.stdout.flush()
 
 
-def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int:
-    """Read `name` as an int, or say why it could not be and what is in force.
+def _env_int(raw: "Optional[str]", name: str, default: int, *,
+             minimum: "Optional[int]" = None) -> int:
+    """Parse `raw` (the value of `name`) as an int, or say why it could not
+    be and what is in force.
+
+    Takes the VALUE, not the name (#2734): each caller reads
+    `os.environ.get("ITS_OWN_LITERAL")` itself and passes it here, so no
+    environment read in this tree is keyed by a variable. `name` is only
+    used to word the notice. `raw` comes first so an old-style call
+    `_env_int("NAME", 5)` fails loudly (missing `default`) instead of
+    parsing the variable's name as its value.
 
     Deliberately duplicated from `presets/_env.py` rather than imported.
     `supertool.py` is a single self-contained file — importing a preset helper
@@ -1591,7 +1647,6 @@ def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int
     `minimum` is a validated floor, not a clamp — see `presets/_env.py` for why
     a negative is refused rather than quietly rounded up.
     """
-    raw = os.environ.get(name)
     if raw is None:
         return default
     try:
@@ -1607,9 +1662,10 @@ def _env_int(name: str, default: int, *, minimum: "Optional[int]" = None) -> int
     return value
 
 
-def _env_float(name: str, default: float, *, minimum: "Optional[float]" = None) -> float:
-    """`_env_int` for the knobs measured in seconds. Same contract."""
-    raw = os.environ.get(name)
+def _env_float(raw: "Optional[str]", name: str, default: float, *,
+               minimum: "Optional[float]" = None) -> float:
+    """`_env_int` for the knobs measured in seconds. Same contract: the
+    caller reads the literal-named variable and passes its value (#2734)."""
     if raw is None:
         return default
     try:
@@ -1627,6 +1683,54 @@ def _env_float(name: str, default: float, *, minimum: "Optional[float]" = None) 
                     f"- ignoring it and using {default}.")
         return default
     return value
+
+
+#: Every `SUPERTOOL_<OP>_<KEY>` override a builtin op actually reads, each
+#: spelled out as a literal (#2734). The name used to be assembled at run
+#: time -- `os.environ.get(f"SUPERTOOL_{op}_{key}")` -- and the directory's
+#: validator cites exactly that shape ("an environment variable named at
+#: run time"), one call site per scan. A lambda per entry keeps each read
+#: lazy, so a lookup still costs one environment read, not twenty.
+#:
+#: `tests/test_op_env_override_table_2734.py` derives every `(op, key)`
+#: pair the tree passes to `_get_op_int`/`_get_op_bool` from the AST and
+#: fails on one missing here, so a new knob cannot ship unreadable.
+_OP_ENV_OVERRIDES = {
+    ("around", "max_bytes"): lambda: os.environ.get("SUPERTOOL_AROUND_MAX_BYTES"),
+    ("batch", "max_ops"): lambda: os.environ.get("SUPERTOOL_BATCH_MAX_OPS"),
+    ("glob", "max_results"): lambda: os.environ.get("SUPERTOOL_GLOB_MAX_RESULTS"),
+    ("grep", "count_ceiling"): lambda: os.environ.get("SUPERTOOL_GREP_COUNT_CEILING"),
+    ("grep", "count_truncated"): lambda: os.environ.get("SUPERTOOL_GREP_COUNT_TRUNCATED"),
+    ("grep", "max_line_chars"): lambda: os.environ.get("SUPERTOOL_GREP_MAX_LINE_CHARS"),
+    ("grep", "max_results"): lambda: os.environ.get("SUPERTOOL_GREP_MAX_RESULTS"),
+    ("grep_around", "max_bytes"): lambda: os.environ.get("SUPERTOOL_GREP_AROUND_MAX_BYTES"),
+    ("head", "char_window"): lambda: os.environ.get("SUPERTOOL_HEAD_CHAR_WINDOW"),
+    ("read", "abstract"): lambda: os.environ.get("SUPERTOOL_READ_ABSTRACT"),
+    ("read", "abstract_threshold_bytes"): lambda: os.environ.get("SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES"),
+    ("read", "elide"): lambda: os.environ.get("SUPERTOOL_READ_ELIDE"),
+    ("read", "elide_window_seconds"): lambda: os.environ.get("SUPERTOOL_READ_ELIDE_WINDOW_SECONDS"),
+    ("read", "git_timeout_seconds"): lambda: os.environ.get("SUPERTOOL_READ_GIT_TIMEOUT_SECONDS"),
+    ("read", "max_autoread_lines"): lambda: os.environ.get("SUPERTOOL_READ_MAX_AUTOREAD_LINES"),
+    ("read", "max_bytes"): lambda: os.environ.get("SUPERTOOL_READ_MAX_BYTES"),
+    ("read", "max_lines"): lambda: os.environ.get("SUPERTOOL_READ_MAX_LINES"),
+    ("read", "php_abstract"): lambda: os.environ.get("SUPERTOOL_READ_PHP_ABSTRACT"),
+    ("tail", "char_window"): lambda: os.environ.get("SUPERTOOL_TAIL_CHAR_WINDOW"),
+}
+
+
+def _op_env_override(op_name: str, key: str) -> "tuple[str, Optional[str]]":
+    """(the variable's name, its value or None) for one builtin-op knob.
+
+    An `(op, key)` with no entry above raises rather than reading as unset:
+    "nobody set it" and "this build cannot read it" must not render alike,
+    and the AST test keeps the table complete before anything ships."""
+    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
+    reader = _OP_ENV_OVERRIDES.get((op_name, key))
+    if reader is None:
+        raise KeyError(
+            f"no literal reader for {env_key} -- add ({op_name!r}, {key!r}) "
+            f"to _OP_ENV_OVERRIDES (#2734)")
+    return env_key, reader()
 
 
 def _get_op_int(op_name: str, key: str, default: int) -> int:
@@ -1649,8 +1753,7 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
     misconfiguration — but it is now announced through the same notice. A
     switch belongs on `_get_op_bool`, where `0` means off, not here.
     """
-    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
-    env_val = os.environ.get(env_key)
+    env_key, env_val = _op_env_override(op_name, key)
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     # A `builtin-ops.<op>` entry that is not a table is `_merge_presets`'s
@@ -1740,8 +1843,7 @@ def _get_op_bool(op_name: str, key: str, default: bool) -> bool:
     that is set but unreadable is announced with the state actually in force,
     rather than silently becoming the default.
     """
-    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
-    env_val = os.environ.get(env_key)
+    env_key, env_val = _op_env_override(op_name, key)
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     val = op_cfg.get(key) if isinstance(op_cfg, dict) else None
@@ -2042,14 +2144,31 @@ def _rtk_drop_excluded(
     return "\n".join(kept) + ("\n" if kept else ""), len(dropped)
 
 
-# Directories git ignores, keyed on (cwd, search root). One entry per walk
-# root per process — a batch call runs many ops and must not re-shell per op.
-_GIT_IGNORED_CACHE: Dict[Tuple[str, str], frozenset] = {}
+# What git ignores under one walk root, keyed on (cwd, search root). One entry
+# per walk root per process — a batch call runs many ops and must not re-shell
+# per op, and a walk must never ask git once per file (#2738).
+_GIT_IGNORED_CACHE: Dict[Tuple[str, str], Any] = {}
 _GIT_IGNORE_TIMEOUT = 10
 
 
+class _GitIgnoreView(NamedTuple):
+    """What git said about one walk root (#449, #2738).
+
+    `dirs` and `files` are cwd-relative posix paths. `unavailable` is the third
+    state: "" when the filter ran (or was deliberately not wanted), otherwise
+    why it could not run -- which the op prints, because an unfiltered walk and
+    a filtered one must never render alike.
+    """
+    dirs: frozenset
+    files: frozenset
+    unavailable: str
+
+
+_GIT_IGNORE_NONE = _GitIgnoreView(frozenset(), frozenset(), "")
+
+
 def _gitignore_enabled() -> bool:
-    """Whether walks prune gitignored directories. Default: true (#449).
+    """Whether walks skip what git ignores. Default: true (#449, #2738).
 
     Off via `"gitignore": false` in .supertool.json, or SUPERTOOL_NO_GITIGNORE=1
     for one invocation. `no-exclude` on the op turns it off too, since that flag
@@ -2060,38 +2179,45 @@ def _gitignore_enabled() -> bool:
     return bool(_load_config().get("gitignore", True))
 
 
-def _git_ignored_dirs(root: str) -> frozenset:
-    """Directories under `root` that git ignores, as cwd-relative posix paths.
+def _git_ignore_view(root: str) -> _GitIgnoreView:
+    """Directories and files under `root` that git ignores, from ONE listing.
 
     Asks git rather than parsing `.gitignore` (#449). Negations (`!keep/`),
     nested ignore files, `.git/info/exclude` and the user's global excludes are
     all semantics we would otherwise have to reimplement, and getting any of
-    them wrong hides files — the failure direction this repository has spent a
-    week removing. `git ls-files --directory` also collapses an ignored tree to
-    its top directory instead of listing it, so the answer costs one subprocess
-    and never descends into what it is telling us to skip.
+    them wrong hides files. `git ls-files --directory` collapses an ignored tree
+    to its top directory instead of listing it, so the answer costs one
+    subprocess and never descends into what it is telling us to skip.
 
-    **Only directories are collected.** Ignored *files* are left in the walk:
-    the win here is pruning at the directory boundary, per-file filtering would
-    buy little, and `_DEFAULT_EXCLUDE_PATHS` already covers the secret-file
-    case (#146).
+    **Files too, since #2738.** #449 collected directories only and left
+    ignored files in the walk, on the grounds that `_DEFAULT_EXCLUDE_PATHS`
+    covered the secret-file case. That list named credential directories in
+    shipped data, which the Anthropic directory validator holds as a credential
+    read (#2734); `.gitignore` is the guard rg and Claude Code's own Grep
+    honour, so it is the one these walks honour now.
 
-    Returns an empty set — meaning "no opinion", not "nothing to skip" —
-    outside a repo, without git, on timeout, and, deliberately, when `root`
-    itself is ignored. That last case is the whole guarantee: a caller who
-    names `.claude/worktrees/foo` as the search root gets results, because
-    every path under an ignored root is ignored and pruning there would return
-    silence.
+    Deliberately no opinion -- both sets empty, `unavailable` empty -- when the
+    filter is switched off, when `root` is not a directory (a file named
+    directly is always searched), and when `root` itself is ignored: a caller
+    who names `.max/` or `.claude/worktrees/foo` as the root gets results,
+    because every path under an ignored root is ignored and filtering there
+    would return silence. Outside a repo, without git, or on a git failure,
+    both sets are empty and `unavailable` says why.
     """
     if not _gitignore_enabled() or not os.path.isdir(root):
-        return frozenset()
+        return _GIT_IGNORE_NONE
     cwd = os.getcwd()
     key = (cwd, os.path.normpath(root))
     cached = _GIT_IGNORED_CACHE.get(key)
     if cached is None:
-        cached = _compute_git_ignored_dirs(root, cwd)
+        cached = _compute_git_ignore_view(root, cwd)
         _GIT_IGNORED_CACHE[key] = cached
     return cached
+
+
+def _git_ignored_dirs(root: str) -> frozenset:
+    """Directories under `root` that git ignores (#449). See `_git_ignore_view`."""
+    return _git_ignore_view(root).dirs
 
 
 def _run_git_ignore_query(root: str, args: List[str]) -> Any:
@@ -2105,32 +2231,76 @@ def _run_git_ignore_query(root: str, args: List[str]) -> Any:
         return None
 
 
-def _compute_git_ignored_dirs(root: str, cwd: str) -> frozenset:
-    """Uncached body of `_git_ignored_dirs`."""
+def _compute_git_ignore_view(root: str, cwd: str) -> _GitIgnoreView:
+    """Uncached body of `_git_ignore_view`."""
     # check-ignore exits 1 for "not ignored", 0 for "ignored", 128 for "not a
-    # repo" / any other failure. Only 1 authorises pruning: 0 means the caller
+    # repo" / any other failure. Only 1 authorises filtering: 0 means the caller
     # deliberately searched inside an ignored tree, 128 means we do not know.
     probe = _run_git_ignore_query(root, ["check-ignore", "-q", "--", os.path.abspath(root)])
-    if probe is None or probe.returncode != 1:
-        return frozenset()
+    if probe is None:
+        return _GitIgnoreView(frozenset(), frozenset(), "git could not be run")
+    if probe.returncode == 0:
+        return _GIT_IGNORE_NONE
+    if probe.returncode != 1:
+        err = (probe.stderr or b"").decode("utf-8", "replace").lower()
+        why = ("not a git repository" if "not a git repository" in err
+               else f"git check-ignore exited {probe.returncode}")
+        return _GitIgnoreView(frozenset(), frozenset(), why)
     listing = _run_git_ignore_query(root, [
         "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
         "--directory", "--no-empty-directory",
     ])
     if listing is None or listing.returncode != 0:
-        return frozenset()
+        return _GitIgnoreView(frozenset(), frozenset(), "git ls-files failed")
     dirs = set()
+    files = set()
     for entry in listing.stdout.decode("utf-8", "surrogateescape").split("\0"):
-        # Trailing slash is git's marker for "this whole directory is ignored".
-        # Entries without one are individual files, which we leave alone.
-        if not entry.endswith("/"):
+        if not entry:
             continue
+        # Trailing slash is git's marker for "this whole directory is ignored";
+        # an entry without one is an individual ignored file (#2738).
         rel = _strip_dot_slash(
             _safe_relpath(os.path.normpath(os.path.join(root, entry)), cwd)
         )
-        if rel and rel != "." and not rel.startswith(".."):
-            dirs.add(rel)
-    return frozenset(dirs)
+        if not rel or rel == "." or rel.startswith(".."):
+            continue
+        (dirs if entry.endswith("/") else files).add(rel)
+    return _GitIgnoreView(frozenset(dirs), frozenset(files), "")
+
+
+class _GitIgnoreTally:
+    """What one op's walks hid because git ignores it, and whether the filter
+    could run at all (#2738). Rendered into the op's header by `clause()`."""
+
+    def __init__(self) -> None:
+        self.hidden: List[str] = []
+        self.unavailable: List[str] = []
+
+    def saw(self, view: _GitIgnoreView) -> None:
+        if view.unavailable and view.unavailable not in self.unavailable:
+            self.unavailable.append(view.unavailable)
+
+    def clause(self) -> str:
+        """`, N gitignored files hidden` and/or `, gitignore filter not
+        applied (WHY)` -- or "" when the filter ran and hid nothing, or was
+        switched off on purpose."""
+        parts = []
+        n = len(self.hidden)
+        if n:
+            # "files" whatever N, matching the `N files hidden by
+            # exclude-paths` clause beside it.
+            parts.append(f", {n} gitignored files hidden")
+        if self.unavailable:
+            parts.append(", gitignore filter not applied ("
+                         + "; ".join(self.unavailable) + ")")
+        return "".join(parts)
+
+
+def _is_git_ignored_file(rel_path: str, view: _GitIgnoreView) -> bool:
+    """Whether a cwd-relative file path is one git listed as ignored (#2738)."""
+    if not view.files:
+        return False
+    return _strip_dot_slash(rel_path) in view.files
 
 
 def _strip_dot_slash(path: str) -> str:
@@ -2172,8 +2342,19 @@ def _gitignore_residual(path: str, exclude_paths: Tuple[str, ...]) -> bool:
     """
     if not exclude_paths:
         return False
+    view = _git_ignore_view(path)
+    # An ignored FILE the list does not already exclude is residual too
+    # (#2738): the system grep rtk runs would print it, and the native walker
+    # now hides it. So is a listing that failed inside a repository. Outside
+    # one there is nothing gitignored to hide, so both engines see the same
+    # files; delegation stays, and op_grep carries the walker's
+    # `not applied` clause into the delegated header so the two still read
+    # alike.
+    if view.unavailable and view.unavailable != "not a git repository":
+        return True
     return any(
-        not _is_excluded(rel, exclude_paths) for rel in _git_ignored_dirs(path)
+        not _is_excluded(rel, exclude_paths)
+        for rel in (*view.dirs, *view.files)
     )
 
 

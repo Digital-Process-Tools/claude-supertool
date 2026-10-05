@@ -77,6 +77,7 @@ _EXCLUDED_TOP_DIRS = {"tests", "trap.d"}
 # ceiling breach instead of vanishing the same way the first two did before
 # this review caught it (auditor spawn, #2440 self-review).
 _KNOWN_BINARY_ASSETS = frozenset({
+    ".claude-plugin/icon.png",
     "notifiers/cursor-witness/extension/icon.png",
     "supertool-banner.webp",
 })

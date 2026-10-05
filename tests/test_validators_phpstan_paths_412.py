@@ -252,9 +252,9 @@ def test_helper_takes_the_env_var_name_so_a_second_adapter_can_reuse_it(
     monkeypatch.setenv("SOME_OTHER_MCP_PATHS", str(tmp_path / "src"))
     outside = str(tmp_path / "tests" / "FooTest.php")
     inside = str(tmp_path / "src" / "Foo.php")
-    reason = ref.outside_roots(outside, "SOME_OTHER_MCP_PATHS")
+    reason = ref.outside_roots(outside, "SOME_OTHER_MCP_PATHS", os.environ.get("SOME_OTHER_MCP_PATHS", ""))
     assert reason and "SOME_OTHER_MCP_PATHS" in reason
-    assert ref.outside_roots(inside, "SOME_OTHER_MCP_PATHS") is None
+    assert ref.outside_roots(inside, "SOME_OTHER_MCP_PATHS", os.environ.get("SOME_OTHER_MCP_PATHS", "")) is None
 
 
 def test_helper_accepts_both_pathsep_and_comma_separated_roots(
@@ -263,9 +263,9 @@ def test_helper_accepts_both_pathsep_and_comma_separated_roots(
     a, b = tmp_path / "src", tmp_path / "lib"
     for sep in (os.pathsep, ","):
         monkeypatch.setenv(PATHS_ENV, f"{a}{sep}{b}")
-        assert ref.outside_roots(str(a / "Foo.php"), PATHS_ENV) is None
-        assert ref.outside_roots(str(b / "Bar.php"), PATHS_ENV) is None
-        assert ref.outside_roots(str(tmp_path / "t" / "T.php"), PATHS_ENV)
+        assert ref.outside_roots(str(a / "Foo.php"), PATHS_ENV, os.environ.get(PATHS_ENV, "")) is None
+        assert ref.outside_roots(str(b / "Bar.php"), PATHS_ENV, os.environ.get(PATHS_ENV, "")) is None
+        assert ref.outside_roots(str(tmp_path / "t" / "T.php"), PATHS_ENV, os.environ.get(PATHS_ENV, ""))
 
 
 def test_helper_ignores_empty_entries_between_separators(
@@ -275,7 +275,7 @@ def test_helper_ignores_empty_entries_between_separators(
     ref = _refusal_mod()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(PATHS_ENV, f"{tmp_path / 'src'}{os.pathsep}{os.pathsep},")
-    assert ref.outside_roots(str(tmp_path / "tests" / "T.php"), PATHS_ENV)
+    assert ref.outside_roots(str(tmp_path / "tests" / "T.php"), PATHS_ENV, os.environ.get(PATHS_ENV, ""))
 
 
 def test_helper_matches_the_root_directory_itself(
@@ -283,11 +283,11 @@ def test_helper_matches_the_root_directory_itself(
     ref = _refusal_mod()
     root = tmp_path / "src"
     monkeypatch.setenv(PATHS_ENV, str(root))
-    assert ref.outside_roots(str(root), PATHS_ENV) is None
+    assert ref.outside_roots(str(root), PATHS_ENV, os.environ.get(PATHS_ENV, "")) is None
 
 
 def test_helper_returns_none_when_the_var_is_absent(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ref = _refusal_mod()
     monkeypatch.delenv(PATHS_ENV, raising=False)
-    assert ref.outside_roots(str(tmp_path / "anything.php"), PATHS_ENV) is None
+    assert ref.outside_roots(str(tmp_path / "anything.php"), PATHS_ENV, os.environ.get(PATHS_ENV, "")) is None

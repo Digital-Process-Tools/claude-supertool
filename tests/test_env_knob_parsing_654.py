@@ -23,6 +23,7 @@ is the regression lock on that.
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -113,13 +114,13 @@ def test_good_value_is_honoured_and_silent(env_mod, monkeypatch, capsys):
     environment and always returned the default.
     """
     monkeypatch.setenv("SUPERTOOL_MAX_COMMITS", "7")
-    assert env_mod.env_int("SUPERTOOL_MAX_COMMITS", 20) == 7
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", 20) == 7
     assert capsys.readouterr().out == ""
 
 
 def test_unset_uses_default_and_is_silent(env_mod, monkeypatch, capsys):
     monkeypatch.delenv("SUPERTOOL_MAX_COMMITS", raising=False)
-    assert env_mod.env_int("SUPERTOOL_MAX_COMMITS", 20) == 20
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", 20) == 20
     assert capsys.readouterr().out == ""
 
 
@@ -130,7 +131,7 @@ def test_junk_value_falls_back_and_names_all_three(env_mod, monkeypatch, capsys)
     default` — the silent repair this issue forbids.
     """
     monkeypatch.setenv("SUPERTOOL_MAX_COMMITS", "x")
-    assert env_mod.env_int("SUPERTOOL_MAX_COMMITS", 20) == 20
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", 20) == 20
 
     out = capsys.readouterr().out
     assert "SUPERTOOL_MAX_COMMITS" in out, "the variable is not named"
@@ -143,7 +144,7 @@ def test_junk_value_falls_back_and_names_all_three(env_mod, monkeypatch, capsys)
 def test_empty_value_is_declined_not_silently_defaulted(env_mod, monkeypatch, capsys):
     """`SUPERTOOL_MAX_COMMITS=` is a set-but-unusable knob, not an unset one."""
     monkeypatch.setenv("SUPERTOOL_MAX_COMMITS", "")
-    assert env_mod.env_int("SUPERTOOL_MAX_COMMITS", 20) == 20
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", 20) == 20
     out = capsys.readouterr().out
     assert "SUPERTOOL_MAX_COMMITS" in out
     assert "using 20" in out
@@ -151,7 +152,7 @@ def test_empty_value_is_declined_not_silently_defaulted(env_mod, monkeypatch, ca
 
 def test_float_value_for_int_knob_is_declined(env_mod, monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_MAX_COMMITS", "2.5")
-    assert env_mod.env_int("SUPERTOOL_MAX_COMMITS", 20) == 20
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", 20) == 20
     assert "SUPERTOOL_MAX_COMMITS" in capsys.readouterr().out
 
 
@@ -169,7 +170,7 @@ def test_below_minimum_is_declined_out_loud(env_mod, monkeypatch, capsys):
     again wearing a different hat.
     """
     monkeypatch.setenv("SUPERTOOL_MAX_COMMITS", "-5")
-    assert env_mod.env_int("SUPERTOOL_MAX_COMMITS", 20, minimum=1) == 20
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", 20, minimum=1) == 20
 
     out = capsys.readouterr().out
     assert "SUPERTOOL_MAX_COMMITS" in out
@@ -180,20 +181,20 @@ def test_below_minimum_is_declined_out_loud(env_mod, monkeypatch, capsys):
 
 def test_zero_below_minimum_one_is_declined(env_mod, monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_PER_PAGE", "0")
-    assert env_mod.env_int("SUPERTOOL_PER_PAGE", 50, minimum=1) == 50
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_PER_PAGE"), "SUPERTOOL_PER_PAGE", 50, minimum=1) == 50
     assert "using 50" in capsys.readouterr().out
 
 
 def test_zero_is_honoured_when_minimum_allows_it(env_mod, monkeypatch, capsys):
     """minimum=0 knobs (an enrich *cap*) legitimately accept 0."""
     monkeypatch.setenv("SUPERTOOL_ENRICH_CAP", "0")
-    assert env_mod.env_int("SUPERTOOL_ENRICH_CAP", 40, minimum=0) == 0
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_ENRICH_CAP"), "SUPERTOOL_ENRICH_CAP", 40, minimum=0) == 0
     assert capsys.readouterr().out == ""
 
 
 def test_minimum_boundary_value_is_honoured(env_mod, monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_MAX_COMMITS", "1")
-    assert env_mod.env_int("SUPERTOOL_MAX_COMMITS", 20, minimum=1) == 1
+    assert env_mod.env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", 20, minimum=1) == 1
     assert capsys.readouterr().out == ""
 
 
@@ -203,13 +204,13 @@ def test_minimum_boundary_value_is_honoured(env_mod, monkeypatch, capsys):
 
 def test_env_float_honours_good_value(env_mod, monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_STAR_DELAY", "0.25")
-    assert env_mod.env_float("SUPERTOOL_STAR_DELAY", 1.0) == 0.25
+    assert env_mod.env_float(os.environ.get("SUPERTOOL_STAR_DELAY"), "SUPERTOOL_STAR_DELAY", 1.0) == 0.25
     assert capsys.readouterr().out == ""
 
 
 def test_env_float_declines_junk_out_loud(env_mod, monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_STAR_DELAY", "soon")
-    assert env_mod.env_float("SUPERTOOL_STAR_DELAY", 1.0) == 1.0
+    assert env_mod.env_float(os.environ.get("SUPERTOOL_STAR_DELAY"), "SUPERTOOL_STAR_DELAY", 1.0) == 1.0
     out = capsys.readouterr().out
     assert "SUPERTOOL_STAR_DELAY" in out
     assert "'soon'" in out
@@ -218,7 +219,7 @@ def test_env_float_declines_junk_out_loud(env_mod, monkeypatch, capsys):
 
 def test_env_float_declines_below_minimum(env_mod, monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_STAR_DELAY", "-1")
-    assert env_mod.env_float("SUPERTOOL_STAR_DELAY", 1.0, minimum=0.0) == 1.0
+    assert env_mod.env_float(os.environ.get("SUPERTOOL_STAR_DELAY"), "SUPERTOOL_STAR_DELAY", 1.0, minimum=0.0) == 1.0
     assert "using 1.0" in capsys.readouterr().out
 
 
@@ -231,7 +232,7 @@ def test_notice_goes_to_stdout(env_mod, monkeypatch, capsys):
     would reintroduce the silence this fix exists to prevent.
     """
     monkeypatch.setenv("SUPERTOOL_MAX_COMMITS", "nope")
-    env_mod.env_int("SUPERTOOL_MAX_COMMITS", 20)
+    env_mod.env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", 20)
     captured = capsys.readouterr()
     assert "SUPERTOOL_MAX_COMMITS" in captured.out
     assert "SUPERTOOL_MAX_COMMITS" not in captured.err
@@ -246,7 +247,7 @@ def test_a_repeated_bad_read_is_announced_once(env_mod, monkeypatch, capsys):
     """
     monkeypatch.setenv("SUPERTOOL_DEFAULT_LIMIT", "many")
     for _ in range(5):
-        assert env_mod.env_int("SUPERTOOL_DEFAULT_LIMIT", 10) == 10
+        assert env_mod.env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 10) == 10
     out = capsys.readouterr().out
     assert out.count("SUPERTOOL_DEFAULT_LIMIT") == 1, out
 
@@ -257,9 +258,9 @@ def test_dedupe_is_per_message_not_per_variable(env_mod, monkeypatch, capsys):
     Keying on the variable alone would swallow the second, distinct fault.
     """
     monkeypatch.setenv("SUPERTOOL_DEFAULT_LIMIT", "many")
-    env_mod.env_int("SUPERTOOL_DEFAULT_LIMIT", 10)
+    env_mod.env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 10)
     monkeypatch.setenv("SUPERTOOL_DEFAULT_LIMIT", "-2")
-    env_mod.env_int("SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
+    env_mod.env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
     out = capsys.readouterr().out
     assert out.count("SUPERTOOL_DEFAULT_LIMIT") == 2, out
     assert "'many'" in out and "'-2'" in out
@@ -271,13 +272,13 @@ def test_dedupe_is_per_message_not_per_variable(env_mod, monkeypatch, capsys):
 
 def test_supertool_env_int_honours_good_value(monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_DISPATCH_MAX_DEPTH", "9")
-    assert supertool._env_int("SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1) == 9
+    assert supertool._env_int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH"), "SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1) == 9
     assert capsys.readouterr().out == ""
 
 
 def test_supertool_env_int_declines_junk_out_loud(monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_DISPATCH_MAX_DEPTH", "deep")
-    assert supertool._env_int("SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1) == 32
+    assert supertool._env_int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH"), "SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1) == 32
     out = capsys.readouterr().out
     assert "SUPERTOOL_DISPATCH_MAX_DEPTH" in out
     assert "'deep'" in out
@@ -286,13 +287,13 @@ def test_supertool_env_int_declines_junk_out_loud(monkeypatch, capsys):
 
 def test_supertool_env_int_declines_below_minimum(monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_DISPATCH_MAX_DEPTH", "-3")
-    assert supertool._env_int("SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1) == 32
+    assert supertool._env_int(os.environ.get("SUPERTOOL_DISPATCH_MAX_DEPTH"), "SUPERTOOL_DISPATCH_MAX_DEPTH", 32, minimum=1) == 32
     assert "using 32" in capsys.readouterr().out
 
 
 def test_supertool_env_float_declines_junk_out_loud(monkeypatch, capsys):
     monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "later")
-    assert supertool._env_float("SUPERTOOL_MCP_CONNECT_TIMEOUT", 5.0, minimum=0.0) == 5.0
+    assert supertool._env_float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT"), "SUPERTOOL_MCP_CONNECT_TIMEOUT", 5.0, minimum=0.0) == 5.0
     out = capsys.readouterr().out
     assert "SUPERTOOL_MCP_CONNECT_TIMEOUT" in out
     assert "using 5.0" in out

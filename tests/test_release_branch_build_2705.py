@@ -389,19 +389,18 @@ def test_the_committed_config_parses_and_names_the_brief_deny_list():
                   "notifiers/claude-channel/install.sh",
                   "notifiers/cursor-witness/"):
         assert entry in cfg["deny"], entry
-    # Positive control: the MCP server's own command script, the thing
-    # .mcp.json actually runs, must not be denied by the directory sweep
-    # above -- only the human-facing setup docs beside it are.
-    assert "notifiers/claude-channel/" not in cfg["deny"]
+    # #2734, tenth pass: the claude-channel notifier and the .mcp.json that
+    # registers it no longer ship (release-branch.json's _env_word_why).
+    assert "notifiers/claude-channel/" in cfg["deny"]
+    assert cfg["release_manifest_drop_keys"] == ["channels"]
     # Positive control: nothing the plugin runs is denied.
     for runtime in ("hooks/", "presets/", "validators/", "formatters/", "notifiers/",
                     ".claude-plugin/"):
         assert runtime not in cfg["deny"], runtime
-    # _shipped_reference.py and .mcp.json are deliberately NOT denied (#2705): the
-    # first is the fallback _shipped_config() reads once .supertool.json is denied,
-    # the second registers the claude-channel notifier the manifest declares.
+    # _shipped_reference.py is deliberately NOT denied (#2705): it is the
+    # fallback _shipped_config() reads once .supertool.json is denied.
     assert "_shipped_reference.py" not in cfg["deny"]
-    assert ".mcp.json" not in cfg["deny"]
+    assert ".mcp.json" in cfg["deny"]
     assert cfg["budget"]["max_files"] == 512
     assert cfg["budget"]["max_file_bytes"] == 262144
     # #2706 used to hold _supertool.py's size exception here while its split
@@ -432,6 +431,66 @@ def test_building_this_repository_head_ships_every_hook_script(tmp_path):
     assert not (out / "tests").exists()
     assert not (out / "docs").exists()
     assert (out / "CHANGELOG.md").stat().st_size < 262144
+
+
+def test_credential_forwarding_presets_do_not_ship(tmp_path):
+    """#2734: the directory build must not carry a preset that reads a
+    credential and sends it to its own vendor's API -- the shape the
+    Anthropic directory's MCP_FORWARDS_CREDENTIAL_ENV hold fires on.
+
+    Checks both that the config's deny list agrees with
+    `_supertool_config._DIRECTORY_BUILD_EXCLUDED_PRESETS` (so the clear
+    "not in this build" message and the actual build can never drift apart)
+    and that a real build of this repository's own HEAD leaves every denied
+    file and directory out, while a sibling preset's own files still ship --
+    a build that dropped presets/ entirely would pass the first half of this
+    test and fail only the second."""
+    sys.path.insert(0, str(REPO_ROOT))
+    import supertool  # noqa: E402  (module-identity-swapped to _supertool, #931)
+    mod = _load()
+    cfg = mod.load_config(CONFIG)
+    excluded = sorted(supertool._DIRECTORY_BUILD_EXCLUDED_PRESETS)
+    assert excluded == ["bluesky", "devto", "hashnode", "slack", "watch", "youtube"], excluded
+    for name in excluded:
+        assert f"presets/{name}.json" in cfg["deny"], name
+        if name == "watch":
+            # Only the op manifest and the modules no other preset imports:
+            # gh-prs, gl-mrs, gl-runners and doctor import transport from
+            # presets/watch/ (#2734).
+            continue
+        assert f"presets/{name}/" in cfg["deny"], name
+    # The slack watch source dynamically loads presets/slack/_auth.py and
+    # presets/slack/_api.py by file path at import time -- denying
+    # presets/slack/ without this would ship a source whose import crashes.
+    assert "presets/watch/sources/slack/" in cfg["deny"]
+    # bluesky-engagement and devto-engagement read their own env vars
+    # directly and do not import from presets/bluesky or presets/devto, but
+    # #2734 excludes them too (named explicitly in the issue).
+    assert "presets/watch/sources/bluesky-engagement/" in cfg["deny"]
+    assert "presets/watch/sources/devto-engagement/" in cfg["deny"]
+
+    out = tmp_path / "out"
+    mod.build(REPO_ROOT, "HEAD", out, cfg)
+    for name in excluded:
+        assert not (out / "presets" / f"{name}.json").exists(), name
+        if name != "watch":
+            assert not (out / "presets" / name).exists(), name
+    for gone in ("channel.py", "radar.py", "sources", "README.md"):
+        assert not (out / "presets" / "watch" / gone).exists(), gone
+    assert (out / "presets" / "watch" / "transport.py").is_file()
+    assert not (out / ".mcp.json").exists()
+    assert not (out / "notifiers" / "claude-channel").exists()
+    manifest = json.loads((out / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert "channels" not in manifest, manifest
+    assert manifest["name"], manifest
+    for source in ("slack", "bluesky-engagement", "devto-engagement"):
+        assert not (out / "presets" / "watch" / "sources" / source).exists(), source
+    # Positive control: a sibling preset this issue does not touch still
+    # ships, same shape as the "nothing is present" trap the module docstring
+    # warns an empty-tree build would otherwise pass unnoticed.
+    assert (out / "presets" / "github.json").is_file()
+    assert (out / "presets" / "github").is_dir()
+    assert (out / "presets" / "gitlab").is_dir()
 
 
 def test_cli_builds_and_reports(tmp_path):
@@ -619,29 +678,25 @@ def test_an_unrecognised_consumer_refuses_rather_than_ships_broken():
         mod.inline_python_ladder(contents, _ladder_config())
 
 
-def test_building_this_repository_head_inlines_the_real_ladder(tmp_path):
-    """Integration: the real deny-list and the real ladder/consumers against
-    the real tree -- not a synthetic fixture."""
+def test_building_this_repository_head_ships_no_shell_hook(tmp_path):
+    """Integration: the real deny-list against the real tree. #2734 replaced
+    #2732's ladder inlining: the release hooks.json runs Python directly
+    (release_hooks), so the two .sh hooks and the ladder they sourced do not
+    ship at all, and no shipped hook command names a .sh file."""
     mod = _load()
     cfg = mod.load_config(CONFIG)
     out = tmp_path / "out"
     report = mod.build(REPO_ROOT, "HEAD", out, cfg)
-    assert sorted(report["ladder_inlined"]) == [
-        "hooks/pre-bash-guard.sh", "hooks/session-start.sh"]
-    assert not (out / "hooks" / "python-ladder.sh").exists()
-    for rel in ("hooks/pre-bash-guard.sh", "hooks/session-start.sh"):
-        text = (out / rel).read_text(encoding="utf-8")
-        assert "python-ladder" not in text, (rel, text)
-        # Positive control: the inlined ladder's own functions/variables must
-        # actually be present, not merely absent of "python-ladder" text --
-        # a build that emptied the file would pass the line above too.
-        assert "supertool_python_each" in text, (rel, text)
-        assert "LADDER=" not in text, (rel, text)
-        if BASH is None:
-            pytest.skip("no bash that actually runs a script was found on this host")
-        r = subprocess.run([BASH, "-n", str(out / rel)], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace")
-        assert r.returncode == 0, (rel, r.stderr)
+    assert report["ladder_inlined"] == []
+    for rel in ("hooks/python-ladder.sh", "hooks/pre-bash-guard.sh",
+                "hooks/session-start.sh"):
+        assert not (out / rel).exists(), rel
+        assert rel in report["removed"], rel
+    hooks = json.loads((out / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    commands = [h["command"] for groups in hooks["hooks"].values()
+                for group in groups for h in group["hooks"]]
+    assert commands, "the built hooks.json registers no hook at all"
+    assert not any(".sh" in c for c in commands), commands
 
 
 # -- #2732: README.release.md swapped in for README.md at build time -----------

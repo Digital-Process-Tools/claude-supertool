@@ -112,7 +112,10 @@ def _entry_env_names(manifest: str, op: str) -> set:
 
 def _reader_env_names(module: str) -> set:
     text = (_ROOT / module).read_text(encoding="utf-8")
-    return set(re.findall(r'env_int\("(SUPERTOOL_[A-Z_]+)"', text))
+    # #2734: readers now pass the value, read by literal name --
+    # `env_int(os.environ.get("SUPERTOOL_X"), "SUPERTOOL_X", ...)` -- so the
+    # name this preset reads is the `os.environ.get` literal inside the call.
+    return set(re.findall(r'env_int\(os\.environ\.get\("(SUPERTOOL_[A-Z_]+)"\)', text))
 
 
 def test_default_status_config_reaches_the_env_var_its_own_preset_reads():

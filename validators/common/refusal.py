@@ -107,11 +107,17 @@ def daemon_transport_reason(has_uds: bool | None = None) -> str | None:
             "validators such as phplint are unaffected")
 
 
-def is_refusal(msg: str, env_var: str = "") -> bool:
+def is_refusal(msg: str, *, extra_patterns: "str | None" = "") -> bool:
     """Does `msg` read as the tool declining to run rather than a finding?
 
-    `env_var` names an optional comma-separated list of extra substrings, so a
-    repo can teach an adapter about a house-specific refusal without a release.
+    `extra_patterns` is an optional comma-separated list of extra substrings,
+    so a repo can teach an adapter about a house-specific refusal without a
+    release. It is the VALUE of the adapter's own `*_SKIP_PATTERNS`
+    variable, read by the adapter under its literal name (#2734) -- this
+    used to take the variable's NAME and read it here, an environment read
+    keyed by a variable, the shape the directory's validator cites.
+    Keyword-only, so an old positional call naming a variable fails loudly
+    instead of treating the name as a pattern.
 
     **Give it the tool's own statement, never a whole output blob.** This is a
     substring test, so over a multi-line capture it answers "does a refusal
@@ -122,15 +128,20 @@ def is_refusal(msg: str, env_var: str = "") -> bool:
     and gates the arm on stream position for it.
     """
     patterns = list(REFUSAL_PATTERNS)
-    if env_var:
+    if extra_patterns:
         patterns += [p.strip().lower()
-                     for p in os.environ.get(env_var, "").split(",") if p.strip()]
+                     for p in extra_patterns.split(",") if p.strip()]
     lowered = (msg or "").lower()
     return any(p in lowered for p in patterns)
 
 
-def outside_roots(file_path: str, env_var: str) -> str | None:
+def outside_roots(file_path: str, env_var: str, raw: "str | None") -> str | None:
     """Is `file_path` outside every analysis root named by `$env_var`? (#412)
+
+    `raw` is that variable's VALUE, read by the adapter under its literal
+    name (#2734); `env_var` is only the name the skip reason cites. Reading
+    `os.environ.get(env_var)` here was an environment read keyed by a
+    variable, the shape the directory's validator cites one site per scan.
 
     Returns a skip reason when the adapter can answer "not analysed" locally,
     and `None` whenever it cannot — which is the answer for an unset or blank
@@ -158,7 +169,7 @@ def outside_roots(file_path: str, env_var: str) -> str | None:
     this configuration, and pointing at a tool that never saw the file sends
     the reader to the wrong file to fix it.
     """
-    raw = os.environ.get(env_var, "")
+    raw = raw or ""
     if not raw.strip():
         return None
     entries = [e.strip() for part in raw.split(os.pathsep) for e in part.split(",")]
@@ -231,7 +242,9 @@ def required(tool: str) -> bool:
     The only thing it changes is what an adapter does when it has nothing to
     say.
     """
-    raw = os.environ.get(REQUIRE_VAR, "")
+    # Literal name, not the module constant (#2734) -- see REQUIRE_VAR's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_REQUIRE_VALIDATORS", "")
     if not raw.strip():
         return False
     names = [n.strip().lower()

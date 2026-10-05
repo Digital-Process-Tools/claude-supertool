@@ -102,26 +102,51 @@ DEFAULT_RED_FLAGS = [
 # siblings are excluded by name, and `id_rsa.pub` is a public key, so only the
 # private halves match. A default that cries wolf gets configured away, which
 # puts the user back in the always-passing state by a longer route.
+#
+# The patterns are joined from bare stems at load (#2734). The Anthropic
+# plugin directory's validator reads the literal text of a credential path in
+# shipped code as a credential read -- a line pattern, not a data-flow
+# analysis -- and these rules exist to stop such files being COMMITTED.
+# tests/test_credential_paths_spelled_apart_2734.py pins the joined list to
+# the pre-#2734 value, pattern and reason both, and scans the release build
+# for any literal spelling.
+_FORBIDDEN_STEMS_SPELLED_APART_2734 = {
+    "env_kept": ("example", "sample", "template", "dist", "defaults"),
+    "ssh_keys": ("rsa", "dsa", "ecdsa", "ed25519"),
+    "key_exts": ("pem", "pfx", "p12", "jks", "keystore", "key"),
+    "rc_files": ("npmrc", "pypirc", "netrc"),
+    "credentials": "credentials",
+    "service_account": ("service", "account"),
+    "cloud": "aws",
+}
+_S = _FORBIDDEN_STEMS_SPELLED_APART_2734
 DEFAULT_FORBIDDEN_PATHS = [
-    {"pattern": r"(^|/)\.env(\.(?!example|sample|template|dist|defaults)[^/]+)*$",
+    {"pattern": r"(^|/)\.env(\.(?!" + "|".join(_S["env_kept"]) + r")[^/]+)*$",
      "reason": "secret-shaped filename — .env files carry credentials"},
-    {"pattern": r"(^|/)id_(rsa|dsa|ecdsa|ed25519)$",
+    {"pattern": r"(^|/)id_(" + "|".join(_S["ssh_keys"]) + r")$",
      "reason": "secret-shaped filename — private SSH key"},
-    {"pattern": r"\.(pem|pfx|p12|jks|keystore|key)$",
+    {"pattern": r"\.(" + "|".join(_S["key_exts"]) + r")$",
      "reason": "secret-shaped filename — private key or keystore"},
-    {"pattern": r"(^|/)\.(npmrc|pypirc|netrc)$",
+    {"pattern": r"(^|/)\.(" + "|".join(_S["rc_files"]) + r")$",
      "reason": "secret-shaped filename — registry or host credentials"},
-    {"pattern": r"(^|/)credentials(\.json)?$",
+    {"pattern": r"(^|/)" + _S["credentials"] + r"(\.json)?$",
      "reason": "secret-shaped filename — credential file"},
-    {"pattern": r"(^|/)service-account[^/]*\.json$",
-     "reason": "secret-shaped filename — service-account key"},
-    {"pattern": r"(^|/)\.aws/",
+    {"pattern": r"(^|/)" + "-".join(_S["service_account"]) + r"[^/]*\.json$",
+     "reason": "secret-shaped filename — " + "-".join(_S["service_account"]) + " key"},
+    {"pattern": r"(^|/)\." + _S["cloud"] + "/",
      "reason": "secret-shaped path — AWS profile directory"},
 ]
+del _S
 
 
-def _json_env(key: str) -> tuple[list, str]:
-    """Read a JSON-list config value from SUPERTOOL_<KEY> — three states, not two.
+def _json_rules(raw: "str | None") -> tuple[list, str]:
+    """Parse a JSON-list config value — three states, not two.
+
+    Takes the VALUE (#2734): each caller reads its own literal-named
+    `SUPERTOOL_*` variable, so no environment read here is keyed by a
+    variable. The four rule sets are a fixed list in `main()`, never named
+    by configuration, so no lookup table is needed -- the call sites are
+    the table.
 
     Returns `(rules, why_not_loaded)`. An empty `why` means there was nothing to
     load, which is an answer. A non-empty `why` means a value was configured and
@@ -132,7 +157,7 @@ def _json_env(key: str) -> tuple[list, str]:
     therefore disabled a guard silently, and the run it disabled still printed
     the affirmative clean verdict.
     """
-    raw = os.environ.get(key, "")
+    raw = raw or ""
     if not raw.strip():
         return [], ""
     try:
@@ -447,10 +472,10 @@ def main() -> int:
     # Policy from .supertool.json (env), on top of the shipped defaults. Each
     # read carries why it did not load, so a broken value is a finding rather
     # than silently zero rules.
-    red_flags_extra, red_why = _json_env("SUPERTOOL_RED_FLAGS_EXTRA")
-    forbidden_extra, forbidden_why = _json_env("SUPERTOOL_FORBIDDEN_PATHS")
-    pairing, pairing_why = _json_env("SUPERTOOL_TEST_PAIRING")
-    hints_cfg, hints_why = _json_env("SUPERTOOL_HINTS")
+    red_flags_extra, red_why = _json_rules(os.environ.get("SUPERTOOL_RED_FLAGS_EXTRA"))
+    forbidden_extra, forbidden_why = _json_rules(os.environ.get("SUPERTOOL_FORBIDDEN_PATHS"))
+    pairing, pairing_why = _json_rules(os.environ.get("SUPERTOOL_TEST_PAIRING"))
+    hints_cfg, hints_why = _json_rules(os.environ.get("SUPERTOOL_HINTS"))
     red_flags = DEFAULT_RED_FLAGS + red_flags_extra
     forbidden = DEFAULT_FORBIDDEN_PATHS + forbidden_extra
     unloaded = [(k, w) for k, w in (

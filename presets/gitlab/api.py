@@ -519,7 +519,7 @@ def main() -> int:
         return 1
 
     render(result.stdout, path, paginated,
-           env_int("GL_API_MAX_BYTES", 65536, minimum=1))
+           env_int(os.environ.get("GL_API_MAX_BYTES"), "GL_API_MAX_BYTES", 65536, minimum=1))
     return 0
 
 

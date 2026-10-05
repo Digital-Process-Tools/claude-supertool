@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 import supertool
 
 
@@ -131,7 +133,7 @@ def test_glob_double_star_in_middle_segment(tmp_path: Path, monkeypatch) -> None
     monkeypatch.chdir(tmp_path)
     out = supertool.op_glob("**/TestHelper/**/ConversationHelper*")
     assert "ConversationHelper.class.php" in out, f"got: {out!r}"
-    assert "(0 files)" not in out
+    assert "(0 files" not in out
 
 
 def test_glob_question_mark_is_wildcard(tmp_path: Path, monkeypatch) -> None:
@@ -143,3 +145,13 @@ def test_glob_question_mark_is_wildcard(tmp_path: Path, monkeypatch) -> None:
     # if it could match one file.
     assert "[auto-read:" not in out
     assert "a.py" in out
+
+
+@pytest.fixture(autouse=True)
+def _no_gitignore_clause_outside_a_repo(monkeypatch):
+    """These pin header shapes and rtk delegation in tmp dirs that are not git
+    repositories. Since #2738 such a walk says `gitignore filter not applied
+    (not a git repository)` and declines delegation; that is pinned in
+    tests/test_gitignore_files_2738.py, so it is switched off here rather
+    than threaded through every exact header below."""
+    monkeypatch.setenv("SUPERTOOL_NO_GITIGNORE", "1")

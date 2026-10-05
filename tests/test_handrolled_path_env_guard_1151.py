@@ -60,9 +60,8 @@ NL = chr(10)
 #:    scope from an inner one, which is exactly the cross-scope resolution
 #:    that false-positived #692 and got the first scanner cut. The binding
 #:    is `dict(os.environ)` + `ASCII_LOCALE`, so it inherits.
-#:  * `test_watch_sock_path_581.py:102` -- `env = transport.poller_env()`, a call
-#:    into product code the scanner does not read. `presets/watch/transport.py:544`
-#:    is `dict(os.environ)` plus one key, so it inherits.
+#:  * (a `test_watch_sock_path_581.py` entry, `env = transport.poller_env()`,
+#:    left with #2734: that spawn now passes no `env=` and inherits.)
 #:
 #: Third entry read and cleared by hand on 2026-08-12 (#1496):
 #:
@@ -85,8 +84,6 @@ DECLARED_UNRESOLVED = [
     "test_encoding_seam.py:717 [unresolved] "
     "env= expression could not be evaluated by this scanner",
     "test_git_worktrees_unpushed_1496.py:107 [unresolved] "
-    "env= expression could not be evaluated by this scanner",
-    "test_watch_sock_path_581.py:102 [unresolved] "
     "env= expression could not be evaluated by this scanner",
     "test_worktree_setup_teardown_532.py:55 [unresolved] "
     "env= expression could not be evaluated by this scanner",

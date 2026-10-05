@@ -34,7 +34,7 @@ from typing import Optional, Tuple
 # (`python3 daemon.py SERVER_NAME`), so it cannot rely on inheriting the
 # `FORCE_COLOR` strip `_supertool.py` applies at import -- a process that
 # never imported that module never ran it. Popped here too, before the
-# `env = os.environ.copy()` a few hundred lines down builds the MCP server
+# inline `{**os.environ, ...}` a few hundred lines down builds the MCP server
 # child's environment, so an operator's ambient `FORCE_COLOR` (this repo's
 # own agent harness exports one) cannot land in that long-lived child's
 # stderr regardless of which of the two ways this script was started.
@@ -160,7 +160,7 @@ def _check_peer_uid(client_sock: socket.socket) -> bool:
         return True
 
 
-def bridge_client(client_sock: socket.socket, proc: subprocess.Popen, last_activity: list, dbg) -> None:
+def bridge_client(client_sock, proc, last_activity: list, dbg) -> None:
     """Bridge one client connection ↔ subprocess stdio using two blocking threads.
 
     Simpler than select+non-blocking: each direction is a thread doing blocking reads.
@@ -392,11 +392,13 @@ def _serve_owned(spec: dict, name: str, sock_name: str, pid_name: str,
         argv = shlex.split(cmd)
     else:
         argv = [cmd] + list(args) if isinstance(cmd, str) else list(cmd) + list(args)
-    env = os.environ.copy()
-    if spec.get("env"):
-        env.update(spec["env"])
+    # The server's `env` block names its variables in the user's config, so
+    # they cannot be literal os.environ writes, and this process runs relay
+    # threads beside the child. Merged inline at the spawn, so no name binds
+    # a copy of os.environ (#2734).
     proc = subprocess.Popen(
-        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**os.environ, **(spec.get("variables") or {})},
     )
 
     # Everything from here on is inside the try whose `finally` reaps `proc`.

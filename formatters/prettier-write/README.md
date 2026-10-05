@@ -21,7 +21,7 @@ Runs [Prettier](https://prettier.io/) with `--write` on a single file and emits 
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,
       "timeout": 30,
-      "env": {
+      "variables": {
         "PRETTIER_BIN": "./node_modules/.bin/prettier",
         "PRETTIER_CONFIG": ".prettierrc"
       }

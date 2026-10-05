@@ -40,7 +40,9 @@ _ENV_DIR = "SUPERTOOL_STATUSLINE_CACHE_DIR"
 
 def cache_dir() -> str:
     """Where fragments live. `SUPERTOOL_STATUSLINE_CACHE_DIR` wins outright."""
-    override = os.environ.get(_ENV_DIR, "").strip()
+    # Literal name, not the module constant (#2734) -- see _ENV_DIR's own
+    # declaration for why.
+    override = os.environ.get("SUPERTOOL_STATUSLINE_CACHE_DIR", "").strip()
     if override:
         return override
     base = os.environ.get("XDG_CACHE_HOME", "").strip()

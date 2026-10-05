@@ -345,7 +345,7 @@ def test_symlink_to_file_outside_cwd_refused_by_default(
     out = supertool.op_glob("*.txt", no_auto_read=True)
     assert "escapes cwd" in out, out
     assert "link.txt" not in out, out
-    assert "(0 files)" not in out, (
+    assert "(0 files" not in out, (
         "a refusal rendered as an empty result set is the absence the tool "
         f"manufactured, indistinguishable from an empty directory: {out!r}"
     )
@@ -383,3 +383,13 @@ def test_symlink_to_dir_outside_cwd_traversed_with_followlinks_false(
         "os.walk(followlinks=False) should not descend into symlinked dirs. "
         "If this fails, the implementation changed to followlinks=True."
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_gitignore_clause_outside_a_repo(monkeypatch):
+    """These pin header shapes and rtk delegation in tmp dirs that are not git
+    repositories. Since #2738 such a walk says `gitignore filter not applied
+    (not a git repository)` and declines delegation; that is pinned in
+    tests/test_gitignore_files_2738.py, so it is switched off here rather
+    than threaded through every exact header below."""
+    monkeypatch.setenv("SUPERTOOL_NO_GITIGNORE", "1")

@@ -771,7 +771,7 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             _swap = _swap_suggest(
                 "grep", "PATTERN:PATH", "pattern", pattern, path,
                 f"grep:{path}:{pattern}")
-            return _path_not_found(path, op="grep", suggest=_swap,
+            return _path_not_found(path, op_name="grep", suggest=_swap,
                                    call_prefix=f"grep:{pattern}")
 
     excl = _get_exclude_paths("grep", no_exclude)
@@ -811,9 +811,23 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
                     # The census is a *callable*, not a value: it is a second
                     # full grep over the tree and must not be paid for on a
                     # complete result, which needs no total (#1771).
-                    return _rtk_grep_report(
+                    report = _rtk_grep_report(
                         rtk_out, limit,
                         census=lambda: _rtk_grep_census(pattern, path, excl))
+                    # The native walker's `gitignore filter not applied (not
+                    # a git repository)` clause, carried into the delegated
+                    # header (#2738), so the backend never changes what the
+                    # report admits.
+                    tally = _GitIgnoreTally()
+                    tally.saw(_git_ignore_view(path))
+                    clause = tally.clause()
+                    if clause:
+                        head, sep, rest = report.partition(chr(10))
+                        cut = head.rfind(", limit")
+                        if cut >= 0:
+                            head = head[:cut] + clause + head[cut:]
+                        report = head + sep + rest
+                    return report
                 # An excluded file came back anyway — expected whenever the
                 # list carries a negation, since those wildcards are withheld
                 # from the argv. Printing the filtered lines under the
@@ -834,9 +848,10 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
     # ambiguous between "searched everything, found nothing" and "path/glob
     # resolved to nothing, so nothing was searched".
     hidden_files: List[str] = []
-    candidates = _grep_candidates(path, excl, hidden_files)
+    git_tally = _GitIgnoreTally()
+    candidates = _grep_candidates(path, excl, hidden_files, git_tally)
     scanned = len(candidates)
-    hidden = _hidden_suffix(len(hidden_files))
+    hidden = _hidden_suffix(len(hidden_files)) + git_tally.clause()
 
     if count_only:
         counts = _grep_count(pattern, path, limit, excl, candidates=candidates)
@@ -1230,7 +1245,7 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
                 "around", "PATTERN:PATH[:N]", "pattern", pattern, path,
                 f"around:{path}:{pattern}[:N]")
         return _path_not_found(path, label="file", suggest=suggest,
-                               op="around")
+                               op_name="around")
 
     def _render(rx: "re.Pattern[str]") -> Tuple[str, bool]:
         """Render the around-window for `rx`. Returns (output, matched) so the
@@ -1763,6 +1778,7 @@ def _grep_count(
 def _grep_candidates(
     path: str, exclude_paths: Tuple[str, ...] = (),
     hidden: Optional[List[str]] = None,
+    git_tally: Optional["_GitIgnoreTally"] = None,
 ) -> List[str]:
     """Return list of file paths to search for a given path argument.
 
@@ -1783,6 +1799,13 @@ def _grep_candidates(
     A `path` that IS an excluded file is still searched. Naming it is a
     deliberate act and `read` never gated it, so gating it here would buy
     nothing and break the case someone meant.
+
+    **Gitignored files are skipped too** (#2738), from the same single git
+    listing that already prunes ignored directories -- never one git call per
+    file. They land in `git_tally.hidden` so the header can say how many, and
+    a listing that could not be taken is recorded there as well, so an
+    unfiltered walk never renders like a filtered one. A root that is itself
+    ignored (`grep:X:.max/`) is searched in full: git's view of it is empty.
     """
     candidates: List[str] = []
     if os.path.isfile(path):
@@ -1790,7 +1813,10 @@ def _grep_candidates(
     elif os.path.isdir(path):
         exts = _grep_file_includes()  # None = all files
         cwd = os.getcwd()
-        ignored = _git_ignored_dirs(path) if exclude_paths else frozenset()
+        view = _git_ignore_view(path) if exclude_paths else _GIT_IGNORE_NONE
+        if git_tally is not None:
+            git_tally.saw(view)
+        ignored = view.dirs
         for root, dirs, files in os.walk(path):
             rel_root = _safe_relpath(root, cwd) if exclude_paths else ""
             if exclude_paths:
@@ -1808,6 +1834,10 @@ def _grep_candidates(
                     if hidden is not None and _is_disclosable_exclusion(
                             rel_name, exclude_paths):
                         hidden.append(os.path.join(root, name))
+                    continue
+                if _is_git_ignored_file(rel_name, view):
+                    if git_tally is not None:
+                        git_tally.hidden.append(os.path.join(root, name))
                     continue
                 candidates.append(os.path.join(root, name))
     return candidates

@@ -84,7 +84,9 @@ def _locations() -> tuple:
     happens when only one guess is made and the project uses a different
     one of the two conventions `/oss:scaffold` itself writes.
     """
-    override = os.environ.get(ENV_ASSEMBLER, "").strip()
+    # Literal name, not the module constant (#2734) -- see ENV_ASSEMBLER's
+    # own declaration for why.
+    override = os.environ.get("SUPERTOOL_CHANGELOG_ASSEMBLER", "").strip()
     return (override,) if override else ASSEMBLER_LOCATIONS
 
 
@@ -109,9 +111,11 @@ def _config_dir() -> tuple[Path | None, bool, str]:
     contract (the shape this whole file already follows for `_repo_root`
     and `_load`).
     """
-    if CONFIG_DIR_ENV not in os.environ:
+    # Literal name, not the module constant (#2734) -- see CONFIG_DIR_ENV's
+    # own declaration for why.
+    if "SUPERTOOL_CONFIG_DIR" not in os.environ:
         return None, False, ""
-    raw = os.environ[CONFIG_DIR_ENV].strip()
+    raw = os.environ["SUPERTOOL_CONFIG_DIR"].strip()
     if not raw:
         return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
     try:
@@ -256,7 +260,9 @@ def _find_assembler(target: Path) -> tuple[Path | None, Path | None, str | None]
     root, reason = _repo_root(target.parent)
     if root is None:
         return None, None, reason
-    override_set = bool(os.environ.get(ENV_ASSEMBLER, "").strip())
+    # Literal name, not the module constant (#2734) -- see ENV_ASSEMBLER's
+    # own declaration for why.
+    override_set = bool(os.environ.get("SUPERTOOL_CHANGELOG_ASSEMBLER", "").strip())
     if not override_set:
         config_dir, scope_known, scope_reason = _config_dir()
         if scope_known and config_dir is None:

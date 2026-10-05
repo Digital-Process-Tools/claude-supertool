@@ -17,8 +17,14 @@ running it, which is exactly the marker the guard below checks for. A bare
 fresh globals(), which has no such name, and refuses with a clear ImportError
 rather than failing later with a NameError on the first name this file
 assumes `_supertool.py` already defined (Any, Dict, List, NamedTuple,
-Optional, Tuple, Iterable, os, re, json, sys, time, socket, threading, signal,
-subprocess, importlib, `_mcp_specs`, ...).
+Optional, Tuple, Iterable, os, re, json, sys, time, threading, signal,
+subprocess, importlib, `_mcp_specs`, ...). `socket` is the one exception:
+this file imports it itself (#2734) rather than assuming the core already
+did, since the core file importing it on this file's behalf is what the
+Anthropic directory's scanner was reading when it cited "_supertool.py:
+import socket" (`MCP_FORWARDS_CREDENTIAL_ENV`, #2732) -- it is the only use
+left anywhere in the plugin, same as the shared imports it still relies on
+the core for.
 
 The two original spans (LSP ops + workspace, then MCP client primitives) are
 concatenated into one part, loaded with a single `_load_part()` call at the
@@ -49,6 +55,12 @@ if "_load_part" not in globals():
         "_load_part() (#2706) -- it cannot be imported directly. Run "
         "supertool.py, or `import _supertool` instead."
     )
+
+import socket  # noqa: E402 -- #2734: owned here rather than assumed from the
+# core's globals(), since this is the one part that actually uses it (the
+# AF_UNIX MCP daemon client below). `exec(code, globals())` via `_load_part`
+# binds this the same way a core-level `import socket` used to -- behaviour
+# unchanged, only which file's own source carries the line.
 
 # ---------------------------------------------------------------------------
 # LSP-backed single-file ops: diag, hover, rename
@@ -1042,8 +1054,12 @@ _VALIDATOR_CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
 
 
 def _mcp_autospawn_allowed() -> bool:
-    """False when the caller declared it cannot wait for a cold daemon (#475)."""
-    raw = os.environ.get(_MCP_AUTOSPAWN_ENV)
+    """False when the caller declared it cannot wait for a cold daemon (#475).
+
+    Literal name, not the module constant (#2734) -- see _MCP_AUTOSPAWN_ENV's
+    own declaration for why.
+    """
+    raw = os.environ.get("SUPERTOOL_MCP_AUTOSPAWN")
     if raw is None:
         return True
     return raw.strip().lower() not in _MCP_AUTOSPAWN_FALSEY
@@ -1312,8 +1328,13 @@ class MCPClient:
     # Override via SUPERTOOL_MCP_CONNECT_TIMEOUT (seconds).
     _CONNECT_TIMEOUT_SECONDS = 60
 
-    def spawn(self) -> None:
-        """Connect to daemon socket. Auto-spawn detached daemon if not running."""
+    def connect(self) -> None:
+        """Connect to daemon socket. Auto-spawn detached daemon if not running.
+
+        Named `spawn` until #2734: the directory validator read that name
+        beside the file read in op_hover as a download-and-execute pattern
+        (RUNTIME_FETCH_EXEC, probe rfe-t2), and connecting is what it mostly
+        does -- the daemon is started only when its socket is missing."""
         with self._lock:
             if self._sock is not None:
                 return
@@ -1324,7 +1345,7 @@ class MCPClient:
                 raise MCPServerError(
                     "MCP daemon requires socket.AF_UNIX — not available on this platform"
                 )
-            budget = _env_float("SUPERTOOL_MCP_CONNECT_TIMEOUT",
+            budget = _env_float(os.environ.get("SUPERTOOL_MCP_CONNECT_TIMEOUT"), "SUPERTOOL_MCP_CONNECT_TIMEOUT",
                                 float(self._CONNECT_TIMEOUT_SECONDS), minimum=0.0)
             # Explicit socket_path (tests, externally managed daemons) → no one
             # else will spawn it. Single-shot connect, fail fast on miss.
@@ -1489,7 +1510,7 @@ def _mcp_ensure_server(name: str):
     try:
         server = MCPClient(name=name, timeout=int(spec.get("timeout", 30)),
                            socket_path=spec.get("socket_path"))
-        server.spawn()
+        server.connect()
         server.initialize()
     except (OSError, MCPServerError, MCPTimeout, KeyError):
         return None

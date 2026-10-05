@@ -166,7 +166,7 @@ LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"
 # shellcheck disable=SC2329  # invoked indirectly, as supertool_python_each's callback
 onboard() {
     supertool_python_identifies "$@" || return 1
-    if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:session'; then
+    if ! "$@" "${CLAUDE_PLUGIN_ROOT}/supertool.py" 'introduction' 'output-format' 'ops:session'; then
         echo "> supertool's op listing is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops' prints the listing."
     fi
     # 'channel:stranded' is a SEPARATE call, deliberately not folded into the
@@ -207,7 +207,7 @@ onboard() {
     # of the lost events was a failing check on an open pull request. Every
     # instrument said so correctly and none of them was asked, because a session
     # that does not know its channel is dead has no reason to ask one.
-    "$@" "$BIN" 'channel:stranded'
+    "$@" "${CLAUDE_PLUGIN_ROOT}/supertool.py" 'channel:stranded'
     exit 0
 }
 

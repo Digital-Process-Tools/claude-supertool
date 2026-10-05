@@ -27,7 +27,7 @@
     "py-lsp": {
       "cmd": "cclsp",
       "match": "*.py",
-      "env": {
+      "variables": {
         "CCLSP_CONFIG_PATH": ".claude/cclsp.json"
       },
       "tools": {

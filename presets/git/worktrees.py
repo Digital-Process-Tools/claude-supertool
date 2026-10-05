@@ -969,9 +969,9 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
     read.
     """
     now = time.time() if now is None else now
-    window = env_int("SUPERTOOL_WORKTREE_ACTIVE_WINDOW", ACTIVE_WINDOW_DEFAULT,
+    window = env_int(os.environ.get("SUPERTOOL_WORKTREE_ACTIVE_WINDOW"), "SUPERTOOL_WORKTREE_ACTIVE_WINDOW", ACTIVE_WINDOW_DEFAULT,
                      minimum=1) if window is None else window
-    quiet_for = max(window, env_int("SUPERTOOL_WORKTREE_IDLE_QUIET",
+    quiet_for = max(window, env_int(os.environ.get("SUPERTOOL_WORKTREE_IDLE_QUIET"), "SUPERTOOL_WORKTREE_IDLE_QUIET",
                                     IDLE_QUIET_DEFAULT, minimum=1))
     evidence: list = []
 

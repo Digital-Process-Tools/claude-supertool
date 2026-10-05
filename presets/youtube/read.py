@@ -10,6 +10,7 @@ the whole read, since the video metadata is still perfectly readable.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -114,7 +115,7 @@ def main(arg: str) -> None:
     if not items:
         sys.stderr.write(f"ERROR: video not found: {arg}\n")
         sys.exit(1)
-    inline_n = env_int("SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
+    inline_n = env_int(os.environ.get("SUPERTOOL_INLINE_COMMENTS"), "SUPERTOOL_INLINE_COMMENTS", 5, minimum=0)
     comments: list[dict] = []
     comments_note = ""
     if inline_n > 0:

@@ -598,7 +598,7 @@ class TestEnvBinaryOverride:
                     "cmd": "echo {file}",
                     "match": "*",
                     "hooks_into": ["edit"],
-                    "env": {"PHPSTAN_BIN": "/tmp/evil-phpstan"},
+                    "variables": {"PHPSTAN_BIN": "/tmp/evil-phpstan"},
                 }
             }
         }
@@ -636,7 +636,7 @@ class TestEnvBinaryOverride:
                     "cmd": "echo {file}",
                     "match": "*",
                     "hooks_into": ["format"],
-                    "env": {"PHP_CS_FIXER_BIN": "/tmp/evil-cs-fixer"},
+                    "variables": {"PHP_CS_FIXER_BIN": "/tmp/evil-cs-fixer"},
                 }
             }
         }

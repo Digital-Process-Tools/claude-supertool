@@ -46,8 +46,15 @@ if "_load_part" not in globals():
         "supertool.py, or `import _supertool` instead."
     )
 
-def _onboarding_text(config_key: str, env_var: str, default: str) -> str:
-    """env var, else .supertool.json[config_key], else `default`.
+def _onboarding_text(config_key: str, default: str, *,
+                     env_value: "Optional[str]") -> str:
+    """`env_value`, else .supertool.json[config_key], else `default`.
+
+    Takes the variable's VALUE, read by the caller under its own literal
+    name (#2734): `os.environ.get(env_var)` here was the first read the
+    directory's validator cited in this file ("an environment variable
+    named at run time"). Keyword-only, so an old positional call fails
+    loudly instead of treating a variable's name as its value.
 
     Same env-over-config-over-built-in convention as `_DEFAULT_COAUTHOR`
     (presets/git/commit.py). Whichever layer wins, a value in
@@ -57,7 +64,7 @@ def _onboarding_text(config_key: str, env_var: str, default: str) -> str:
     has deliberately kept its session preamble bare (#2342).
     """
     config = _load_config()
-    raw = os.environ.get(env_var)
+    raw = env_value
     if raw is None:
         raw = config.get(config_key)
     if raw is None:
@@ -72,7 +79,8 @@ def op_introduction() -> str:
     """Project introduction text: env override, else .supertool.json's
     `introduction` key, else a shipped default (#2342)."""
     intro = _onboarding_text(
-        "introduction", "SUPERTOOL_INTRODUCTION", _DEFAULT_INTRODUCTION)
+        "introduction", _DEFAULT_INTRODUCTION,
+        env_value=os.environ.get("SUPERTOOL_INTRODUCTION"))
     if not intro:
         return "No introduction configured in .supertool.json\n"
     return str(intro) + "\n\n"
@@ -82,7 +90,8 @@ def op_output_format() -> str:
     """Output format examples: env override, else .supertool.json's
     `output-format` key, else a shipped default (#2342)."""
     fmt = _onboarding_text(
-        "output-format", "SUPERTOOL_OUTPUT_FORMAT", _DEFAULT_OUTPUT_FORMAT)
+        "output-format", _DEFAULT_OUTPUT_FORMAT,
+        env_value=os.environ.get("SUPERTOOL_OUTPUT_FORMAT"))
     if not fmt:
         return "No output-format configured in .supertool.json\n"
     return str(fmt) + "\n\n"

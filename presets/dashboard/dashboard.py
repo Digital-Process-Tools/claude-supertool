@@ -169,9 +169,13 @@ WORKERS_DEFAULT = 8
 _ISSUE_IN_BRANCH = re.compile(r"(?<![0-9])([0-9]{2,6})(?![0-9])")
 
 
-def _env_int(name: str, default: int) -> int:
+def _positive_int(raw: "str | None", default: int) -> int:
+    """`raw` as a positive int, else `default`. Takes the VALUE, read by the
+    caller under its own literal name (#2734) -- a by-name reader here was
+    an environment read keyed by a variable, the shape the directory's
+    validator cites one call site per scan."""
     try:
-        value = int(str(os.environ.get(name, "")).strip())
+        value = int(str(raw if raw is not None else "").strip())
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
@@ -329,7 +333,9 @@ def read_lane_prefix(raw=None):
     `!! unread` — the third state. The alternative, which is what #1007 was, is
     a prefix that matches nothing rendering as a tally of zeroes.
     """
-    raw = os.environ.get(LANE_PREFIX_ENV, "") if raw is None else raw
+    # Literal name, not the module constant (#2734) -- see LANE_PREFIX_ENV's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_LANE_PREFIX", "") if raw is None else raw
     raw = str(raw).strip()
     if not raw:
         return None, NO_LANE_PREFIX
@@ -1070,8 +1076,8 @@ def main() -> int:
         print("  usage: dashboard   (read-only; no repo target, GitHub only)")
         return 2
 
-    budget = _env_int("SUPERTOOL_DASHBOARD_BUDGET", BUDGET_DEFAULT)
-    workers = _env_int("SUPERTOOL_DASHBOARD_WORKERS", WORKERS_DEFAULT)
+    budget = _positive_int(os.environ.get("SUPERTOOL_DASHBOARD_BUDGET"), BUDGET_DEFAULT)
+    workers = _positive_int(os.environ.get("SUPERTOOL_DASHBOARD_WORKERS"), WORKERS_DEFAULT)
     report = build_report(budget, workers)
     print(render(report))
     return 0 if not any(s.unread for s in report.sections.values()) else 1

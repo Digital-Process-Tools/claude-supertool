@@ -20,7 +20,7 @@ Runs [PHP Code Beautifier and Fixer](https://github.com/squizlabs/PHP_CodeSniffe
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,
       "timeout": 30,
-      "env": {
+      "variables": {
         "PHPCBF_BIN": "./vendor/bin/phpcbf",
         "PHPCBF_STANDARD": "PSR12"
       }

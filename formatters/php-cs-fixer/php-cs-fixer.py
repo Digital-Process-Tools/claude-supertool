@@ -88,11 +88,12 @@ def main() -> None:
         cmd += ["--config", phpcsfixer_config]
     cmd.append(file)
 
-    env = os.environ.copy()
-
     try:
-        # php-cs-fixer exits 0 when no fixes, 1 when fixes applied, 16+ on error
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, encoding="utf-8", errors="replace")
+        # php-cs-fixer exits 0 when no fixes, 1 when fixes applied, 16+ on error.
+        # No `env=`: the copy it used to pass was never modified, so
+        # inheriting is the identical environment without handing the whole
+        # mapping over by name (#2734).
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         emit({
             "tool": "php-cs-fixer", "file": file, "ok": False, "count": 1,

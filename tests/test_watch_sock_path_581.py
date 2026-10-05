@@ -77,15 +77,26 @@ def test_sock_path_falls_back_on_an_empty_override(monkeypatch) -> None:
         _restore_default_transport(monkeypatch)
 
 
+def _pin_under_monkeypatch(monkeypatch) -> dict:
+    """`pin_poller_env()` writes into this process's own environment (#2734:
+    the exec'd poller inherits it, no whole-environment copy). Both names
+    are registered with monkeypatch first, so the pin is undone after."""
+    import os  # noqa: PLC0415
+    for name in ("SUPERTOOL_WATCH_SOCK", "SUPERTOOL_WATCH_STATE_DIR"):
+        monkeypatch.setenv(name, os.environ.get(name, ""))
+    transport.pin_poller_env()
+    return dict(os.environ)
+
+
 def test_poller_env_carries_the_override(monkeypatch) -> None:
-    """`poller_env()` is what a poller actually runs under when it
-    relaunches itself. If the override didn't reach this dict, a poller
+    """`pin_poller_env()` sets what a poller actually runs under when it
+    relaunches itself. If the override didn't reach it, a poller
     spawned after the operator set the variable would still bind the
     default socket downstream."""
     try:
         monkeypatch.setenv("SUPERTOOL_WATCH_SOCK", "/tmp/supertool-watch-581-relaunched.sock")
         importlib.reload(transport)
-        env = transport.poller_env()
+        env = _pin_under_monkeypatch(monkeypatch)
         assert env.get("SUPERTOOL_WATCH_SOCK") == "/tmp/supertool-watch-581-relaunched.sock"
     finally:
         _restore_default_transport(monkeypatch)
@@ -93,15 +104,14 @@ def test_poller_env_carries_the_override(monkeypatch) -> None:
 
 def test_a_real_child_process_under_poller_env_sees_the_override(monkeypatch) -> None:
     """End-to-end version of the above: actually launch a process the way a
-    poller would (its own env, nothing inherited implicitly) and read back
-    what it resolves SOCK_PATH to."""
+    poller would (inheriting the pinned environment, as `os.execv` does)
+    and read back what it resolves SOCK_PATH to."""
     try:
         monkeypatch.setenv("SUPERTOOL_WATCH_SOCK", "/tmp/supertool-watch-581-child.sock")
         importlib.reload(transport)
-        env = transport.poller_env()
+        _pin_under_monkeypatch(monkeypatch)
         proc = subprocess.run(
             [sys.executable, FIXTURE, WATCH_DIR],
-            env=env,
             capture_output=True,
             timeout=10,
             text=True,

@@ -56,12 +56,14 @@ From the DPT marketplace:
 
 ```
 /plugin marketplace add Digital-Process-Tools/claude-marketplace
-/plugin install supertool@dpt-plugins
+/plugin install supertool-cli@dpt-plugins
 ```
 
 This auto-registers `hooks/session-start.sh` via the plugin's `hooks/hooks.json` — no manual `settings.json` editing. **Restart your Claude Code session afterwards**: the hook only fires at session start, so a session already running when you install it does not pick it up mid-conversation.
 
 Standalone install (clone + symlink onto `$PATH`), the wrapper's caveats (a `cd` breaks `./supertool`, a git worktree starts without one), and every configuration key: [docs/configuration.md](docs/configuration.md).
+
+Installed through the Anthropic plugin directory instead of the DPT marketplace above? That listing tracks this repository's `release` branch, a smaller build that leaves out `bluesky`, `devto`, `hashnode`, `slack` and `youtube` — each reads a credential and sends it to its own vendor's API, which the directory's own review holds on ([docs/releasing.md](docs/releasing.md)). A project config that still names one of those presets gets told so, rather than a bare "not found". The DPT marketplace install above carries the full set.
 
 ## What a call looks like
 

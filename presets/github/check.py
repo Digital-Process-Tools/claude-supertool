@@ -308,7 +308,7 @@ def _annotation_line(a: dict) -> list[str]:
 
 def _print_annotations(annotations: list, conclusion: str, status: str = "") -> None:
     total = len(annotations)
-    cap = env_int("GH_CHECK_ANNOTATION_CAP", _checks.NAMED_CAP, minimum=1)
+    cap = env_int(os.environ.get("GH_CHECK_ANNOTATION_CAP"), "GH_CHECK_ANNOTATION_CAP", _checks.NAMED_CAP, minimum=1)
     if total == 0:
         print("\n## Annotations (0)")
         if status and status != "completed":
@@ -359,7 +359,7 @@ def _print_annotations(annotations: list, conclusion: str, status: str = "") -> 
               f"GH_CHECK_ANNOTATION_CAP)")
     if total >= PER_PAGE:
         print(
-            f"NOTE: this op read the first page only (per_page={PER_PAGE}) and "
+            f"NOTE: this op fetched the first page only (per_page={PER_PAGE}) and "
             f"it came back full, so {total} is a floor, not a total. Page the "
             f"rest by hand if the count matters."
         )

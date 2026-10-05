@@ -103,8 +103,17 @@ def bash_candidates(environ=None):
     shadowing a real one -- and `first_bash_that_runs_a_script` below spawns
     each candidate directly, with no further gate of its own.
     """
-    environ = os.environ if environ is None else environ
-    override = environ.get(_CANDIDATES_ENV)
+    # No alias of the whole mapping, and a literal name rather than the
+    # module constant (#2734): see _CANDIDATES_ENV's own declaration for
+    # why the name is fixed; the alias this replaced is the same shape
+    # that tripped _syntax_floor_interpreter in claude-supertool's own
+    # _supertool.py a round earlier.
+    # No conditional yielding the mapping either: each source is read with
+    # the literal name on its own (#2734).
+    if environ is not None:
+        override = environ.get("SUPERTOOL_SELFTEST_BASH_CANDIDATES")
+    else:
+        override = os.environ.get("SUPERTOOL_SELFTEST_BASH_CANDIDATES")
     if override is not None:
         return [part for part in override.split(os.pathsep) if part]
     git_bin = "C:" + _BACKSLASH + "Program Files" + _BACKSLASH + "Git"
@@ -165,15 +174,23 @@ def wrapper_denies(bash, wrapper, root, command):
     """Run the real wrapper the way Claude Code does. (verdict, detail)"""
     event = json.dumps({"tool_name": "Bash",
                         "tool_input": {"command": command}})
-    env = dict(os.environ)
-    env["CLAUDE_PLUGIN_ROOT"] = root
+    # The child inherits (no `env=`), with the one literal variable set on
+    # this process for the duration of the spawn and restored after (#2734:
+    # no whole-environment copy). Safe here: this script is single-threaded.
+    prior_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    os.environ["CLAUDE_PLUGIN_ROOT"] = root
     try:
         proc = subprocess.run([bash, wrapper], input=event,
                               capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", env=env,
+                              encoding="utf-8", errors="replace",
                               timeout=180)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, "the wrapper could not be spawned: %s" % (exc,)
+    finally:
+        if prior_root is None:
+            os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
+        else:
+            os.environ["CLAUDE_PLUGIN_ROOT"] = prior_root
     if proc.returncode != 0:
         return False, "the wrapper exited %d and produced %r" % (
             proc.returncode, proc.stdout[:120])
@@ -188,6 +205,32 @@ def wrapper_denies(bash, wrapper, root, command):
         return True, ""
     note = hook.get("additionalContext") or "no decision and no note"
     return False, note[:400]
+
+
+def direct_hook_denies(hook_path, command):
+    """The directory build's guard (#2734): hooks.json runs
+    hooks/pre_bash_guard_hook.py straight through a Python ladder, with no
+    bash wrapper, so the check runs it with this same interpreter.
+    (verdict, detail), same contract as `wrapper_denies`."""
+    event = json.dumps({"tool_name": "Bash",
+                        "tool_input": {"command": command}})
+    try:
+        proc = subprocess.run([sys.executable, hook_path], input=event,
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=180)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, "the hook could not be spawned: %s" % (exc,)
+    if proc.returncode != 0:
+        return False, "the hook exited %d and produced %r" % (
+            proc.returncode, proc.stdout[:120])
+    try:
+        hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    except (ValueError, KeyError, TypeError):
+        return False, "no hook envelope in %r" % (proc.stdout[:120],)
+    if isinstance(hook, dict) and hook.get("permissionDecision") == "deny":
+        return True, ""
+    return False, str((hook or {}).get("additionalContext")
+                      or "no decision and no note")[:400]
 
 
 def rule_inventory(root, environ=None):
@@ -210,8 +253,11 @@ def rule_inventory(root, environ=None):
         return ["  rules       : could not run - hooks/shipped_rules.py "
                 "could not be imported from " + hooks + " (" + str(exc)
                 + "), so nothing here says which rules this install ships"]
-    environ = os.environ if environ is None else environ
-    project = environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # Literal name, read from each source on its own; no alias (#2734).
+    if environ is not None:
+        project = environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    else:
+        project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     try:
         return shipped_rules.inventory(root, project)
     except Exception as exc:  # pragma: no cover - defensive
@@ -242,6 +288,23 @@ def report(root, environ=None):
         lines.append("  state       : nothing to test - no op in the "
                      "effective registry declares a `replaces`, so there is "
                      "no raw command for the guard to deny here")
+        return lines, 0
+
+    direct = os.path.join(root, "hooks", "pre_bash_guard_hook.py")
+    if not os.path.isfile(wrapper) and os.path.isfile(direct):
+        # The directory build ships no bash wrapper (#2734): its hooks.json
+        # runs this hook through a literal Python ladder.
+        lines.append("  python      : " + sys.executable)
+        ok, detail = direct_hook_denies(direct, command)
+        if not ok:
+            lines.append("  state       : could not run - the hook did not "
+                         "deny " + repr(command) + ": " + detail)
+            return lines, 1
+        lines.append("  state       : enforcing - the hook denied "
+                     + repr(command) + " run directly, as hooks.json runs it")
+        lines.append("  cannot tell : whether Claude Code has this plugin "
+                     "installed, and which interpreter its ladder resolves. "
+                     "This says the hook can deny, not that it was asked.")
         return lines, 0
 
     candidates = bash_candidates(environ)

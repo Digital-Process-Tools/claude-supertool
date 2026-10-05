@@ -540,7 +540,7 @@ def _verify_ancestry(fd: int, resolved: str, geteuid) -> None:
                     f"deliberately not relocating, which would move every warm "
                     f"daemon out from under the clients still looking for it. "
                     f"Fix it with `chmod go-w {name}` (or `chmod 755 {name}`), "
-                    f"or set SUPERTOOL_RUNTIME_DIR to an absolute path whose "
+                    f"or point SUPERTOOL_RUNTIME_DIR at an absolute path whose "
                     f"every parent is yours — `/run/user/{geteuid()}` on Linux."
                 )
     finally:

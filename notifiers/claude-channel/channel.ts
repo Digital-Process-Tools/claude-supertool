@@ -42,7 +42,7 @@ import * as net from "node:net";
  * than setting neither (#1309). `SUPERTOOL_WATCH_NAME` derives both.
  *
  * This end matters more than it looks. A name reaches every poller, `radar` and
- * `channel:health` through supertool's config-to-env route, and it cannot reach
+ * `channel:health` through supertool's config-to-variable route, and it cannot reach
  * here at all: this server is spawned by the harness from `.mcp.json`. If it
  * only understood a full socket path, a name would configure three of four
  * surfaces — the half-configured state, through a new door. So it reads the
@@ -132,8 +132,10 @@ const EXIT_BAD_CAP = 4;
  * limit is in force that isn't, which is the failure this whole file is about
  * wearing an operations hat.
  */
-function capFromEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
+function capFromEnv(raw: string | undefined, name: string, fallback: number): number {
+  // Takes the VALUE; each caller reads `process.env.<ITS_OWN_NAME>` (#2734).
+  // Indexing the environment by `name` here was a read keyed by a variable, the
+  // shape the Anthropic directory validator cites. `name` only words the error.
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 1) {
@@ -179,9 +181,9 @@ function capFromEnv(name: string, fallback: number): number {
  * All three are overridable for an operator who knows their traffic, matching
  * `GL_JOB_RAW_MAX_LINES`.
  */
-const ATTR_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_ATTR_MAX", 2048);
-const EVENT_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_EVENT_MAX", 8192);
-const LINE_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_LINE_MAX", 1_048_576);
+const ATTR_MAX_CHARS = capFromEnv(process.env.SUPERTOOL_CHANNEL_ATTR_MAX, "SUPERTOOL_CHANNEL_ATTR_MAX", 2048);
+const EVENT_MAX_CHARS = capFromEnv(process.env.SUPERTOOL_CHANNEL_EVENT_MAX, "SUPERTOOL_CHANNEL_EVENT_MAX", 8192);
+const LINE_MAX_CHARS = capFromEnv(process.env.SUPERTOOL_CHANNEL_LINE_MAX, "SUPERTOOL_CHANNEL_LINE_MAX", 1_048_576);
 
 /**
  * How much of the window a *burst* may spend — the third axis of #605, named
@@ -230,9 +232,9 @@ const LINE_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_LINE_MAX", 1_048_576);
  * - `WINDOW_HARD` 262,144 is 4x that, i.e. ~1,700 routing-only events in a
  *   minute. That is not a radar; it is a loop.
  */
-const WINDOW_SECS = capFromEnv("SUPERTOOL_CHANNEL_WINDOW_SECS", 60);
-const WINDOW_MAX_CHARS = capFromEnv("SUPERTOOL_CHANNEL_WINDOW_MAX", 65_536);
-const WINDOW_HARD_CHARS = capFromEnv("SUPERTOOL_CHANNEL_WINDOW_HARD", 262_144);
+const WINDOW_SECS = capFromEnv(process.env.SUPERTOOL_CHANNEL_WINDOW_SECS, "SUPERTOOL_CHANNEL_WINDOW_SECS", 60);
+const WINDOW_MAX_CHARS = capFromEnv(process.env.SUPERTOOL_CHANNEL_WINDOW_MAX, "SUPERTOOL_CHANNEL_WINDOW_MAX", 65_536);
+const WINDOW_HARD_CHARS = capFromEnv(process.env.SUPERTOOL_CHANNEL_WINDOW_HARD, "SUPERTOOL_CHANNEL_WINDOW_HARD", 262_144);
 
 // Two thresholds that cannot both hold is a cap that is not in force. With the
 // hard limit at or below the soft one, the reduce-and-disclose stage is
@@ -960,7 +962,7 @@ function refuse(reason: string): never {
       `  Taking it would leave the other server listening on an unnamed inode:\n` +
       `  alive, watchers all green, and unreachable — a dead radar that reads as\n` +
       `  a healthy one (#550). One session with a channel beats two half-blind.\n` +
-      `  To give this session its own: set SUPERTOOL_WATCH_SOCK to an unused path,\n` +
+      `  To give this session its own: point SUPERTOOL_WATCH_SOCK at an unused path,\n` +
       `  here and on every poller that feeds it. Or stop the other session.\n`,
   );
   writeRefusalMarker(reason);

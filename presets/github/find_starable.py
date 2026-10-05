@@ -45,7 +45,7 @@ def parse_args(arg: str) -> tuple[str, int]:
     # ValueError traceback inside a boundary that claimed to have swept it.
     n = (int(parts[1])
          if len(parts) > 1 and _digits.is_ascii_int(parts[1].strip())
-         else env_int("SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1))
+         else env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1))
     return topic, min(n, 100)
 
 

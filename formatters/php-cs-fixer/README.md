@@ -20,7 +20,7 @@ Runs [PHP CS Fixer](https://github.com/PHP-CS-Fixer/PHP-CS-Fixer) on a single fi
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,
       "timeout": 30,
-      "env": {
+      "variables": {
         "PHPCSFIXER_BIN": "./vendor/bin/php-cs-fixer",
         "PHPCSFIXER_CONFIG": ".php-cs-fixer.php"
       }

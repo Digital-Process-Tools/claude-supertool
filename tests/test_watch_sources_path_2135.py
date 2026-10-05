@@ -276,18 +276,22 @@ def test_no_other_watch_module_builds_its_own_sources_directory():
 # --- the path survives the exec ----------------------------------------------
 
 def test_the_search_path_survives_the_poller_re_exec(monkeypatch, tmp_path):
-    """`_exec_labelled` replaces the process image with `poller_env()`.
+    """`_exec_labelled` replaces the process image after `pin_poller_env()`,
+    and the new image inherits this process's environment (#2734).
 
     Nothing here is derived from another variable, so -- unlike the state
-    directory (#1534) -- `dict(os.environ)` is already the whole answer. That is
-    a property of `poller_env` worth pinning rather than assuming: an env built
+    directory (#1534) -- inheritance is already the whole answer. That is a
+    property of the exec worth pinning rather than assuming: an env built
     from an allowlist instead would drop this, and a re-exec'd poller would
     answer `unknown source` about the source it was already polling.
     """
     external = tmp_path / "private"
     _make_source(external, "server-diag")
     monkeypatch.setenv(sourcepath.PATH_ENV, str(external))
-    env = transport.poller_env()
+    for name in (transport.STATE_DIR_ENV, transport.SOCK_ENV):
+        monkeypatch.setenv(name, os.environ.get(name, ""))
+    transport.pin_poller_env()
+    env = dict(os.environ)
     assert env[sourcepath.PATH_ENV] == str(external)
     assert sourcepath.find("server-diag", sourcepath.resolve(env))[0] is not None
 

@@ -93,7 +93,7 @@ def git_timeout(default: int | None = None) -> int:
     ships with does not move for it.
     """
     base = _GIT_TIMEOUT_DEFAULT if default is None else default
-    return env_int("SUPERTOOL_GIT_TIMEOUT", base, minimum=1)
+    return env_int(os.environ.get("SUPERTOOL_GIT_TIMEOUT"), "SUPERTOOL_GIT_TIMEOUT", base, minimum=1)
 
 
 def _settled(proc: "subprocess.Popen", grace: int) -> bool:
@@ -211,7 +211,7 @@ _LOCK_WAIT_CEILING = 60.0
 
 
 def _lock_wait_budget() -> float:
-    value = env_float("SUPERTOOL_GIT_LOCK_WAIT", LOCK_WAIT_DEFAULT, minimum=0.0)
+    value = env_float(os.environ.get("SUPERTOOL_GIT_LOCK_WAIT"), "SUPERTOOL_GIT_LOCK_WAIT", LOCK_WAIT_DEFAULT, minimum=0.0)
     if math.isnan(value) or value == float("inf"):  # NaN, or +inf slipping past `minimum`
         return LOCK_WAIT_DEFAULT
     return min(value, _LOCK_WAIT_CEILING)

@@ -69,7 +69,7 @@ from spawnable import argv0, spawnable
 
 TOOL = "git-status"
 INSTALL_HINT = ("git not found on PATH — the working-tree delta for this file "
-                "was NOT measured (set $GIT_BIN if git lives elsewhere)")
+                "was NOT measured (point GIT_BIN at it if git lives elsewhere)")
 
 #: Seconds for the WHOLE adapter — all four git calls together — when the
 #: environment does not say otherwise. 5 was the old per-call literal and the
@@ -119,7 +119,9 @@ def _budget() -> int:
     silently, and the only place that could report it is a channel this process
     does not own.
     """
-    raw = os.environ.get(TIMEOUT_ENV)
+    # Literal name, not the module constant (#2734) -- see TIMEOUT_ENV's
+    # own declaration for why.
+    raw = os.environ.get("SUPERTOOL_GIT_TIMEOUT")
     if raw is None:
         return GIT_TIMEOUT_DEFAULT
     try:

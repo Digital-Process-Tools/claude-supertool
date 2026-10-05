@@ -2546,7 +2546,7 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
             return _validate_from_payload(p)
         path = str(p.get("path", "") or "")
         if not path:
-            return "ERROR: @payload for op 'read' missing required field 'path'\n"
+            return "ERROR: @payload for the 'read' op is missing required field 'path'\n"
         offset = _payload_int(p, "offset", 0)
         limit = _payload_int(p, "limit", 0)
         return op_read(path, offset, limit, str(p.get("grep", "") or ""),

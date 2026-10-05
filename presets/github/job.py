@@ -223,7 +223,7 @@ def _render_routed_check(job_id: str, check: dict, mode: str) -> "int | None":
         return None
     routed = (
         f"Routed: you called `gh-job:{job_id}`. That id is not an Actions job, "
-        f"so this op read the checks API instead — the same render as "
+        f"so this op queried the checks API instead — the same render as "
         f"`gh-check:{job_id}`."
     )
     return mod.render_check(job_id, check, routed_from=routed,
@@ -352,11 +352,11 @@ def _missing_log_message(
 def _get_config() -> dict:
     """Read config from SUPERTOOL_ env vars."""
     return {
-        "lines": env_int("SUPERTOOL_LINES", 80, minimum=1),
+        "lines": env_int(os.environ.get("SUPERTOOL_LINES"), "SUPERTOOL_LINES", 80, minimum=1),
         "error_patterns": os.environ.get(
             "SUPERTOOL_ERROR_PATTERNS", "ERROR,FAILED,Error:,Failed,fatal:,##[error]"
         ).split(","),
-        "error_context": env_int("SUPERTOOL_ERROR_CONTEXT", 5, minimum=0),
+        "error_context": env_int(os.environ.get("SUPERTOOL_ERROR_CONTEXT"), "SUPERTOOL_ERROR_CONTEXT", 5, minimum=0),
         "job_patterns": _parse_job_patterns(os.environ.get("SUPERTOOL_JOB_PATTERNS", "")),
     }
 
@@ -438,7 +438,7 @@ def _print_unmatched_failure(
     routinely a step that has nothing to do with the failure — naming it would
     mislead rather than help.
     """
-    tail_n = env_int("GH_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
+    tail_n = env_int(os.environ.get("GH_JOB_UNMATCHED_TAIL_LINES"), "GH_JOB_UNMATCHED_TAIL_LINES", 40, minimum=1)
     print("\n" + UNCLASSIFIED_HEADER)
     print(
         f"Job status is `{status_label}`: something did go wrong. supertool "
@@ -1119,7 +1119,7 @@ def print_artifact(job_id: str, path: str) -> int:
     # unless GitHub omitted or forged that size, in which case the check
     # cannot run at all and says so instead of silently skipping (#2248).
     archive_size = artifact.get("size_in_bytes")
-    download_cap = env_int("GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024,
+    download_cap = env_int(os.environ.get("GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES"), "GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024,
                            minimum=1)
     if isinstance(archive_size, (int, float)):
         if archive_size > download_cap:
@@ -1180,7 +1180,7 @@ def print_artifact(job_id: str, path: str) -> int:
     # between calls in one process -- the same convention every other knob
     # in this file (`GH_JOB_GREP_MAX_BYTES`) already follows, computed
     # inline where it is read.
-    cap = env_int("GH_JOB_ARTIFACT_MAX_BYTES", 65536, minimum=1)
+    cap = env_int(os.environ.get("GH_JOB_ARTIFACT_MAX_BYTES"), "GH_JOB_ARTIFACT_MAX_BYTES", 65536, minimum=1)
     if info.file_size > cap:
         print(
             f"ERROR: {entry_path!r} is {_human_size(info.file_size)}, over "
@@ -1537,7 +1537,7 @@ def main() -> int:
             return 0
         match_count = sum(1 for line in lines if rx.search(line))
         _emit_grep_hits(lines, sorted(hits), rx, match_count,
-                        env_int("GH_JOB_GREP_MAX_BYTES", 65536, minimum=1),
+                        env_int(os.environ.get("GH_JOB_GREP_MAX_BYTES"), "GH_JOB_GREP_MAX_BYTES", 65536, minimum=1),
                         "GH_JOB_GREP_MAX_BYTES", shown_pattern, ctx)
         return 0
 

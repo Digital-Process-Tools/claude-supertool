@@ -170,13 +170,17 @@ _SCANNER_CLEAN_LINE = (
 )
 
 
-def level_from_env(var: str = "SUPERTOOL_CLASSIFY",
-                    default: str = LEVEL_FULL) -> str:
+def level_from_env(*, default: str = LEVEL_FULL) -> str:
     """Read the per-op `classify` level. Unset, empty, or anything other
     than the three declared spellings falls back to `default` (`full`) --
     failing toward classifying, never toward silently doing less than the
-    caller thinks it configured."""
-    raw = os.environ.get(var)
+    caller thinks it configured.
+
+    Reads `SUPERTOOL_CLASSIFY` by its literal name (#2734). The variable's
+    name used to be a parameter -- every caller took the default, so the
+    parameter bought nothing but an environment read keyed by a variable,
+    the shape the directory's validator cites one call site per scan."""
+    raw = os.environ.get("SUPERTOOL_CLASSIFY")
     if raw is None:
         return default
     raw = raw.strip().lower()

@@ -394,7 +394,7 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
     # a module must not make directories because somebody imported it (#1477).
     # "Derived" is equality with `naming.state_dir_for(name)` and not "the
     # variable is unset", which is why this call does something in a poller
-    # re-exec'd through `poller_env` rather than returning at the flag (#1534).
+    # re-exec'd through `pin_poller_env` rather than returning at the flag (#1534).
     if naming.ensure_state_dir(RESOLVED, STATE_DIR):
         return CLAIM_UNKNOWN
     path = pid_path(source, watcher_id)
@@ -928,7 +928,7 @@ NO_DESKTOP_ENV = "SUPERTOOL_WATCH_NO_DESKTOP"
 DESKTOP_ENV = "SUPERTOOL_WATCH_DESKTOP"
 
 
-def _env_flag(name: str, env: dict[str, str] | None) -> bool:
+def _flag_value(raw: str | None) -> bool:
     """The truthy-spelling reading every boolean env knob here shares.
 
     `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive) count; unset, `""`,
@@ -937,11 +937,13 @@ def _env_flag(name: str, env: dict[str, str] | None) -> bool:
     lowercase `json.dumps` stringification a `.supertool.json` op-config
     boolean arrives as (`docs/contributing.md`).
     """
-    src = os.environ if env is None else env
-    return (src.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+    # Takes the VALUE, not a name and a mapping (#2734): each caller reads
+    # its own literal name from its own source, so no variable is named at
+    # run time and no conditional expression yields os.environ.
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
+def desktop_notify_disabled(overrides: dict[str, str] | None = None) -> bool:
     """Whether the operator opted the desktop transport out.
 
     One predicate so `desktop_notify` and every board disclosure read the same
@@ -956,10 +958,12 @@ def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
     reading of `SUPERTOOL_PLAIN` -- the closest existing boolean env knob --
     so the same word means the same thing across both.
     """
-    return _env_flag(NO_DESKTOP_ENV, env)
+    if overrides is not None:
+        return _flag_value(overrides.get("SUPERTOOL_WATCH_NO_DESKTOP"))
+    return _flag_value(os.environ.get("SUPERTOOL_WATCH_NO_DESKTOP"))
 
 
-def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
+def desktop_notify_enabled(overrides: dict[str, str] | None = None) -> bool:
     """Whether `desktop_notify` should actually shell out (#2544).
 
     Off unless asked for: `False` unless `SUPERTOOL_WATCH_DESKTOP` (or its
@@ -970,9 +974,11 @@ def desktop_notify_enabled(env: dict[str, str] | None = None) -> bool:
     "yes please" (the issue's own wording); an operator who already opted out
     keeps getting silence regardless of what the opt-in says.
     """
-    if desktop_notify_disabled(env):
+    if desktop_notify_disabled(overrides):
         return False
-    return _env_flag(DESKTOP_ENV, env)
+    if overrides is not None:
+        return _flag_value(overrides.get("SUPERTOOL_WATCH_DESKTOP"))
+    return _flag_value(os.environ.get("SUPERTOOL_WATCH_DESKTOP"))
 
 
 def desktop_notify(title: str, message: str) -> None:
@@ -1519,7 +1525,7 @@ def channel_key(state_dir: str | None = None) -> str:
 
     `normpath` first: `/tmp/x` and `/tmp/x/` are one directory and produce one
     pid file, so they have to produce one key. A poller and the process that
-    forked it agree by construction — `poller_env` pins the resolved value into
+    forked it agree by construction — `pin_poller_env` pins the resolved value into
     the child's environment rather than letting it re-derive.
 
     `os.fsencode` rather than a hand-picked codec, because this is a path and
@@ -1534,17 +1540,25 @@ def channel_key(state_dir: str | None = None) -> str:
     return digest.hexdigest()[:_CHANNEL_KEY_CHARS]
 
 
-def poller_env() -> dict[str, str]:
-    """Environment for an exec'd poller: the caller's, plus where state lives."""
-    env = dict(os.environ)
-    env[STATE_DIR_ENV] = STATE_DIR
+def pin_poller_env() -> None:
+    """Pin where state lives into THIS process's environment, for the exec
+    that follows to inherit: the caller's environment, plus those two.
+
+    Written onto `os.environ` with literal names rather than returned as a
+    whole-environment copy (#2734: the directory's scanner reads a copy of
+    the mapping as the environment taken wholesale). Only called by
+    `dispatcher._exec_labelled`, in a freshly forked, single-threaded poller
+    that is about to replace its own image -- and if the exec fails, the
+    values pinned are the ones this process already resolved, so it runs on
+    unchanged.
+    """
+    os.environ["SUPERTOOL_WATCH_STATE_DIR"] = STATE_DIR
     # Both halves, for the same reason the state dir was pinned here alone: an
     # exec re-derives from the environment, and re-deriving is only equivalent
     # while every input survives. Under a name it is a third variable that has
     # to survive, and a poller that resolved a different socket from its parent
     # is the #1309 split with nobody to notice it. Pin what was decided (#1477).
-    env[SOCK_ENV] = SOCK_PATH
-    return env
+    os.environ["SUPERTOOL_WATCH_SOCK"] = SOCK_PATH
 
 
 _SCAN_PS_ARGV = ("ps", "-axww", "-o", "pid=,args=")

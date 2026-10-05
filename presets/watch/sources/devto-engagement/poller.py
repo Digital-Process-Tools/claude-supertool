@@ -200,7 +200,7 @@ def fetch_population(scope: str, api_key: str) -> tuple[dict[str, dict[str, Any]
     if scope != DEFAULT_SCOPE:
         return None, (f"ERROR: scope {scope!r} is not supported — only "
                       f"{DEFAULT_SCOPE!r} (your own published articles)")
-    max_articles = env_int("SUPERTOOL_STATUS_POSTS", DEFAULT_MAX_ARTICLES, minimum=1)
+    max_articles = env_int(os.environ.get("SUPERTOOL_STATUS_POSTS"), "SUPERTOOL_STATUS_POSTS", DEFAULT_MAX_ARTICLES, minimum=1)
     data, error = _get("/articles/me/published", api_key,
                        query={"per_page": max_articles})
     if error:

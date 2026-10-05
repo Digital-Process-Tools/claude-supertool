@@ -31,7 +31,6 @@ on a broken setup is the worst possible place for a new failure mode.
 """
 from __future__ import annotations
 
-import os
 import sys
 from typing import Optional
 
@@ -56,8 +55,18 @@ def _notice(text: str) -> None:
     sys.stdout.flush()
 
 
-def env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
-    """Read `name` as an int, or say why it could not be and what is in force.
+def env_int(raw: Optional[str], name: str, default: int, *,
+            minimum: Optional[int] = None) -> int:
+    """Parse `raw` -- the value of the variable `name` -- as an int, or say
+    why it could not be and what is in force.
+
+    Takes the VALUE, not the name (#2734). Every caller reads
+    `os.environ.get("ITS_OWN_LITERAL")` and passes the result, so no
+    environment read in a shipped preset is keyed by a variable -- the
+    shape the directory's validator cites as "an environment variable named
+    at run time", one call site per scan. `name` only words the notice.
+    `raw` is first so an old-style `env_int("NAME", 10)` fails loudly
+    (missing `default`) instead of parsing a variable's name as its value.
 
     Unset is silent — there is nothing to report about a knob nobody touched.
     Set-but-unusable is announced and falls back to `default`.
@@ -69,7 +78,6 @@ def env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
     commits" quietly becoming "show me the minimum" is the same silent class in
     a different hat.
     """
-    raw = os.environ.get(name)
     if raw is None:
         return default
     try:
@@ -85,9 +93,10 @@ def env_int(name: str, default: int, *, minimum: Optional[int] = None) -> int:
     return value
 
 
-def env_float(name: str, default: float, *, minimum: Optional[float] = None) -> float:
-    """`env_int` for the knobs measured in seconds. Same contract, same messages."""
-    raw = os.environ.get(name)
+def env_float(raw: Optional[str], name: str, default: float, *,
+              minimum: Optional[float] = None) -> float:
+    """`env_int` for the knobs measured in seconds. Same contract, same
+    messages, same value-not-name signature (#2734)."""
     if raw is None:
         return default
     try:

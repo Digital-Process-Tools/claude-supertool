@@ -1377,6 +1377,10 @@ RESET_GLOBALS = (
 #    They are read, never written. Resetting them would be harmless but says
 #    something untrue about their lifetime.
 RESET_EXEMPT_GLOBALS = (
+    # Literal-name readers for every SUPERTOOL_<OP>_<KEY> override (#2734).
+    # Built once at import, never mutated; each value is a lambda that reads
+    # os.environ at call time, so it holds no per-run state to reset.
+    "_OP_ENV_OVERRIDES",
     # The disable-sentinel vocabulary for the onboarding-op fallback (#2342),
     # same shape as _DISABLE_VALUES in presets/git/commit.py (out of this
     # sweep's reach, since it lives outside _supertool.py). Written once at
@@ -1396,6 +1400,11 @@ RESET_EXEMPT_GLOBALS = (
     "_OP_CONFIG_RESERVED_KEYS",
     "_MCP_SERVERS",
     "_MCP_STOP_CODES",
+    # The five presets the directory build's deny-list strips out (#2734).
+    # A fixed set literal, written once at import and only ever read via
+    # `name in _DIRECTORY_BUILD_EXCLUDED_PRESETS` inside _merge_presets --
+    # same lifetime and shape as _AT_FILE_REST_RAW_FIELDS below.
+    "_DIRECTORY_BUILD_EXCLUDED_PRESETS",
     # Per-command-word option grammar for the raw-command guard (#1421).
     # Read on every `guard_command` call, written by nothing.
     "_GUARD_GLOBAL_OPTIONS",

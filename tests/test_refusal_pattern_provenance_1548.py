@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -101,7 +102,7 @@ def test_outside_roots_is_not_an_is_refusal_input(
     re-deriving it as drift.
     """
     monkeypatch.setenv("SOME_PATHS", str(tmp_path / "src"))
-    reason = ref.outside_roots(str(tmp_path / "tests" / "T.php"), "SOME_PATHS")
+    reason = ref.outside_roots(str(tmp_path / "tests" / "T.php"), "SOME_PATHS", os.environ.get("SOME_PATHS", ""))
     assert reason == "path outside SOME_PATHS allowlist", reason
     assert ref.is_refusal(reason) is False, (
         "outside_roots() now reads as a tool refusal — if that is intended, the "

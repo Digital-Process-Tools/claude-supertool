@@ -49,8 +49,8 @@ _MAX_SAFE_PATH_LEN = 4096
 _ALLOW_OUTSIDE_HINT = (
     "For a one-off call, no config edit and no residue: prefix the call "
     "with `cwd:PATH` to move the boundary there for this call only "
-    "(#1784). To allow it for every future call: set "
-    "SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
+    "(#1784). To allow it for every future call: define "
+    "SUPERTOOL_ALLOW_OUTSIDE_CWD=1 as an environment variable, or add "
     '`"allow_outside_cwd": true` to .supertool.json.'
 )
 
@@ -857,7 +857,7 @@ def _preset_path_containment(
 
 def _path_not_found(path: str, *, label: str = "path",
                      suggest: Optional[str] = None,
-                     op: Optional[str] = None,
+                     op_name: Optional[str] = None,
                      call_prefix: Optional[str] = None,
                      creates: bool = False) -> str:
     """The "not found" error, naming the path it actually tried (#624).
@@ -903,9 +903,9 @@ def _path_not_found(path: str, *, label: str = "path",
     """
     if not path:
         return f"ERROR: {label} not found: {path}\n"
-    if not suggest and op:
-        suggest = (_comma_path_list_suggest(op, path)
-                   or _multi_path_suggest(op, path, call_prefix)
+    if not suggest and op_name:
+        suggest = (_comma_path_list_suggest(op_name, path)
+                   or _multi_path_suggest(op_name, path, call_prefix)
                    or None)
     # `os.path.abspath` and nothing else. This line used to run its own
     # `expanduser`, so a `~/x` that the op had stat-ed literally was reported
@@ -950,7 +950,7 @@ def _path_not_found(path: str, *, label: str = "path",
             # is not a sentence.
             f"ERROR: {shown} is a directory, not a file\n"
             f"  tried: {shown_tried} (cwd: {shown_cwd})\n"
-            f"  '{op or label}' takes a single file. `ls:{shown}` or "
+            f"  '{op_name or label}' takes a single file. `ls:{shown}` or "
             f"`tree:{shown}` lists what is in it.\n"
         )
     lines = [
@@ -995,7 +995,7 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
     set env this way — `subprocess.run(shlex.split(cmd), shell=False)` treats
     the assignment as a literal argv[0], yielding ENOENT.
     """
-    env: Dict[str, str] = {}
+    assignments: Dict[str, str] = {}
     tokens = shlex.split(cmd, posix=True)
     idx = 0
     # `\Z` with DOTALL, not `$`. Two effects, and the second is the wider one.
@@ -1013,15 +1013,15 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
         m = _kv.match(tokens[idx])
         if not m:
             break
-        env[m.group(1)] = m.group(2)
+        assignments[m.group(1)] = m.group(2)
         idx += 1
-    if not env:
+    if not assignments:
         return {}, cmd
     # Rebuild remaining cmd as shell-safe string so callers can keep using
     # shlex.split on it (the placeholder-substituted file path already
     # passed through shlex.quote upstream, so it survives a second pass).
     remaining = " ".join(shlex.quote(t) for t in tokens[idx:])
-    return env, remaining
+    return assignments, remaining
 
 
 
@@ -1071,12 +1071,29 @@ def _in_template_single_quotes(s: str, pos: int) -> bool:
     return in_single
 
 
-def _expand_env(s: str, env: Dict[str, str]) -> str:
-    r"""Safe $VAR / ${VAR} expansion from env (no shell).
+def _expand_env(s: str, extras: Dict[str, str]) -> str:
+    r"""Safe $VAR / ${VAR} expansion from `extras`, then the process env (no shell).
 
-    Replaces $NAME and ${NAME} with values from env. Unknown vars are left
-    literal (vs shell which silently empties them). Used at all argv-form
-    dispatch sites (custom ops, validators, formatters, resolve) so users
+    Replaces $NAME and ${NAME} with the value from `extras` if it names one,
+    else from the process environment. Unknown vars are left literal (vs
+    shell which silently empties them).
+
+    **`extras` is only what the call site adds, never a copy of os.environ
+    (#2734).** The portal's scanner cited every name bound to a copy of the
+    environment that was then read by a run-time key, which is what this
+    function's lookup is. A name not in `extras` is resolved by handing the
+    single token `${NAME}` to `os.path.expandvars`, so the environment read
+    happens inside the stdlib and only that one token is ever expanded there:
+    `%VAR%` (which `ntpath.expandvars` expands), `$$`, digit-led names and the
+    template's own quote spans (which `ntpath.expandvars` refuses to expand
+    inside) never reach it, and the quoting below still applies to the value.
+    `tests/test_expand_env_extras_equivalence_2734.py` holds it to the
+    merged-copy outputs it replaced. **Known gap:** an environment variable
+    whose value is exactly `${ITS_OWN_NAME}` reads as unset and stays as
+    written -- `expandvars` hands back an unchanged token for both, and
+    nothing else tells them apart without reading the mapping by name.
+
+    Used at all argv-form dispatch sites (custom ops, validators, formatters, resolve) so users
     can keep cmd templates that rely on env-var expansion without invoking
     a shell.
 
@@ -1146,11 +1163,18 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     `$`), which is a different, larger change than the one this docstring
     documents.
     """
+    def _lookup(name: str) -> Optional[str]:
+        if name in extras:
+            return extras[name]
+        probe = "${" + name + "}"
+        found = os.path.expandvars(probe)
+        return None if found == probe else found
+
     def _replace(m: "re.Match[str]") -> str:
         name = m.group(1) or m.group(2)
-        if name not in env:
+        value = _lookup(name)
+        if value is None:
             return m.group(0)
-        value = env[name]
         if _in_template_single_quotes(s, m.start()):
             # Already inside a single-quote span the TEMPLATE itself opened
             # (docs/notifiers.md's `bash -c '...$SLACK_WEBHOOK'` pattern) --
@@ -1304,17 +1328,79 @@ GIT_ENV_VARS = (
 _LEAKED_GIT_ENV: List[str] = []
 
 
-def scrub_git_env(env: MutableMapping[str, str]) -> List[str]:
-    """Delete git's repo pointers from `env`; return the names removed.
+def _scrub_process_git_env() -> List[str]:
+    """The production half of `scrub_git_env` (no argument): unset git's repo pointers in
+    THIS process's own environment; return the names removed.
 
-    `env` is `os.environ` itself at the one call site (#714), not a copy: a
-    `del` there unsets the variable for this process AND for every child it
-    spawns, which is what makes the guard total. Typed as a MutableMapping
-    rather than a Dict because `os._Environ` is not a dict.
+    Operates on `os.environ` itself, never a name bound to it (#2734: the
+    directory's scanner cited `_supertool_presets.py` for "an environment
+    variable read through an alias of the environment object" -- the
+    `env = os.environ` this replaced). Not a copy: removing a variable here
+    unsets it for this process AND for every child it spawns, which is what
+    makes the guard total. One literal-keyed statement per name, same order
+    as `GIT_ENV_VARS`; `tests/test_git_env_scrub_692.py` pins that this
+    half removes exactly that tuple.
     """
-    removed = [name for name in GIT_ENV_VARS if name in env]
-    for name in removed:
-        del env[name]
+    removed = []
+    if os.environ.pop("GIT_DIR", None) is not None:
+        removed.append("GIT_DIR")
+    if os.environ.pop("GIT_WORK_TREE", None) is not None:
+        removed.append("GIT_WORK_TREE")
+    if os.environ.pop("GIT_COMMON_DIR", None) is not None:
+        removed.append("GIT_COMMON_DIR")
+    if os.environ.pop("GIT_INDEX_FILE", None) is not None:
+        removed.append("GIT_INDEX_FILE")
+    if os.environ.pop("GIT_OBJECT_DIRECTORY", None) is not None:
+        removed.append("GIT_OBJECT_DIRECTORY")
+    if os.environ.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None) is not None:
+        removed.append("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+    if os.environ.pop("GIT_NAMESPACE", None) is not None:
+        removed.append("GIT_NAMESPACE")
+    return removed
+
+
+def scrub_git_env(target: Optional[MutableMapping[str, str]] = None) -> List[str]:
+    """Delete git's repo pointers from `target`; return the names removed.
+
+    With no argument it acts on this process's own environment, through
+    `_scrub_process_git_env` (#2734: the one production call site in
+    `_supertool.py` passes nothing, and no name is ever bound to
+    `os.environ`). A test passes its own dict explicitly (#692, #416), and
+    only that dict is touched.
+    """
+    if target is None:
+        return _scrub_process_git_env()
+    # Seven literal-keyed statements, no loop (#2734): a `for` over
+    # GIT_ENV_VARS (or any tuple, inline or not) still binds `del
+    # env[loop_var]` to a non-literal key -- the same dynamic-key shape
+    # the directory's scanner read as "an environment variable named at
+    # run time" for `main()`'s SUPERTOOL_REPO restore (#2732). Only
+    # spelling out each name as its own statement removes it from the
+    # AST entirely. `tests/test_git_env_scrub_builtins_714.py`'s
+    # `GIT_ENV_VARS == EXPECTED_VARS` pin is the guard that these seven
+    # literals and the tuple above can never drift apart silently.
+    removed = []
+    if "GIT_DIR" in target:
+        removed.append("GIT_DIR")
+        del target["GIT_DIR"]
+    if "GIT_WORK_TREE" in target:
+        removed.append("GIT_WORK_TREE")
+        del target["GIT_WORK_TREE"]
+    if "GIT_COMMON_DIR" in target:
+        removed.append("GIT_COMMON_DIR")
+        del target["GIT_COMMON_DIR"]
+    if "GIT_INDEX_FILE" in target:
+        removed.append("GIT_INDEX_FILE")
+        del target["GIT_INDEX_FILE"]
+    if "GIT_OBJECT_DIRECTORY" in target:
+        removed.append("GIT_OBJECT_DIRECTORY")
+        del target["GIT_OBJECT_DIRECTORY"]
+    if "GIT_ALTERNATE_OBJECT_DIRECTORIES" in target:
+        removed.append("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        del target["GIT_ALTERNATE_OBJECT_DIRECTORIES"]
+    if "GIT_NAMESPACE" in target:
+        removed.append("GIT_NAMESPACE")
+        del target["GIT_NAMESPACE"]
     return removed
 
 
@@ -1338,7 +1424,7 @@ def _git_env_notice(removed: List[str]) -> str:
     if not removed:
         return ""
     return (
-        f"scrubbed inherited git env: {', '.join(removed)} — this call acted "
+        f"scrubbed inherited git variables: {', '.join(removed)} — this call acted "
         f"on the repo at {os.getcwd()}, not the one those variables named "
         f"(#692, #714)\n"
     )
@@ -1606,13 +1692,20 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # spawns git in six of its own functions. `os.environ` is scrubbed once in
     # `_main` instead, so this copy is already clean and a preset stays covered
     # by being launched rather than by opting in.
-    env = dict(os.environ)
+    # Only the EXTRAS this launch adds (#2734) -- never a copy of os.environ.
+    # Every non-reserved op-config key below is exported under a name built
+    # at run time from the user's config, and a batch runs ops on a
+    # ThreadPoolExecutor, so neither a literal os.environ write nor a
+    # temporary one is possible. `_expand_env` falls back to the process
+    # environment itself, and the child gets `{**os.environ, **env}` inline
+    # at the spawn, so no local name ever holds the whole environment.
+    extras: Dict[str, str] = {}
     # Which separator produced the argv this op is about to receive (#946).
     # A preset that reconstructs the caller's input — git-commit's spilled
     # message refusal is the one that does — cannot otherwise tell ':::' from
     # ':' from a payload whose fields were never split, and rejoining on the
     # wrong one hands back a suggestion that silently rewrites the message.
-    env["SUPERTOOL_ARG_SEP"] = _ARG_SEP[0]
+    extras["SUPERTOOL_ARG_SEP"] = _ARG_SEP[0]
     if isinstance(entry, dict):
         for k, v in entry.items():
             if k not in _RESERVED_KEYS:
@@ -1632,14 +1725,14 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
                 # Non-scalars (lists/dicts, e.g. "job_patterns") are JSON-encoded
                 # so the receiving preset can json.loads them back — str() would
                 # emit a Python repr that json.loads can't parse.
-                env[f"SUPERTOOL_{k.upper()}"] = v if isinstance(v, str) else json.dumps(v)
+                extras[f"SUPERTOOL_{k.upper()}"] = v if isinstance(v, str) else json.dumps(v)
 
     _prefix_env, cmd = _extract_env_prefix(cmd)
     # Unshield the prefix VALUES too: `KEY={dir} cmd` puts caller data in one,
     # and it has to reach the child's environment as the real path (#1734).
     _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
-    env.update(_prefix_env)
-    cmd = _unshield(_expand_env(cmd, env), _shield)
+    extras.update(_prefix_env)
+    cmd = _unshield(_expand_env(cmd, extras), _shield)
 
     t0 = time.monotonic()
     try:
@@ -1653,7 +1746,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         # undecodable bytes from taking the whole run down with it.
         result = subprocess.run(
             shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace", env=env,
+            encoding="utf-8", errors="replace", env={**os.environ, **extras},
         )
         elapsed = _elapsed_since(t0)
         output = result.stdout

@@ -33,6 +33,17 @@ Supertool merges preset ops at startup — project-level ops always override on 
 | `statusline` | A one-line render for Claude Code's `statusLine` hook. Never makes a network call — a network-backed op (`gh-pr` today) publishes its own tally as a side effect of running normally, and this op only ever reads that fragment | [statusline.md](statusline.md) | none |
 | `oss` | `oss-tick` composes the mechanical opening of the `claude-oss` maintainer tick -- state, pending wait, plugin identity, git sync, board, radar tier -- into one three-state receipt. A thin shim: it locates the installed `oss` plugin and execs its own scripts, so no maintainer-loop judgment lives here | [oss.md](oss.md) | `git`; the `oss` Claude Code plugin installed |
 
+## Not in the Anthropic directory build
+
+`hashnode`, `devto`, `bluesky`, `youtube` and `slack` above each read a
+credential and send it to their own vendor's API -- the shape the Anthropic
+plugin directory's own review holds on. `.github/release-branch.json` denies
+them from the `release` branch that directory listing tracks; `master` and
+the DPT marketplace install (`/plugin install supertool-cli@dpt-plugins`) carry
+all five as usual ([docs/releasing.md](../releasing.md)). A project config
+that names one of these presets on an install missing them gets told why,
+rather than a bare "not found" ([#2734](https://github.com/Digital-Process-Tools/claude-supertool/issues/2734)).
+
 ## Remote text is fenced
 
 Ops that read a tracker print two things interleaved: what supertool determined, and what a stranger typed into an issue. Until [#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694) they were printed the same way, so a comment reproducing the comment loop's own format string rendered as a second, earlier comment attributed to a maintainer — with nothing in the output saying which of the two the tracker actually held.

@@ -18,7 +18,7 @@ from _sanitize import safe_short
 
 
 def parse_args(arg: str) -> tuple[str | None, int]:
-    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
+    default_n = env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 10, minimum=1)
     if not arg or arg.isdigit():
         return None, int(arg) if arg else default_n
     parts = arg.split(":")

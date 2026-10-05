@@ -35,7 +35,7 @@ def test_validator_env_field_passed_to_subprocess() -> None:
     spec = {
         "cmd": cmd,
         "timeout": 5,
-        "env": {"MY_TEST_VAR": "hello_from_env"},
+        "variables": {"MY_TEST_VAR": "hello_from_env"},
     }
     out = run_one_or_skip("t", spec, "x")
     assert out.get("captured") == "hello_from_env"
@@ -74,7 +74,7 @@ def test_validator_env_field_overrides_parent_env(monkeypatch) -> None:
     spec = {
         "cmd": cmd,
         "timeout": 5,
-        "env": {"MY_OVERRIDE_VAR": "overridden"},
+        "variables": {"MY_OVERRIDE_VAR": "overridden"},
     }
     out = run_one_or_skip("t", spec, "x")
     assert out.get("captured") == "overridden"
@@ -98,7 +98,7 @@ def test_formatter_env_field_passed_to_subprocess(tmp_path: Path) -> None:
     spec = {
         "cmd": f"{{python}} {adapter.as_posix()}",
         "timeout": 5,
-        "env": {"MY_FMT_VAR": "fmt_env_value"},
+        "variables": {"MY_FMT_VAR": "fmt_env_value"},
     }
     result = supertool._formatter_run_one("fmt", spec, "any.php")
     assert_ok(result)
@@ -168,7 +168,7 @@ def test_spec_env_wins_over_prefix(tmp_path: Path) -> None:
         "cmd": f"SHARED_VAR=from_prefix {{python}} {adapter.as_posix()}",
         "timeout": 5,
         "cache": False,
-        "env": {"SHARED_VAR": "from_spec"},
+        "variables": {"SHARED_VAR": "from_spec"},
     }
     out = run_one_or_skip("t", spec, "any.php")
     assert out.get("captured") == "from_spec", f"spec.env did not win: {out}"

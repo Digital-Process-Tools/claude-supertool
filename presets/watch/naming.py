@@ -113,7 +113,7 @@ class Resolved(NamedTuple):
     #: (#693). `ensure_state_dir` will only create what this flag covers.
     #:
     #: A question about the *value*, not about which variable delivered it, and
-    #: that is #1534: `transport.poller_env` exports the resolved state
+    #: that is #1534: `transport.pin_poller_env` exports the resolved state
     #: directory, so a re-exec'd poller saw an explicit `SUPERTOOL_WATCH_STATE_DIR`
     #: and read its own parent's derivation as somebody else's path. The flag was
     #: `False` there, `ensure_state_dir` returned without asking anything, and
@@ -160,20 +160,30 @@ def flat_path(path: str) -> str:
     return _untrusted.flat(path, disclose_newline=True)
 
 
-def resolve(env: dict[str, str] | None = None) -> Resolved:
+def resolve(overrides: dict[str, str] | None = None) -> Resolved:
     """The socket and the state directory this process should use.
 
     Pure: reads a mapping, touches no filesystem. `ensure_state_dir` is the
     separate call for the one side effect, because a module constant computed at
     import must not create directories as a side effect of somebody importing it.
     """
-    src = os.environ if env is None else env
+    # No alias of the whole mapping, and literal names rather than the
+    # module constants (#2734) -- see NAME_ENV/SOCK_ENV/STATE_DIR_ENV's own
+    # declarations for why. Each source is read with the literal name on its
+    # own branch: no name bound to os.environ and no conditional expression
+    # yielding it -- the "read through an alias of the environment object"
+    # shape the directory's scanner cites.
     # `or` rather than `in`, matching the two variables it sits above: an
     # operator who exports an empty string gets the default, not a refusal
     # about a name they did not set.
-    raw = (src.get(NAME_ENV) or "").strip()
-    explicit_sock = src.get(SOCK_ENV) or ""
-    explicit_state = src.get(STATE_DIR_ENV) or ""
+    if overrides is not None:
+        raw = (overrides.get("SUPERTOOL_WATCH_NAME") or "").strip()
+        explicit_sock = overrides.get("SUPERTOOL_WATCH_SOCK") or ""
+        explicit_state = overrides.get("SUPERTOOL_WATCH_STATE_DIR") or ""
+    else:
+        raw = (os.environ.get("SUPERTOOL_WATCH_NAME") or "").strip()
+        explicit_sock = os.environ.get("SUPERTOOL_WATCH_SOCK") or ""
+        explicit_state = os.environ.get("SUPERTOOL_WATCH_STATE_DIR") or ""
 
     notes: list[str] = []
     refusal = ""
@@ -191,7 +201,7 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
     sock = sock_for(name) if name else DEFAULT_SOCK
     state_dir = state_dir_for(name) if name else DEFAULT_STATE_DIR
 
-    # Both notes are gated on the value actually differing. `poller_env` pins
+    # Both notes are gated on the value actually differing. `pin_poller_env` pins
     # *both* halves into an exec'd poller's environment (#1477), so the
     # unguarded form printed "the socket is X, not X" and "poller slots are in
     # X, not X" on every poller surface — an override notice for an override
@@ -464,7 +474,7 @@ def _flat_list(values: tuple[str, ...]) -> str:
 
 
 def project_notes(resolved: Resolved, declared: Declared | None,
-                  env: dict[str, str] | None = None) -> list[str]:
+                  overrides: dict[str, str] | None = None) -> list[str]:
     """Whose channel this is, for a board that used to render every fleet alike.
 
     A name derives one socket and one poller-slot directory, so two projects
@@ -516,7 +526,12 @@ def project_notes(resolved: Resolved, declared: Declared | None,
                 f"claims the name {name} — this socket and these poller slots "
                 f"may be another project's fleet"]
     if declared.state == DECLARED_SILENT:
-        root = ((env if env is not None else os.environ).get(ROOT_ENV) or "").strip()
+        # Literal name, each source on its own branch (#2734): no alias of
+        # the mapping, no constant as the key.
+        if overrides is not None:
+            root = (overrides.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
+        else:
+            root = (os.environ.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
         if root and declared.path and os.path.abspath(root.rstrip(os.sep)) == \
                 os.path.dirname(os.path.abspath(declared.path)):
             # A process that exported `name` said, separately, which
@@ -611,7 +626,7 @@ def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
     for, which is the same trade this repo keeps filing against.
 
     **The question is the value, not the variable (#1534).** It used to be "the
-    operator did not set `SUPERTOOL_WATCH_STATE_DIR`", and `transport.poller_env`
+    operator did not set `SUPERTOOL_WATCH_STATE_DIR`", and `transport.pin_poller_env`
     sets it — so a re-exec'd poller read the directory *its own parent derived*
     as operator-supplied, this function returned `""` without asking anything,
     and the establishment below happened exactly once, in the parent, before the

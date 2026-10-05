@@ -36,7 +36,7 @@ def parse_args(arg: str) -> tuple[str, int]:
     if not arg:
         sys.stderr.write("ERROR: usage hashnode_comments:SLUG_OR_URL[:N]\n")
         sys.exit(2)
-    default_n = env_int("SUPERTOOL_DEFAULT_LIMIT", 20, minimum=1)
+    default_n = env_int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT"), "SUPERTOOL_DEFAULT_LIMIT", 20, minimum=1)
     if arg.startswith("http"):
         path = urlparse(arg).path.strip("/")
         slug = path.split("/")[-1]

@@ -1124,20 +1124,20 @@ def _declared_env(mcp_path: Path) -> tuple[dict[str, str] | None, str]:
     servers = doc.get("mcpServers")
     if not isinstance(servers, dict) or not isinstance(servers.get(CONSUMER_SERVER), dict):
         return None, f"{mcp_path} declares no {CONSUMER_SERVER} server"
-    env = servers[CONSUMER_SERVER].get("env")
-    if env is None:
+    variables = servers[CONSUMER_SERVER].get("env")
+    if variables is None:
         return {}, ""
-    if not isinstance(env, dict):
-        return None, f"{mcp_path} gives {CONSUMER_SERVER} an `env` that is not an object"
-    return {str(k): str(v) for k, v in env.items()}, ""
+    if not isinstance(variables, dict):
+        return None, f"{mcp_path} gives {CONSUMER_SERVER} an environment block that is not an object"
+    return {str(k): str(v) for k, v in variables.items()}, ""
 
 
-def _declaration(env: dict[str, str]) -> str:
+def _declaration(variables: dict[str, str]) -> str:
     """What a `.mcp.json` said, flattened. Operator text on a rendered surface
     (#1423), and read from a file rather than typed here."""
-    bits = [f"{key}={_untrusted.flat(env[key])}"
+    bits = [f"{key}={_untrusted.flat(variables[key])}"
             for key in (naming.NAME_ENV, naming.SOCK_ENV, naming.STATE_DIR_ENV)
-            if env.get(key)]
+            if variables.get(key)]
     return ", ".join(bits) if bits else "no watch variables at all"
 
 
@@ -1203,11 +1203,11 @@ def consumer_lines(resolved: naming.Resolved,
             continue
         seen.add(key)
         label = _root_label(root)
-        env, why = _declared_env(mcp_path)
-        if env is None:
+        variables, why = _declared_env(mcp_path)
+        if variables is None:
             unread.append((label, why))
             continue
-        if not any(var in env for var in CHANNEL_VARS):
+        if not any(var in variables for var in CHANNEL_VARS):
             # The shipped `.mcp.json` declares no channel at all, and since #1541
             # that is the intended state: a name true of one checkout must not
             # ride the artifact into every install. The consumer then takes these
@@ -1229,13 +1229,13 @@ def consumer_lines(resolved: naming.Resolved,
                 f"{naming.DEFAULT_SOCK} while this process reads "
                 f"{naming.flat_path(resolved.sock)}")
             continue
-        theirs = naming.resolve(env)
+        theirs = naming.resolve(variables)
         if theirs.sock == resolved.sock:
             agreed.append(
-                f"consumer config {key} ({label}) agrees: {_declaration(env)}")
+                f"consumer config {key} ({label}) agrees: {_declaration(variables)}")
         else:
             differed.append(
-                f"consumer config {key} ({label}) declares {_declaration(env)}, "
+                f"consumer config {key} ({label}) declares {_declaration(variables)}, "
                 f"which binds {naming.flat_path(theirs.sock)} — this process "
                 f"reads {naming.flat_path(resolved.sock)}. The consumer is on "
                 f"another channel, so nothing a poller emits here reaches it")
@@ -1626,8 +1626,8 @@ def _dual_declaration_objection(path: str, tag_name: str,
         return None
     for root in (_mcp_roots() if roots is None else roots):
         mcp_path = Path(root) / MCP_FILENAME
-        env, why = _declared_env(mcp_path)
-        if env is None:
+        variables, why = _declared_env(mcp_path)
+        if variables is None:
             # `_declared_env` collapses several different reasons into one
             # `(None, why)` shape (#2051 reviewer finding). Two of them are
             # genuinely "nothing declared here" and safe to keep looking
@@ -1647,8 +1647,8 @@ def _dual_declaration_objection(path: str, tag_name: str,
                     f"{CONSUMER_SERVER} declaration ({_untrusted.flat(why)}), "
                     f"so whether it collides with {TAG_PREFIX}{tag_name} on "
                     f"this socket cannot be ruled out")
-        theirs_sock = (naming.resolve(env).sock
-                       if any(var in env for var in CHANNEL_VARS)
+        theirs_sock = (naming.resolve(variables).sock
+                       if any(var in variables for var in CHANNEL_VARS)
                        else resolved.sock)
         if theirs_sock == path:
             return (f"{mcp_path} declares {CONSUMER_SERVER} on this same "

@@ -89,7 +89,7 @@ def test_op_glob_brace_returns_both_extensions(tmp_files: Path) -> None:
 def test_op_glob_brace_repro_from_issue(tmp_files: Path) -> None:
     """Exact failure mode from issue #161 — should now return matches."""
     out = supertool.op_glob("**/*.{json,xml}:no-auto-read".split(":")[0], no_auto_read=True)
-    assert "(0 files)" not in out
+    assert "(0 files" not in out
 
 
 def test_op_glob_no_braces_unchanged(tmp_files: Path) -> None:
@@ -103,3 +103,13 @@ def test_op_glob_brace_dedup(tmp_files: Path) -> None:
     # `{json,json}` shouldn't double-count
     out = supertool.op_glob("**/*.{json,json}", no_auto_read=True)
     assert "(2 files)" in out
+
+
+@pytest.fixture(autouse=True)
+def _no_gitignore_clause_outside_a_repo(monkeypatch):
+    """These pin header shapes and rtk delegation in tmp dirs that are not git
+    repositories. Since #2738 such a walk says `gitignore filter not applied
+    (not a git repository)` and declines delegation; that is pinned in
+    tests/test_gitignore_files_2738.py, so it is switched off here rather
+    than threaded through every exact header below."""
+    monkeypatch.setenv("SUPERTOOL_NO_GITIGNORE", "1")

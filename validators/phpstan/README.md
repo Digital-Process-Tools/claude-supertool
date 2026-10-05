@@ -23,7 +23,7 @@ Runs [PHPStan](https://phpstan.org/) on a single file and emits SCHEMA.md-compli
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "rollback_on_fail": false,
       "timeout": 60,
-      "env": {
+      "variables": {
         "PHPSTAN_BIN": "./vendor/bin/phpstan",
         "PHPSTAN_CONFIG": "phpstan.neon",
         "PHPSTAN_MEMORY": "512M",

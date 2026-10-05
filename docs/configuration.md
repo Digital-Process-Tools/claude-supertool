@@ -505,6 +505,8 @@ Speedup: I/O-bound ops on different files. ~3-5× faster on cold filesystem; mod
 
 `glob`, `grep`, `tree`, and `map` walk the filesystem recursively. On large repos this can be slow and noisy — `.git/objects/`, `node_modules/`, `vendor/`, and similar dirs rarely contain what you're looking for. And some files are worse than noise: a `grep` that happens to cross a `.env` puts a live token in an LLM's context.
 
+These ops also skip whatever `.gitignore` says the repository does not track ([#2738](https://github.com/Digital-Process-Tools/claude-supertool/issues/2738), [Gitignored files and directories are skipped](operations/search.md#gitignored-files-and-directories-are-skipped)) — a second layer on top of the list below, not a replacement for it.
+
 Excluded **directories** are pruned at the walk boundary — never opened. Excluded **files** are dropped from the result, and a file dropped for **credential** reasons is **counted**, so the report line says how many were hidden rather than simply not mentioning them.
 
 Noise entries (`.git`, `node_modules`, `__pycache__`, `dist/`, the caches) are dropped without being counted — see [Hidden files](operations/search.md#hidden-files-are-counted-not-silently-dropped) for why a counter that is never zero stops being a signal.

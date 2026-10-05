@@ -51,7 +51,7 @@ def _make_client(sock_path: str, timeout: int = 5) -> MCPClient:
 def test_spawn_connects_to_daemon(mock_uds: str) -> None:
     c = _make_client(mock_uds)
     assert not c.is_alive()
-    c.spawn()
+    c.connect()
     assert c.is_alive()
     c.shutdown()
 
@@ -77,7 +77,7 @@ def test_fixture_hands_over_a_socket_that_accepts_immediately() -> None:
     proc, sock_path = _mcp_mock.spawn(env=env, timeout=10.0)
     try:
         c = _make_client(sock_path)
-        c.spawn()
+        c.connect()
         assert c.is_alive()
         c.shutdown()
     finally:
@@ -86,9 +86,9 @@ def test_fixture_hands_over_a_socket_that_accepts_immediately() -> None:
 
 def test_spawn_is_idempotent(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn()
+    c.connect()
     sock1 = c._sock
-    c.spawn()  # second call → no new connection
+    c.connect()  # second call → no new connection
     sock2 = c._sock
     assert sock1 is sock2
     c.shutdown()
@@ -100,7 +100,7 @@ def test_spawn_is_idempotent(mock_uds: str) -> None:
 
 def test_initialize_returns_capabilities(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn()
+    c.connect()
     result = c.initialize()
     assert isinstance(result, dict)
     assert result.get("protocolVersion") == "2024-11-05"
@@ -114,7 +114,7 @@ def test_initialize_returns_capabilities(mock_uds: str) -> None:
 
 def test_list_tools_returns_tool_definitions(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn()
+    c.connect()
     c.initialize()
     tools = c.list_tools()
     assert isinstance(tools, list)
@@ -129,7 +129,7 @@ def test_list_tools_returns_tool_definitions(mock_uds: str) -> None:
 
 def test_call_tool_roundtrips_args(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn()
+    c.connect()
     c.initialize()
     result = c.call_tool("echo", {"message": "hello"})
     assert isinstance(result, dict)
@@ -152,7 +152,7 @@ def test_call_tool_raises_mcp_server_error() -> None:
     proc, sock_path = _mcp_mock.spawn(prefix="st-err", env=env)
     try:
         c = _make_client(sock_path)
-        c.spawn()
+        c.connect()
         c.initialize()
         with pytest.raises(MCPServerError) as exc_info:
             c.call_tool("echo", {})
@@ -169,7 +169,7 @@ def test_call_tool_raises_mcp_server_error() -> None:
 
 def test_shutdown_closes_socket(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn()
+    c.connect()
     assert c.is_alive()
     c.shutdown()
     assert not c.is_alive()
@@ -177,7 +177,7 @@ def test_shutdown_closes_socket(mock_uds: str) -> None:
 
 def test_shutdown_is_idempotent(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn()
+    c.connect()
     c.shutdown()
     c.shutdown()  # must not raise
 
@@ -193,7 +193,7 @@ def test_mcp_call_returns_none_when_server_not_in_registry() -> None:
 
 def test_mcp_call_uses_registered_client(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn(); c.initialize()
+    c.connect(); c.initialize()
     _mcp_register("_test_call", c)
     try:
         result = _mcp_call("_test_call", "echo", {"message": "lazy"})
@@ -212,7 +212,7 @@ def test_mcp_call_uses_registered_client(mock_uds: str) -> None:
 
 def test_mcp_get_server_removes_dead_client(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn()
+    c.connect()
     c.shutdown()  # close → not alive
     with _MCP_LOCK:
         _MCP_SERVERS["_test_dead"] = c
@@ -232,7 +232,7 @@ def test_mcp_get_server_removes_dead_client(mock_uds: str) -> None:
 
 def test_mcp_register_allows_mcp_call(mock_uds: str) -> None:
     c = _make_client(mock_uds)
-    c.spawn(); c.initialize()
+    c.connect(); c.initialize()
     _mcp_register("_test_register", c)
     try:
         result = _mcp_call("_test_register", "echo", {"message": "registered"})
@@ -288,7 +288,7 @@ def test_connect_timeout_env_override(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.5")
     start = time.time()
     with pytest.raises(MCPServerError):
-        c.spawn()
+        c.connect()
     elapsed = time.time() - start
     # Should give up around 0.5s, not the 60s default
     assert elapsed < 5.0, f"timeout override ignored: spent {elapsed:.2f}s"
@@ -303,7 +303,7 @@ def test_connect_error_mentions_stderr_log_when_present(tmp_path: Path, monkeypa
     c = MCPClient(name="lsp", timeout=1, socket_path=sock)
     monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.3")
     with pytest.raises(MCPServerError) as exc_info:
-        c.spawn()
+        c.connect()
     msg = str(exc_info.value)
     assert stderr_log in msg
     assert "startup errors" in msg or "stderr" in msg
@@ -316,6 +316,6 @@ def test_connect_error_hints_path_when_no_stderr_log(tmp_path: Path, monkeypatch
     c = MCPClient(name="lsp", timeout=1, socket_path=sock)
     monkeypatch.setenv("SUPERTOOL_MCP_CONNECT_TIMEOUT", "0.3")
     with pytest.raises(MCPServerError) as exc_info:
-        c.spawn()
+        c.connect()
     msg = str(exc_info.value)
     assert "PATH" in msg or "cmd" in msg

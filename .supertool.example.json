@@ -37,7 +37,7 @@
     "_example-php-lsp": {
       "cmd": "cclsp",
       "match": "*.{php,class.php}",
-      "env": {
+      "variables": {
         "CCLSP_CONFIG_PATH": ".claude/cclsp.json"
       },
       "tools": {
@@ -824,7 +824,7 @@
       "hooks_into": [],
       "rollback_on_fail": false,
       "timeout": 30,
-      "env": {
+      "variables": {
         "PSR_STANDARD": "PSR12",
         "PSR_SEVERITY": "9"
       },
