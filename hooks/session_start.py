@@ -109,7 +109,10 @@ def onboard(bin_path: str) -> None:
     rc = subprocess.call([sys.executable, bin_path, "introduction", "output-format", "ops:session"])
     if rc != 0:
         _say("> supertool's op listing is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops' prints the listing.")
-    subprocess.call([sys.executable, bin_path, "channel:stranded"])
+    # The directory build denies presets/watch.json, where `channel` lives
+    # (#2734): asking for it there printed "unknown operation" every session.
+    if os.path.isfile(os.path.join(os.path.dirname(bin_path), "presets", "watch.json")):
+        subprocess.call([sys.executable, bin_path, "channel:stranded"])
 
 
 def main() -> int:
