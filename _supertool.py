@@ -144,7 +144,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple  
 
-VERSION = "0.65.1"
+VERSION = "0.66.0"
 
 
 
