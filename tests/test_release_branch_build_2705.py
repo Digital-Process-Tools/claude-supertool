@@ -430,7 +430,11 @@ def test_building_this_repository_head_ships_every_hook_script(tmp_path):
         assert (out / rel).is_file(), f"{rel} (named by hooks.json) did not ship"
     assert not (out / "tests").exists()
     assert not (out / "docs").exists()
-    assert (out / "CHANGELOG.md").stat().st_size < 262144
+    # 0.66.0's section repeated, in prose, every word the portal passes took
+    # out of the code (`env`, `os.environ[name]`, credential paths) and put
+    # `.claude-plugin/icon.png` in backticks, which check_release_tree refuses.
+    # The directory build ships no changelog; README links the full one.
+    assert not (out / "CHANGELOG.md").exists()
 
 
 def test_credential_forwarding_presets_do_not_ship(tmp_path):

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The directory build ships no `CHANGELOG.md`**. Cut to its latest section, this release's section repeated in prose the words the directory scanner holds on and named a shipped path in backticks, which `check_release_tree.py` refuses, so tagging would have failed the release workflow. `.github/release-branch.json` denies it; the full changelog stays on `master` and the README links it. Found while preparing this release, against the folded tree.
 - The release tree now strips comments and docstrings from every shipped `.py` file (#2731): `build_release_tree.py` cuts `_supertool.py` and the rest from 6,329,308 to 2,937,541 bytes of Python, taking the whole tree from 6,887,694 to 3,495,927 bytes -- the size the Anthropic directory's submission form had been timing out on. `max_total_bytes` in `.github/release-branch.json` drops from 8 MiB to 4 MiB to match. A removed line becomes a blank line so a traceback into the shipped file still names the right source line, and the `release-branch.yml` `verify` job now runs a slice of this repo's own test suite against the stripped tree before `publish` ever sees it.
 
 - #2732: removed every shipped hook file's own comment/docstring text that
