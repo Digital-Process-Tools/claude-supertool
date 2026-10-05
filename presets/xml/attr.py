@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""xml_attr:PATH:XPATH:ATTR — extract one attribute value per XPath match.
 
-Prints one value per line. Elements missing the attribute are silently skipped.
-Use triple-colon escaping (:::) when XPath contains literal colons.
-"""
+
+
+
+
 from __future__ import annotations
 
 import sys

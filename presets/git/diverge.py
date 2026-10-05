@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""Git diverge — what's in BRANCH vs BASE in one call.
 
-Combines: ahead/behind count + commits-only-in-branch (oneline) +
-files changed (name-status) + +/- line totals. Replaces the
-log-A..B / log-B..A / diff--stat trio.
-"""
+
+
+
+
+
 from __future__ import annotations
 
 import os
 import sys
 
-# Sibling import: runtime puts this dir on sys.path[0]; the test harness
-# loads scripts via importlib (no dir on path), so add it explicitly.
+
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
+sys.path.insert(0, os.path.dirname(_HERE))  
 
-from _git_common import _git, use_utf8_stdout  # noqa: E402
-from _env import env_int  # noqa: E402  (the one numeric-knob reader)
-import _untrusted  # noqa: E402  (a commit subject is not this tool's text — #1681)
+from _git_common import _git, use_utf8_stdout  
+from _env import env_int  
+import _untrusted  
 
 DEFAULT_BASE = "master"
 DEFAULT_MAX_COMMITS = 30
 
 
 def _resolve_base(arg: str) -> str:
-    """Use arg if given, else master, else main."""
+
     if arg:
         return arg
     for c in ("master", "main"):
@@ -44,9 +44,9 @@ def main() -> int:
 
     branch = sys.argv[1]
     base = _resolve_base(sys.argv[2] if len(sys.argv) > 2 else "")
-    max_commits = env_int("SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
+    max_commits = env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
 
-    # Verify both refs exist
+
     for ref in (branch, base):
         if _git(["rev-parse", "--verify", "--quiet", ref]).returncode != 0:
             print(f"ERROR: ref {ref!r} not found. Did you fetch?")
@@ -54,7 +54,7 @@ def main() -> int:
 
     print(f"# git-diverge: {branch} vs {base}")
 
-    # Ahead/behind
+
     ab = _git(["rev-list", "--left-right", "--count", f"{base}...{branch}"])
     if ab.returncode != 0:
         print(f"ERROR: {ab.stderr.strip()}")
@@ -74,20 +74,20 @@ def main() -> int:
     elif behind and not ahead:
         print(f"Next: git reset --hard {base} (or fast-forward via merge)")
 
-    # Merge base
+
     mb_res = _git(["merge-base", base, branch])
     if mb_res.returncode == 0:
         print(f"Merge-base: {mb_res.stdout.strip()[:12]}")
 
-    # Commits in branch but not base
+
     if ahead:
         log = _git(["log", f"-{max_commits}", f"{base}..{branch}",
                     "--format=%h %ad %an | %s", "--date=short"])
         if log.returncode == 0 and log.stdout.strip():
-            # Both halves (#1681): `len(shown)` is printed beside the rows,
-            # so the split decides the count a reader acts on, and `visible`
-            # is what keeps the separator out of a row the tool owns. A log
-            # subject is not a pathname, so quoting never reached it.
+
+
+
+
             shown = [_untrusted.visible(ln)
                      for ln in _untrusted.split_lines(log.stdout.strip())]
             print(f"\n## Commits in {branch} not in {base} ({len(shown)} of {ahead})")
@@ -96,7 +96,7 @@ def main() -> int:
             if ahead > len(shown):
                 print(f"  … {ahead - len(shown)} more")
 
-    # Files changed (name-status)
+
     if ahead:
         ns = _git(["diff", "--name-status", f"{base}...{branch}"])
         if ns.returncode == 0 and ns.stdout.strip():
@@ -107,7 +107,7 @@ def main() -> int:
             if len(files) > 50:
                 print(f"  … {len(files) - 50} more")
 
-        # +/- totals
+
         stat = _git(["diff", "--shortstat", f"{base}...{branch}"])
         if stat.returncode == 0 and stat.stdout.strip():
             print(f"\n{stat.stdout.strip()}")

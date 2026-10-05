@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Git resolve — pick ours/theirs/both for a conflicted PATH (or all) + stage.
 
-ours/theirs: checkout --SIDE PATH + git add PATH (atomic).
-both: union — strip conflict markers, keep both sides, write back + git add.
-     Refused per file on known source extensions (see _SOURCE_EXTS) unless the
-     path declares merge=union in .gitattributes or `force` is passed.
-Receipt shows which files were resolved and how many conflicts remain.
-"""
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import difflib
@@ -19,40 +19,40 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
-# Sibling import: runtime puts this dir on sys.path[0]; the test harness
-# loads scripts via importlib (no dir on path), so add it explicitly.
+
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _git_common import (  # noqa: E402
+from _git_common import (  
     NOT_A_REPO, _git, _list_conflicts, probe_repo, unanswered_repo_lines,
     use_utf8_stdout,
 )
-import _secrets  # noqa: E402  (a dying adapter puts credentials on stderr — #925)
-import _untrusted  # noqa: E402  (a failed child's stderr is untrusted text — #883)
+import _secrets  
+import _untrusted  
 
 
-# Unambiguous conflict markers — `<<<<<<<` / `>>>>>>>` at line start. A bare row
-# of `=======` is intentionally NOT matched: it is legitimate decoration (RST/MD
-# underlines, comment rules) and a real leftover always carries the angle markers
-# too, so the angle scan never misses an actual unresolved hunk.
+
+
+
+
 _MARKER_RE = re.compile(r"^(<{7,}|>{7,})(\s|$)")
 
 
-# Extensions where a union resolve is close to always wrong. `both` concatenates
-# both versions of the hunk: on a changelog that is two entries and correct, on a
-# function body it is the statement run twice, or two `def`s of the same name
-# where the last silently wins. Neither the marker gate nor the syntax digest can
-# see that — the concatenation still parses (issue #744).
-#
-# This list is a heuristic and it is wrong in both directions: an extensionless
-# `bin/deploy` shell script is not caught, and a `.sql` file that is only INSERT
-# rows would union fine. It is deliberately small — mainstream program text only,
-# no structured-data formats (a unioned .json/.xml usually fails the syntax
-# validator that already runs, so it is not the silent class this guards). The
-# authoritative discriminator, when a repo has bothered to state one, is git's
-# own `merge=union` attribute — see _union_attr_paths, which overrides this list.
+
+
+
+
+
+
+
+
+
+
+
+
+
 _SOURCE_EXTS = frozenset({
     ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
     ".php", ".rb", ".go", ".rs", ".java", ".kt", ".kts", ".swift", ".scala", ".dart",
@@ -61,110 +61,110 @@ _SOURCE_EXTS = frozenset({
 
 
 def _shown(path: str) -> str:
-    """One conflicted path, safe at column 0 of a receipt row (#1708).
 
-    `_list_conflicts` reads `-z` since #1708, so a path arrives as its real
-    bytes instead of git's octal-escaped spelling. That is what makes it
-    openable and what makes `git add -- <path>` find it — under the old
-    line-separated read, no name holding a byte >= 0x80 could be resolved at
-    all — and it is also what lets a filename carry LF, CR or U+2028 into a row
-    this tool owns. Every render of a path goes through here; the paths
-    themselves are used unflattened, because the filesystem wants the name.
 
-    `flat` discloses the separator rather than dropping the tail (#1652), so
-    the name stays readable and nothing is censored.
 
-    **`disclose_newline=True` is the path spelling of it (#1557)**, and not
-    optional here. The default renders a newline as a space, which is right for
-    a title — no tracker lets one hold a newline — and a lie for a path, which
-    POSIX does. Without it a file named `a<LF>b.txt` and a file named `a b.txt`
-    produce the identical row, so the reader cannot tell which of two real
-    files the receipt is about. That is the whole thing `-z` went to the
-    trouble of preserving.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     return _untrusted.flat(path, disclose_newline=True)
 
 
 def _is_source_path(path: str) -> bool:
-    """True when PATH's extension is program text a union would corrupt."""
+
     return os.path.splitext(path)[1].lower() in _SOURCE_EXTS
 
 
-# Markdown is the format where a union is otherwise right — a changelog conflict is
-# two entries, and unioning them is the whole point — but whose *meaning* comes from
-# repeating structural headings rather than from line order alone. When the union
-# emits one heading twice, every line between the two copies is reparented under the
-# first (issue #839): unreleased work reads as shipped. Nothing below merges,
-# reorders or de-duplicates anything — it only detects that the union came out
-# structurally implausible and hands the decision back.
+
+
+
+
+
+
+
 _MD_EXTS = frozenset({".md", ".markdown", ".mdown", ".mkd"})
 
 _HEADING_RE = re.compile(r"^#{1,6}[ \t]+\S")
 
-# Setext underline: a line of only `=` (level 1, one or more) or `-` (level 2,
-# TWO OR MORE), up to three leading spaces, CommonMark-style. Matched only when
-# the consecutive run of non-blank, unconsumed lines directly above it forms
-# real title text (#1123, widened in #2157 to the whole run rather than just
-# the immediate predecessor) -- see `_heading_paths`, which is where that
-# adjacency is enforced; a bare `---` used as a thematic break, a blank line,
-# or two underline lines in a row, must not be misread as (part of) a title.
-#
-# `-{2,}`, not `-+`: a single bare `-` is indistinguishable from an empty list
-# item, and treating it as a heading anyway is worse than missing a genuine
-# one-dash title (rare in practice; nobody underlines a heading with one
-# character). A false-positive setext heading pushes a false ancestor onto
-# `_heading_paths`' stack, and popping back off it for the next REAL heading
-# can silently reparent everything after -- which hides a genuine duplicate
-# this guard exists to catch rather than merely missing a decorative rule.
-# `=` has no such ambiguity (nothing else in Markdown starts a line with it),
-# so it keeps `+`.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 _SETEXT_UNDERLINE_RE = re.compile(r"^[ ]{0,3}(=+|-{2,})[ \t]*\Z")
 
-# Other block-level constructs that end a paragraph without being blank,
-# a heading, or a fence delimiter -- so the setext lookback (below) must stop
-# at one of these too, or a list item or blockquote line sitting directly
-# above a title gets folded into it as bogus title text (#2157: an earlier
-# draft of the lookback did exactly this to a `- bullet` line immediately
-# preceding a genuine one-line setext title, producing a false combined
-# title neither line actually was). A `*`/`_` thematic break is the other
-# CommonMark paragraph-ender that is not already covered by the `=`/`-`
-# setext-underline regex above.
-#
-# The ordered-list branch only matches a start number of `1` -- CommonMark's
-# own rule: "a paragraph cannot be interrupted by ... an ordered list item
-# with a start number other than 1", so a line like `2. continues the same
-# sentence` is ordinary paragraph text, not a new block, and must stay in
-# the buffer (found in review: an earlier draft matched any `\d+[.)]`,
-# which silently widened the "real duplicate goes unseen" gap this function
-# exists to close for any title line shaped like `N. ...`/`N) ...`).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 _BLOCK_INTERRUPT_RE = re.compile(r"^[ ]{0,3}(>|[-*+][ \t]|1[.)][ \t])")
 _THEMATIC_BREAK_STAR_UNDERSCORE_RE = re.compile(r"^[ ]{0,3}([*_])(?:[ \t]*\1){2,}[ \t]*\Z")
 
 
 def _is_markdown_path(path: str) -> bool:
-    """True when PATH's extension is Markdown, whose headings carry structure."""
+
     return os.path.splitext(path)[1].lower() in _MD_EXTS
 
 
 def _union_lines(text: str, selected: Optional[set[int]] = None) -> list[tuple[str, bool]]:
-    """The union of TEXT, line by line, each tagged with "a hunk put this here".
 
-    The union is the one `_union_file` writes — both sides concatenated, diff3
-    ``|||||||`` base dropped — computed in memory so the guard can read the document
-    a resolve would produce rather than infer it from the shape of the hunks.
 
-    The tag is what replaces a second render of the file. Rendering the surrounding
-    context separately and diffing the two counts looked equivalent and is not: an
-    odd number of ``` fence delimiters inside a hunk closes a fence in one rendering
-    and leaves it open in the other, so the two parses disagree about which later
-    lines are headings at all, and a document that already repeated a heading was
-    refused for it. One parse, carrying the attribution, cannot drift from itself.
 
-    Hunks outside ``selected`` contribute their ``ours`` side untagged. They are not
-    being resolved, so what they carry is not this resolve's doing.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
     out: list[tuple[str, bool]] = []
-    state = "normal"  # normal | ours | base | theirs
+    state = "normal"  
     block_idx = 0
     take_ours = take_theirs = tag = True
     for line in text.splitlines(keepends=True):
@@ -182,7 +182,7 @@ def _union_lines(text: str, selected: Optional[set[int]] = None) -> list[tuple[s
                 state = "base"
             elif s.startswith("======="):
                 state = "theirs"
-            elif s.startswith(">>>>>>>"):  # malformed — recover, claim nothing
+            elif s.startswith(">>>>>>>"):  
                 state = "normal"
             elif take_ours:
                 out.append((line, tag))
@@ -198,45 +198,45 @@ def _union_lines(text: str, selected: Optional[set[int]] = None) -> list[tuple[s
 
 
 def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...], bool]]:
-    """Every heading in LINES — ATX (`## Title`) or setext (`Title` underlined
-    with `===`/`---`) — as its ancestor path, in file order, tag carried (#1123).
 
-    The path — enclosing headings of lower level, then the heading itself — is what
-    makes `### Fixed` under `## [Unreleased]` a different thing from `### Fixed`
-    under `## [0.22.0]`. Every changelog repeats section headings once per release,
-    so a file-wide count of heading lines answers a question nobody asked.
 
-    Fenced blocks are skipped. This repo's changelog quotes shell constantly and a
-    `# run it` comment inside a fence is not structure; reading it as one would
-    refuse ordinary entries, and a guard that fires on those trains the override.
 
-    **Setext.** `_HEADING_RE` alone is blind to a title spelled as text followed by
-    an underline line — #1123's own gap, the same shape #911 fixed for ATX one
-    heading style earlier. CommonMark allows that title to span more than one
-    physical line, so detecting it needs a lookback over the whole consecutive run
-    of candidate title lines above the underline, not just the one immediately
-    before it (#2157) — reading only the last line means a genuinely multi-line
-    title and its single-line equivalent elsewhere in the document hash to
-    different keys, so a real duplicate slips past unseen rather than merely
-    a decorative style going unrecognised.
 
-    `buffer` accumulates that run: every line is added to it *unless* it is itself
-    consumed by another construct -- a heading, a fence delimiter, an underline
-    that did or did not form a heading, a blank line, a list-item/blockquote
-    marker (`_BLOCK_INTERRUPT_RE`), or a `*`/`_` thematic break
-    (`_THEMATIC_BREAK_STAR_UNDERSCORE_RE`) -- any of which clears the buffer
-    instead of extending the title, same as it always has for the single-line
-    case. The list/blockquote/thematic-break stops exist because a paragraph
-    genuinely ends at one of those, same as it ends at a blank line: without
-    them, a `- bullet` line sitting directly above an unrelated title would be
-    folded into it as bogus title text. The underline only means "the lines
-    above it were a title" when the buffer is non-empty; getting that adjacency
-    wrong in the permissive direction would read a bare `---` thematic break as
-    a heading with the paragraph above it as its title, corrupting every path
-    built from the lines after it — so a candidate underline with an empty
-    buffer is read as ordinary text, same as a version that could not decide at
-    all.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     paths: list[tuple[tuple[str, ...], bool]] = []
     stack: list[tuple[int, str]] = []
     fence = ""
@@ -282,31 +282,31 @@ def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...],
 
 
 def _duplicated_headings(path: str, selected: Optional[set[int]] = None) -> list[str]:
-    """Headings a union of PATH would emit twice — in file order, deduped.
 
-    The question is about the **resulting document**: does unioning put the same
-    heading twice under the same parent, with at least one of the two copies coming
-    from a hunk? So the union is rendered once, every heading is read as its ancestor
-    path, and each carries whether a hunk put it there.
 
-    #839 asked a narrower one — is the SAME heading line on BOTH sides of one hunk —
-    and #911 is the arrangement that slips past it: `### Fixed` inside the hunk on one
-    side only, its twin in the surrounding context git had already merged. The union
-    still emits two, the hunk still looks internally clean, and the receipt still said
-    `markers: clean`. A guard that reads hunk shape can only ever be right about the
-    boundaries someone thought of; reading the output cannot be fooled by where the
-    boundary fell.
 
-    Requiring one copy to come from a hunk is what keeps a document that ALREADY
-    repeats a heading — malformed, but not by this resolve — out of the refusal. Note
-    it is deliberately not "would picking a side duplicate it too": in #911's
-    arrangement taking `theirs` also lands two `### Fixed`, and excusing the union on
-    that ground would excuse the exact case the issue is about.
 
-    Non-Markdown paths return ``[]`` — the ``#`` heading grammar is Markdown's, and a
-    guard should only have opinions about a format it can read. ``selected`` restricts
-    the scan to those 1-indexed hunks, for a partial resolve.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not _is_markdown_path(path):
         return []
     try:
@@ -332,13 +332,13 @@ def _duplicated_headings(path: str, selected: Optional[set[int]] = None) -> list
 
 
 def _union_attr_paths(paths: list[str]) -> set[str]:
-    """Subset of PATHS that .gitattributes declares as ``merge=union``.
 
-    A repo that sets the attribute has already answered the question this guard
-    asks, so those paths union without a prompt. ONE ``git check-attr`` call for
-    the whole batch; any failure returns the empty set — the fallback is always
-    to refuse, never to union.
-    """
+
+
+
+
+
+
     if not paths:
         return set()
     res = _git(["check-attr", "merge", "--", *paths])
@@ -346,7 +346,7 @@ def _union_attr_paths(paths: list[str]) -> set[str]:
         return set()
     out: set[str] = set()
     for line in res.stdout.splitlines():
-        # Format: "<path>: merge: <value>"
+
         if line.endswith(": merge: union"):
             out.add(line[: -len(": merge: union")])
     return out
@@ -359,7 +359,7 @@ _REFUSAL = (
 
 
 def _guarded_paths(paths: list[str], side: str, force: bool) -> set[str]:
-    """Paths where `both` must not run: source text, no merge=union, not forced."""
+
     if side != "both" or force:
         return set()
     candidates = [p for p in paths if _is_source_path(p)]
@@ -369,11 +369,11 @@ def _guarded_paths(paths: list[str], side: str, force: bool) -> set[str]:
 
 
 def _heading_refusal(dups: list[str]) -> str:
-    """Refusal text that names the headings it saw.
 
-    A refusal that does not say what it found is a refusal you override blind, which
-    is the same defect one layer down.
-    """
+
+
+
+
     shown = "; ".join(repr(h) for h in dups[:3])
     more = f" (+{len(dups) - 3} more)" if len(dups) > 3 else ""
     return (f"structured document — union would emit {len(dups)} heading(s) twice "
@@ -389,24 +389,24 @@ def _print_refusal_help() -> None:
 
 
 def _union_file(path: str) -> tuple[bool, str]:
-    """Strip conflict markers from PATH, keeping both sides (ours then theirs).
 
-    Mirrors git's ``merge=union`` driver: for every conflict hunk, drop the
-    ``<<<<<<<``, ``=======`` and ``>>>>>>>`` marker lines and concatenate both
-    content blocks. diff3 ``|||||||`` base sections are dropped. Writes the
-    result back to PATH atomically (single rewrite — no formatter runs between
-    marker removals). Returns (ok, error_message).
-    """
+
+
+
+
+
+
+
     try:
         with open(path, "rb") as fh:
             raw = fh.read()
     except OSError as e:
-        # NOT flattened, and that is a measured decision rather than an
-        # oversight (#1638). This reason reaches the same `✗ PATH: REASON` row
-        # as the three child-stream relays below, but `str(OSError)` reprs the
-        # filename, so a U+2028 in a conflicted path arrives here already
-        # spelled as its six-character escape — ASCII that cannot open a line.
-        # Verified on CPython 3.14; pinned by the 1638 test file.
+
+
+
+
+
+
         return False, f"cannot read: {e}"
     try:
         text = raw.decode("utf-8")
@@ -414,7 +414,7 @@ def _union_file(path: str) -> tuple[bool, str]:
         return False, "not a UTF-8 text file (binary conflict?)"
 
     out: list[str] = []
-    state = "normal"  # normal | ours | base | theirs
+    state = "normal"  
     saw_conflict = False
     for line in text.splitlines(keepends=True):
         s = line.rstrip("\r\n")
@@ -428,14 +428,14 @@ def _union_file(path: str) -> tuple[bool, str]:
                 state = "base"
             elif s.startswith("======="):
                 state = "theirs"
-            elif s.startswith(">>>>>>>"):  # malformed — recover, keep nothing
+            elif s.startswith(">>>>>>>"):  
                 state = "normal"
             else:
                 out.append(line)
         elif state == "base":
             if s.startswith("======="):
                 state = "theirs"
-            # else: drop base content
+
         elif state == "theirs":
             if s.startswith(">>>>>>>"):
                 state = "normal"
@@ -456,9 +456,9 @@ def _union_file(path: str) -> tuple[bool, str]:
 
 
 def _count_blocks(path: str) -> int:
-    """Number of conflict blocks in PATH, counted exactly as `git-conflicts`
-    numbers them: one per ``<<<<<<<`` marker line, in file order.
-    """
+
+
+
     try:
         with open(path, "rb") as fh:
             text = fh.read().decode("utf-8")
@@ -468,12 +468,12 @@ def _count_blocks(path: str) -> int:
 
 
 def _read_text_for_hunks(path: str) -> Optional[str]:
-    """Best-effort snapshot of PATH for the outside-the-conflict hunk check.
 
-    Returns ``None`` on anything that stops a clean read — missing file,
-    permission, non-UTF-8 content — rather than raising, so the caller can
-    say "did not check" instead of guessing at a diff it never took.
-    """
+
+
+
+
+
     try:
         with open(path, "rb") as fh:
             raw = fh.read()
@@ -486,13 +486,13 @@ def _read_text_for_hunks(path: str) -> Optional[str]:
 
 
 def _block_ranges(lines: list[str]) -> list[tuple[int, int]]:
-    """0-indexed inclusive ``(start, end)`` line span for every conflict block
-    in LINES — from its ``<<<<<<<`` marker line through its ``>>>>>>>`` marker
-    line. Best-effort: an unterminated block runs to the last line rather than
-    being dropped. A span that is too WIDE only makes more hunks count as
-    "inside" a conflict, never fewer — this feeds a receipt line, not a stager,
-    so the failure direction that matters is under-reporting, not over.
-    """
+
+
+
+
+
+
+
     ranges: list[tuple[int, int]] = []
     start: Optional[int] = None
     for i, line in enumerate(lines):
@@ -507,75 +507,75 @@ def _block_ranges(lines: list[str]) -> list[tuple[int, int]]:
 
 
 def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
-    """One receipt line naming how much of the file a whole-file ``checkout
-    --ours``/``--theirs`` actually moved — #2226.
 
-    `checkout --SIDE` is git's own whole-file operation: it replaces PATH with
-    the chosen side's committed version entirely, not just the conflicted
-    blocks. A file that diverged between the two sides OUTSIDE any marked
-    conflict — auto-merged cleanly, no markers — gets silently rewritten right
-    along with the resolution, and the old receipt (`markers: clean`,
-    `Resolved: 1`) said nothing about it: a caller who had just read
-    `git-conflicts`' block listing had no way to know.
 
-    Diffs PRE (the working-tree content immediately before the checkout,
-    markers intact) against POST (immediately after) and reports the number of
-    contiguous changed regions ("hunks") against the number of conflict blocks
-    PRE held. For each hunk, the portion of its PRE-side span that does NOT
-    fall inside any conflict block's own line span is content the checkout
-    moved outside the conflict it was asked to resolve.
 
-    **Subtracts the conflict blocks' coverage from each hunk before deciding
-    what is "outside" — a per-hunk yes/no overlap test is not sound.** A
-    single difflib hunk can span *across* a block boundary (its PRE range
-    starts inside a block and ends past it, or the reverse) when the matcher
-    merges the block's own tail with adjacent content that also happens to
-    differ pre/post — a real, if narrow, false negative caught in review
-    (#2226): a hunk that merely *touches* a block was being counted as wholly
-    inside it, silently swallowing the genuinely-outside remainder. Line-exact
-    subtraction has no such blind spot: any PRE line index not covered by a
-    block IS outside a conflict, independent of how difflib chose to group
-    the surrounding changes into hunks.
 
-    **Excludes the conflict blocks' own span before counting** — a naive
-    line-diff would flag a block's own replaced lines as "outside" the
-    conflict, since every one of them differs by construction, and every
-    ordinary resolution would then read as a false alarm.
 
-    Returns a **stated** "could not check" line — never a silent "" — when
-    either snapshot could not be read/decoded: silence here would render
-    identically to the genuinely-clean case (agreeing hunk/block counts also
-    omits the "outside" clause but still prints a line), and a caller cannot
-    tell "verified, nothing moved" from "never verified" unless the second one
-    says so (#1858's three-state rule; caught in review as the receipt still
-    conflating them for exactly the failure mode this whole change exists to
-    stop being silent about).
 
-    Returns a **stated** line — never a silent ``""`` — when PRE held no
-    conflict block to compare against too. This used to be documented as
-    unreachable on `git-resolve`'s own call path, on the premise that PRE is
-    always read from a file `git` itself just listed as conflicted
-    (`_list_conflicts`, `git diff --name-only --diff-filter=U`). That premise
-    does not hold for a **modify/delete conflict** (#2273): `git` lists the
-    path as conflicted, but leaves the surviving side's content in the
-    working tree with no `<<<<<<<` markers at all — there was never a block
-    for a whole-file `checkout --ours`/`--theirs` to have moved content out
-    of, so PRE legitimately holds none, and that fact must be said rather
-    than rendered as the same blank line a genuinely-clean resolution prints.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if pre_text is None or post_text is None:
         return "outside-conflict check: not available (could not read the pre/post-resolution snapshot)"
-    # Not str.splitlines(): PRE/POST are file bytes read directly (no
-    # subprocess, no text=True universal-newline translation), and the
-    # comparison must line up with `_block_ranges`' own conflict-marker
-    # spans and with git's own line reckoning -- LF/CR/CRLF only. A file
-    # containing a Unicode line-break character that str.splitlines()
-    # treats as a boundary (NEL, U+2028, ...) but git does not would
-    # otherwise be split into more "lines" than git or `_block_ranges`
-    # recognize,
-    # misaligning every downstream hunk/block index (#1622's shape; see the
-    # `_untrusted.split_lines` docstring: "Use this for anything being
-    # parsed as a line-oriented protocol").
+
+
+
+
+
+
+
+
+
+
+
     pre_lines = _untrusted.split_lines(pre_text)
     post_lines = _untrusted.split_lines(post_text)
     blocks = _block_ranges(pre_lines)
@@ -588,9 +588,9 @@ def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
     matcher = difflib.SequenceMatcher(None, pre_lines, post_lines, autojunk=False)
     ops = [op for op in matcher.get_opcodes() if op[0] != "equal"]
 
-    # Merge adjacent non-equal opcodes into one hunk: difflib can hand back a
-    # 'delete' immediately followed by an 'insert' for what is really one
-    # changed region (the delete's PRE end equals the insert's PRE position).
+
+
+
     hunks: list[tuple[int, int]] = []
     for _tag, a1, a2, _b1, _b2 in ops:
         if hunks and hunks[-1][1] == a1:
@@ -599,15 +599,15 @@ def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
             hunks.append((a1, a2))
 
     def _outside_spans(a1: int, a2: int) -> list[tuple[int, int]]:
-        """The sub-span(s) of half-open PRE range [a1, a2) NOT covered by any
-        conflict block. Exact, not a whole-hunk yes/no: a hunk that starts
-        before a block and/or ends after it keeps the outside part(s).
-        """
+
+
+
+
         if a2 <= a1:
-            # Pure insert: the insertion POINT is "inside" a block it lands
-            # within or immediately after (its replacement content can be
-            # longer than the marker lines it drops) — else it is its own,
-            # zero-width, outside span.
+
+
+
+
             for bstart, bend in blocks:
                 if bstart <= a1 <= bend + 1:
                     return []
@@ -651,18 +651,18 @@ def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
 
 
 def _resolve_blocks(path: str, side: str, selected: set[int]) -> tuple[bool, str, int, int]:
-    """Resolve only the SELECTED conflict blocks of PATH; leave the rest verbatim.
 
-    Blocks are 1-indexed in file order — the same numbering `git-conflicts`
-    prints. For each selected block, keep the chosen side (``ours``/``theirs``)
-    or, for ``both``, the union (ours then theirs, diff3 base dropped) and drop
-    that block's markers. Unselected blocks — including their markers — are
-    written back untouched, so the file stays conflicted and the caller's hard
-    gate refuses to stage it.
 
-    Returns ``(ok, error, num_resolved, num_total)``: ``num_total`` is every
-    conflict block in the file, ``num_resolved`` how many the selector matched.
-    """
+
+
+
+
+
+
+
+
+
+
     try:
         with open(path, "rb") as fh:
             raw = fh.read()
@@ -674,9 +674,9 @@ def _resolve_blocks(path: str, side: str, selected: set[int]) -> tuple[bool, str
         return False, "not a UTF-8 text file (binary conflict?)", 0, 0
 
     out: list[str] = []
-    state = "normal"  # normal | ours | base | theirs
+    state = "normal"  
     block_idx = 0
-    keep = False  # is the current block selected for resolution?
+    keep = False  
     total = 0
     resolved = 0
     for line in text.splitlines(keepends=True):
@@ -691,7 +691,7 @@ def _resolve_blocks(path: str, side: str, selected: set[int]) -> tuple[bool, str
                     state = "ours"
                     continue
                 state = "passthrough"
-                out.append(line)  # keep the marker verbatim
+                out.append(line)  
             else:
                 out.append(line)
         elif state == "passthrough":
@@ -703,14 +703,14 @@ def _resolve_blocks(path: str, side: str, selected: set[int]) -> tuple[bool, str
                 state = "base"
             elif s.startswith("======="):
                 state = "theirs"
-            elif s.startswith(">>>>>>>"):  # malformed — recover
+            elif s.startswith(">>>>>>>"):  
                 state = "normal"
             elif side in ("ours", "both"):
                 out.append(line)
         elif state == "base":
             if s.startswith("======="):
                 state = "theirs"
-            # else: drop diff3 base content
+
         elif state == "theirs":
             if s.startswith(">>>>>>>"):
                 state = "normal"
@@ -735,13 +735,13 @@ def _resolve_blocks(path: str, side: str, selected: set[int]) -> tuple[bool, str
 
 
 def _scan_markers(path: str) -> list[int]:
-    """1-indexed line numbers carrying a leftover conflict marker, else [].
 
-    Reads bytes and decodes UTF-8 — a binary (non-decodable) file scans clean
-    (a text marker can't live in it). Used as a hard gate before staging:
-    `checkout --ours/theirs` cannot leave markers, but `both`/union and any
-    future per-hunk path can, and a staged marker is a broken commit.
-    """
+
+
+
+
+
+
     try:
         with open(path, "rb") as fh:
             raw = fh.read()
@@ -754,14 +754,14 @@ def _scan_markers(path: str) -> list[int]:
     return [i for i, line in enumerate(text.splitlines(), 1) if _MARKER_RE.match(line)]
 
 
-# Parser/compiler validators only — the class of check a side-pick can actually
-# break. Semantic/diagnostic/style validators (lsp-diag, pyright, psr, tsc-check,
-# prettier-check, git-status, …) are deliberately excluded: they report the
-# file's pre-existing state, not what the resolve introduced, so they'd cry wolf
-# on every resolve. The stack's normal before/after diffing can't filter that
-# here — the "before" is a marker-filled conflicted file — so we scope by name.
-# A name not present in the live config is simply skipped (safe degradation: no
-# digest line rather than a false "ok").
+
+
+
+
+
+
+
+
 _SYNTAX_VALIDATORS = (
     "phplint", "xmllint", "jsonlint", "node-check", "py-compile",
     "bash-check", "yaml-check", "yaml-check-yaml", "inilint", "tomllint",
@@ -769,36 +769,36 @@ _SYNTAX_VALIDATORS = (
 )
 
 
-# Declarative syntax-scope sentinel: supertool's `validate` op selects validators
-# that set `"syntax": true` in their spec. Preferred over the hardcoded name list
-# above so the scope lives in config; the list remains the fallback for configs
-# that predate the flag (see _validate_paths).
+
+
+
+
 _SYNTAX_FILTER = "@syntax"
 
 
-#: A validator that matched the file and then declined to run — the row
-#: `_validator_render_row` emits for `{"skipped": reason}`. Its own vocabulary
-#: for the third state, arriving inside a batch that otherwise succeeded.
-_SKIPPED_ROW = re.compile(r"^([\w-]+)\s*:\s*skipped\b\s*[—-]*\s*(.*)$")  # anchored-ok: matched per line of a validator block
+
+
+
+_SKIPPED_ROW = re.compile(r"^([\w-]+)\s*:\s*skipped\b\s*[—-]*\s*(.*)$")  
 _RESULT_ROW = re.compile(r"^([\w-]+)\s*:\s*(ok|(\d+) err)\b")
 
-#: supertool's own per-call footers, which follow the last file's block and
-#: belong to no file. See the fold loop in `_validate_paths`.
+
+
 _CALL_FOOTER = re.compile(r"^\[(result|branch)\b")
 
 
 def _skip_summary(skipped: list) -> str:
-    """`tool (why)` for each declined validator, bounded to one short cell.
 
-    The `why` is the adapter's own text — `phpstan` declining because it could
-    not authenticate names the URL it tried — so it gets the same two passes a
-    dead child's stderr gets, and for the same two reasons: redaction (#925),
-    and the one-line rule (#883/#895) because this cell is interpolated into
-    `markers: clean | {digest}` at column 0 exactly like the other one. It had
-    the first and not the second; a carriage return in a decline reason
-    overwrites the line the receipt is made of, which is #851 through a second
-    door. The tool name is ours and is at risk from neither.
-    """
+
+
+
+
+
+
+
+
+
+
     parts = [f"{tool} ({_untrusted.flat(_redacted(why))})" if why else tool
              for tool, why in skipped]
     text = ", ".join(parts)
@@ -808,28 +808,28 @@ def _skip_summary(skipped: list) -> str:
 
 
 def _digest_block(block: str) -> Optional[str]:
-    """Condense one file's validator rows into a single receipt line.
 
-    Returns ``None`` when no syntax validator ran for this file type — a real
-    answer about the world, which the caller deliberately renders as nothing.
 
-    A validator that *matched* this file and then declined is a fourth row
-    shape, and until #880 this function did not match it: `phplint : skipped —
-    php not installed` set neither `ran` nor `fails`, so the file digested to
-    the same `None`, and a `.php` conflict staged on a machine without php
-    reported ``markers: clean`` with nothing beside it. Byte-identical to a
-    file whose parser ran and passed.
 
-    That route survived #883, which put every *batch*-level decline behind
-    `_not_checked` — the child crashed, timed out, was never found, folded to
-    the wrong block count. Here the child ran fine and emitted a well-formed
-    block; the decline is one row inside it. It is also the likeliest of the
-    four to be met in practice, because it needs no crash, only a missing
-    interpreter.
 
-    A skip beside a pass still costs a word: the reader takes this line as the
-    verdict for the file, and half-checked may not render as checked.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     fails: list[str] = []
     skipped: list = []
     ran = False
@@ -855,64 +855,64 @@ def _digest_block(block: str) -> Optional[str]:
 
 
 def _not_checked(reason: str) -> str:
-    """The digest line for a file whose syntax check never ran.
 
-    Distinct from ``None``, which means the validators ran and none of them
-    handles this file type — a real answer, and the reason the caller prints
-    nothing for it. "Could not run" is not that answer, and rendering the two
-    the same way is the defect class this repo is organised around: the caller
-    prints ``markers: clean`` and the missing digest reads exactly like a check
-    that passed (#880). So it says so, on the line, in the render.
-    """
+
+
+
+
+
+
+
+
     return f"validate: ⚠ not checked ({reason})"
 
 
-#: Cap on how much of a failed child's stderr reaches the receipt. This line is
-#: one cell of a resolve report, not a log viewer: it has to distinguish *could
-#: not run* from *nothing to say*, and the first line of stderr does that. It
-#: does not have to diagnose, and a traceback pasted whole would push the
-#: `markers: clean` it hangs off out of view.
+
+
+
+
+
 _CHILD_DETAIL_MAX = 120
 
 
 def _redacted(text: str) -> str:
-    """Strip credential-shaped values out of text a child process wrote (#925).
 
-    Validator adapters shell out, and a child dying on an auth error puts the
-    credential it tried on stderr: a `user:token@host` clone URL, an
-    `Authorization: Bearer …`, a `GITLAB_TOKEN=…` echoed by a wrapper. That
-    line then lands verbatim in the resolve receipt, which is a document people
-    paste into issues and PR comments.
 
-    `presets/_secrets` existed for exactly this shape and was wired only into
-    `claude-log` / `devto` / `bluesky` — named call sites rather than output
-    boundaries — so validate/resolve bypassed it.
 
-    **Order matters and is pinned.** This runs before `_CHILD_DETAIL_MAX`
-    truncation. Redacting the already-cut cell would find a token too short for
-    its own rule to match and ship its head, which is a fix that reads as one
-    and is not. It makes no claim of completeness — see `_secrets`' own
-    docstring: detection is by shape, so a credential this module does not
-    recognise still passes through here.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     redacted, _ = _secrets.redact(text)
     return redacted
 
 
 def _child_failed(res: "subprocess.CompletedProcess[str]") -> str:
-    """Why the validate child did not answer — one bounded, one-line cell.
 
-    A negative returncode is a POSIX signal, and that case is named separately
-    because it is the one that arrives *with* a complete-looking reply on
-    stdout: an OOM kill after the last block was flushed.
 
-    stderr is a child's text and the digest is interpolated into a line this
-    tool owns at column 0, so it goes through ``_untrusted.flat`` — the same
-    one-line rule ``_flat_cell`` applies in ``supertool.py`` (#895), covering
-    exactly the ten separators ``str.splitlines()`` splits on plus the cursor
-    movement that removes a line rather than adding one (#851). This is the
-    call to that rule, deliberately not a second copy of it.
-    """
+
+
+
+
+
+
+
+
+
+
+
     how = (f"killed by signal {-res.returncode}" if res.returncode < 0
            else f"exited {res.returncode}")
     first = next((ln for ln in (res.stderr or "").splitlines() if ln.strip()), "")
@@ -925,38 +925,38 @@ def _child_failed(res: "subprocess.CompletedProcess[str]") -> str:
 
 
 def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
-    """Warn-only post-resolve syntax digest for every resolved file, in ONE call.
 
-    Shells back into supertool's `validate` op (the single source of truth for
-    which validator runs on which file type) through its ``@payload`` route —
-    one subprocess for the whole batch instead of one per file. Scoped to
-    syntax/parser validators via the declarative ``@syntax`` filter, falling
-    back to the hardcoded name list for older configs. Output blocks are split
-    on ``validate: PATH`` headers and folded back to each path positionally.
-    Returns ``{path: digest_or_None}``; advisory only — never blocks the resolve.
 
-    **The payload rather than the colon form** ``validate:f1,f2,…:FILTER``
-    (#876, #878). That form joins on ``:`` and ``,`` and has no escape for
-    either, and both are characters a real filename contains: ``x:ruff``
-    re-parses so the field the receiver reads as the filter is not the one this
-    module chose, and ``a,b.py`` re-parses into two paths, neither of them real.
-    Argv is list-form, so that was never a shell exposure — it was a scope one.
 
-    **Filtering those paths out at this end was tried first, and the shape of
-    why it failed is the lesson.** The receiver's tokenizer already reassembles
-    a Windows drive letter, per comma-segment, precisely so the list form
-    carries ``D:\\a\\x.php,D:\\a\\y.php``. A sender-side ``":" not in p`` is a
-    second, cruder copy of that rule written at the wrong end of the pipe and
-    missing its only interesting case — so it excluded exactly the paths the
-    receiver handles best, on the one platform where every absolute path has a
-    colon in it, and excluded them *silently*. Loud exotic bug, quiet universal
-    one.
 
-    The answer is not to re-derive the tokenizer here — that rule would have to
-    stay in sync forever, and every future caller would have to re-derive it
-    too. It is to hand the receiver a field it never tokenizes. Nothing is
-    excluded, and every path is digestible on every platform.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     digests: dict[str, Optional[str]] = {}
     files: list[str] = []
     for p in paths:
@@ -972,8 +972,8 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
         for p in files:
             digests[p] = _not_checked("supertool.py not found")
         return digests
-    # Prefer the declarative @syntax scope; fall back to the name allowlist so a
-    # config that hasn't adopted the flag still gets the same parser-only digest.
+
+
     for tool_filter in (_SYNTAX_FILTER, list(_SYNTAX_VALIDATORS)):
         payload = json.dumps({"paths": files, "tools": tool_filter})
         try:
@@ -990,33 +990,33 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
             for p in files:
                 digests[p] = _not_checked(f"could not run: {exc.__class__.__name__}")
             return digests
-        # The exit status is a fact this function already had in hand and threw
-        # away (#883). Two shapes, one state. A child that died before writing
-        # anything lands zero blocks, and the count guard below then reported it
-        # as a *fold* problem — the wrong actor, and without the one line of
-        # stderr that says what broke. A child killed *after* a complete reply
-        # passes that guard entirely and digests to `validate: ok`, which is the
-        # strongest claim this tool can make about a run that did not finish.
-        # No retry on the second filter pass either: a non-zero exit is not
-        # "that filter selected nothing", so retrying would run the failure
-        # twice and report the second one.
+
+
+
+
+
+
+
+
+
+
         if res.returncode != 0:
             reason = _child_failed(res)
             for p in files:
                 digests[p] = _not_checked(reason)
             return digests
         out = res.stdout
-        # Split the combined output into per-file blocks on the header lines.
-        # Blocks are emitted in the same order as `files` and one per file —
-        # op_validate_multi guarantees both, the second one only since #881,
-        # where a filename containing newlines emitted three headers for two
-        # files. So fold them back positionally: robust to any path
-        # normalization the echoed header might apply, and not dependent on
-        # the header's *content* for anything at all. That last clause was
-        # written by #884 and was false when written — the two status
-        # substring tests below the split read the header's content, which is
-        # #888. It is true of everything above this line, and the tests are
-        # now gated on there being no header at all.
+
+
+
+
+
+
+
+
+
+
+
         blocks: list[str] = []
         buf: list[str] = []
         started = False
@@ -1027,62 +1027,62 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
                 buf = []
                 started = True
             elif _CALL_FOOTER.match(line):
-                # Not this file's rows. `[result] ...` and `[branch: ...]`
-                # describe the whole call and print after the last block with no
-                # header of their own, so the splitter above folds them into
-                # whichever file sorted last. Inert today only because
-                # `_RESULT_ROW` and `_SKIPPED_ROW` both anchor on a word
-                # character and these open with `[` -- an accident, not a
-                # guarantee, and #990 turned it from a decline-only case into
-                # every run. Dropped explicitly, so the invariant this file is
-                # built on -- a block holds that file's own content -- is
-                # enforced rather than lucky.
+
+
+
+
+
+
+
+
+
+
                 continue
             elif started:
                 buf.append(line)
         if started:
             blocks.append("\n".join(buf))
-        # "Did the validator run at all?" answered structurally, by whether a
-        # block was emitted — not by substring-testing the stream (#888).
-        # `op_validate_multi` returns "no validators configured" / "no
-        # validators matched filter" *instead of* every block, never beside
-        # one, so a status message is an output with no header in it. The old
-        # test read the combined stdout, which carries one `validate: <path>`
-        # header per file, so a file named `no validators.py` answered the
-        # question for the whole batch and every neighbour came back `None` —
-        # the state meaning "no validator handles this type", which the caller
-        # renders as `markers: clean` with no digest line. A file with a real
-        # syntax error was staged and reported clean, and no crafted character
-        # was needed, only a plausible name. #881 stopped a filename adding a
-        # line to this stream; it never stopped one containing a string, and a
-        # longer or more specific substring would be the same bug with a
-        # smaller target. Gating on "no blocks" also keeps a validator that
-        # quotes file content back in a row from reaching these tests.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         if not blocks:
             if "no validators matched filter" in out:
-                # @syntax selected nothing (older config) → retry the name list.
+
                 continue
             if "no validators configured" in out:
-                # Not an error — the child ran fine — but not the answer `None`
-                # encodes either. `None` means the validators ran and none of
-                # them handles this file type, which the render deliberately
-                # prints as nothing. Here none was ever *considered*, so
-                # leaving it silent lets a config with no validators at all
-                # report every resolved conflict as clean.
+
+
+
+
+
+
                 for p in files:
                     digests[p] = _not_checked("no validators configured")
                 return digests
-            # Anything else with no blocks — a crash, an ERROR line — is not a
-            # clean bill. Fall through to the count check, which says so.
-        # A fold that cannot account for its own inputs must say so. `zip`
-        # truncates silently, and every file past the mismatch then takes some
-        # other file's verdict — which is how #881 turned a syntax error into
-        # `validate: ok`. Not unreachable, whatever the emitter guarantees:
-        # #884 called it that and #886 reached it two code points later, with a
-        # filename separated by U+2028, which the flattener did not yet cover.
-        # This guard is the only reason that gap was a denial rather than a
-        # second forged clean. The cost of being wrong here is a false clean
-        # bill, so it stays whatever the layer above currently promises.
+
+
+
+
+
+
+
+
+
+
+
         if len(blocks) != len(files):
             reason = (f"validator output had {len(blocks)} block(s) "
                       f"for {len(files)} file(s)")
@@ -1092,22 +1092,22 @@ def _validate_paths(paths: list[str]) -> dict[str, Optional[str]]:
         for path, block in zip(files, blocks):
             digests[path] = _digest_block(block)
         return digests
-    # Both passes declined: `@syntax` selected nothing and neither did the
-    # fallback name list. Same argument as "no validators configured" one branch
-    # up — nothing ran, so nothing may render as a pass.
+
+
+
     for p in files:
         digests[p] = _not_checked("no syntax validator selected")
     return digests
 
 
 def _resolve_partial(path: str, side: str, selected: set[int], force: bool = False) -> int:
-    """Resolve only the selected blocks of one file (issue #305).
 
-    A partial resolve always leaves the unselected blocks' markers in place, so
-    the file stays conflicted by design — it is NEVER staged. The receipt reports
-    "N of M blocks resolved, file still conflicted" and points back at the
-    remaining work, honoring the marker hard-gate rather than fighting it.
-    """
+
+
+
+
+
+
     blocks_label = ", ".join(str(b) for b in sorted(selected))
     print(f"# git-resolve: {side} block(s) {blocks_label} in {_shown(path)}")
 
@@ -1117,7 +1117,7 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
         _print_refusal_help()
         return 1
 
-    # Same guard as the whole-file path, scoped to the blocks actually selected.
+
     dups = _duplicated_headings(path, selected) if side == "both" and not force else []
     if dups:
         print(f"  ⊘ {_shown(path)}: {_heading_refusal(dups)}")
@@ -1132,9 +1132,9 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
 
     remaining_blocks = total - resolved
 
-    # HARD GATE — only a file with no leftover markers may be staged. If the
-    # selector happened to cover every block, the file is clean: stage it and
-    # report a full resolve. Otherwise the markers stay and we never stage.
+
+
+
     marker_lines = _scan_markers(path)
     if marker_lines:
         print(f"  ~ {_shown(path)}: {resolved} of {total} block(s) resolved, "
@@ -1149,7 +1149,7 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
 
     add = _git(["add", "--", path])
     if add.returncode != 0:
-        # Same relay, printed directly rather than collected (#1638).
+
         print(f"  ✗ {_shown(path)}: "
               f"{_untrusted.flat(add.stderr.strip() or add.stdout.strip())}")
         return 1
@@ -1199,9 +1199,9 @@ def main() -> int:
             print(f"ERROR: BLOCKS list is empty, got {blocks_arg!r}")
             return 1
 
-    # Three states, not two (#1858). `git-resolve` writes to conflicted files,
-    # so "I could not tell whether this is a repository" is the one answer that
-    # must not be spoken as "it is not one" — the caller is mid-merge.
+
+
+
     inside, why = probe_repo(_git)
     if inside is None:
         for line in unanswered_repo_lines(why):
@@ -1224,32 +1224,32 @@ def main() -> int:
         print("No conflicted files. Nothing to resolve.")
         return 0
 
-    # This block is the ground under every `path` rendered below, and #1693 was
-    # filed because that ground was written down nowhere. It has since MOVED,
-    # and the old wording is kept here in one line so the change is legible:
-    # the `✓` / `⊘` / `✗` rows used to interpolate `path` raw, sound only
-    # because `core.quotePath` octal-quoted `git diff --name-only
-    # --diff-filter=U` — a config DEFAULT, which #1708 asked to pin.
-    #
-    # Pinning it was the wrong end. `quotePath=true` returns the octal-escaped
-    # SPELLING of an accented name, which is not a path, so `git-resolve` could
-    # never resolve one (`did not match any file(s) known to git`); pinning
-    # would have frozen exactly that. `_list_conflicts` reads `-z` now, so the
-    # paths are real and the split is NUL-separated and unforgeable — and every
-    # rendered path goes through `_shown()`, because a real path CAN carry a
-    # separator. The renders no longer rest on a setting at all.
-    #
-    # argv is still NOT a second source. A comma-separated PATH list is a
-    # **filter** over that set: anything not already conflicted is refused three
-    # lines down, before a single row is printed. That refusal is now belt to
-    # `_shown()`'s braces rather than the only thing holding the rows up.
-    # `tests/test_git_investigate_and_resolve_relay_grounds_1693.py` pins the
-    # filter; `tests/test_list_conflicts_quotepath_1708.py` pins both halves of
-    # the `-z` trade.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if target == "all":
         targets = all_conflicts
     else:
-        # Comma-separated list supported — multi-file resolves in one call
+
         requested = [p.strip() for p in target.split(",") if p.strip()]
         unknown = [p for p in requested if p not in all_conflicts]
         if unknown:
@@ -1260,7 +1260,7 @@ def main() -> int:
             return 1
         targets = requested
 
-    # Block selector is per-file numbered — only meaningful for a single file.
+
     if selected and (target == "all" or len(targets) != 1):
         print("ERROR: BLOCKS selector requires exactly one PATH (block numbers are per-file).")
         return 1
@@ -1270,9 +1270,9 @@ def main() -> int:
 
     print(f"# git-resolve: {side} ({len(targets)} file(s))")
 
-    # Per-file, not per-set: a mixed `both:all` still resolves the CHANGELOG and
-    # only holds back the files where a union is wrong. Refusing the whole set
-    # would just train the override.
+
+
+
     guarded = _guarded_paths(targets, side, force)
 
     resolved: list[str] = []
@@ -1287,9 +1287,9 @@ def main() -> int:
             refused.append((path, _REFUSAL))
             continue
         if side == "both":
-            # Deliberately NOT bypassed by merge=union: that attribute answers
-            # "union this file", which is a different question from "this union
-            # came out sound". Only `force` gets through here.
+
+
+
             dups = _duplicated_headings(path)
             if dups and not force:
                 refused.append((path, _heading_refusal(dups)))
@@ -1304,24 +1304,24 @@ def main() -> int:
                 failed.append((path, err))
                 continue
         else:
-            # Snapshot the working tree BEFORE the checkout — #2226. `checkout
-            # --ours`/`--theirs` is git's own whole-file operation: it can
-            # rewrite content OUTSIDE any conflict block, and the only way to
-            # say so afterward is having kept the "before" to diff against.
+
+
+
+
             pre_text = _read_text_for_hunks(path)
             co = _git(["checkout", f"--{side}", "--", path])
             if co.returncode != 0:
-                # A child's stream reaching the `✗ PATH: REASON` row below
-                # (#1638). `_untrusted.split_lines` cuts on LF/CR/CRLF alone by
-                # design, so a U+2028 survives inside what the render treats as
-                # one line and puts chosen text at column 0, where a `[result]`
-                # a consumer greps for sorts first. #1622 (`4bcb1b2`) is the
-                # shape.
+
+
+
+
+
+
                 failed.append((path, _untrusted.flat(
                     co.stderr.strip() or co.stdout.strip())))
                 continue
             hunk_notes[path] = _hunk_note(pre_text, _read_text_for_hunks(path))
-        # HARD GATE — never stage a file that still carries a conflict marker.
+
         marker_lines = _scan_markers(path)
         if marker_lines:
             shown = ", ".join(str(n) for n in marker_lines[:5])
@@ -1335,7 +1335,7 @@ def main() -> int:
             continue
         resolved.append(path)
 
-    # Syntax digest for the whole batch in ONE supertool call (folded per-file).
+
     if resolved:
         digests = _validate_paths(resolved)
 
@@ -1348,13 +1348,13 @@ def main() -> int:
         if path in forced_headings:
             line += " | ⚠ duplicated heading(s) — verify section structure"
         print(line)
-        # #2226: `checkout --ours`/`--theirs` is whole-file, so a resolution
-        # that touched more hunks than it had conflict blocks moved something
-        # OUTSIDE the conflict it was asked to resolve. Silent only for 'both'
-        # (union rewrites markers in place and cannot do this — not
-        # applicable, so nothing is printed); a file whose before/after
-        # snapshot could not be read still gets a line, saying so, rather
-        # than omitting one indistinguishably from the genuinely-clean case.
+
+
+
+
+
+
+
         hunk_note = hunk_notes.get(path)
         if hunk_note:
             print(f"      {hunk_note}")
@@ -1363,10 +1363,10 @@ def main() -> int:
     for path, err in failed:
         print(f"  ✗ {_shown(path)}: {err}")
 
-    # A forced union is reported as such — the syntax digest above says
-    # `validate: ok` about a file whose statements now run twice, or whose
-    # unreleased entries now sit under a tagged release, so the tally has to carry
-    # the doubt the validator cannot.
+
+
+
+
     notes: list[str] = []
     if forced_source:
         notes.append(f"{len(forced_source)} source file(s) unioned — 'both' "
@@ -1394,7 +1394,7 @@ def main() -> int:
             print(f"  {_shown(p)}")
         print("Next: ./supertool 'git-conflicts' to inspect, or rerun git-resolve.")
     elif resolved:
-        # Detect state to give the right continue command
+
         gd = _git(["rev-parse", "--git-dir"]).stdout.strip()
         from os.path import exists, join
         if exists(join(gd, "MERGE_HEAD")):

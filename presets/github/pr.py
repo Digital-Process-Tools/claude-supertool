@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub pull request details via gh CLI."""
+
 from __future__ import annotations
 
 import json
@@ -13,43 +13,43 @@ from typing import Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import _body  # noqa: E402  (the one body cap + disclosure — #698)
-import _mirror  # noqa: E402  (write-through cache of the raw API reply — #1955, #2472)
-import _untrusted  # noqa: E402  (the fence around tracker text — #694)
-import _classify_render  # noqa: E402  (the verdict beside the fence — #2049)
-import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
-import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
-import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-status)
-import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-branch)
-import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
-import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
-import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
-import _statusline_fragments  # noqa: E402  (the statusline op's read side — #1850)
+import _body  
+import _mirror  
+import _untrusted  
+import _classify_render  
+import _auth_probe  
+import _status_probe  
+import _checks  
+import _declared_legs  
+import _repo_target  
+import _branch_locale  
+import _digits  
+import _statusline_fragments  
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
-import _pr_diff  # noqa: E402  (the review shape of a PR's diff — #875)
+from _console import use_utf8_stdout  
+import _pr_diff  
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
 
-# See presets/github/issue.py's identical constant for the reasoning (#2049).
+
 _CLASSIFY_LEVEL = _classify_render.level_from_env()
-# `gh pr diff` streams a whole patch; the dashboard's 10s is sized for JSON
-# metadata and an 80-file diff routinely outruns it.
+
+
 DIFF_TIMEOUT = 60
 
-#: Every mode word this op has. A token outside it is refused rather than
-#: dropped (#1346) — `gh-pr:1331:notamode` used to render the default dashboard
-#: at exit 0, and so did `:threads`, `:reviews` and `:comments`, three words a
-#: caller reaches for while looking at a header that says
-#: `Unresolved threads: 1 / 1`. Same resolution as `gh-job` (#1145) and
-#: `git-push` (#647): name what does not exist, name what does, read nothing.
+
+
+
+
+
+
 MODES = ("status", "full", "diff", "threads")
 
 
 def _relative_age(iso: str) -> str:
-    """Format an ISO timestamp as 'Nd ago', 'Nh ago', or 'Nm ago'."""
+
     if not iso:
         return "?"
     try:
@@ -70,12 +70,12 @@ def _relative_age(iso: str) -> str:
 
 
 def _mode_refusal(flags: Sequence[str]) -> str:
-    """Message refusing the first unrecognised mode token. Empty when there is none.
 
-    Everything right of `diff` is a PATH, not a mode, so validation stops
-    there: `gh-pr:N:diff:presets/github/pr.py` is a path-scoped diff and a
-    guard that read the path as a mode word would refuse every one of them.
-    """
+
+
+
+
+
     for tok in flags:
         if not tok:
             continue
@@ -97,13 +97,13 @@ def _mode_refusal(flags: Sequence[str]) -> str:
 
 
 def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    """Run a gh command and return the result.
 
-    A repo target (#673) becomes `--repo OWNER/NAME` on every subcommand that
-    takes one. `gh api` does not take it — and does not need it: the GraphQL
-    callers below read owner and repo off the PR's own URL and pass them as
-    query variables, so they follow the target without being told.
-    """
+
+
+
+
+
+
     if args and args[0] != "api":
         args = args + _repo_target.gh_args()
     return subprocess.run(
@@ -114,30 +114,30 @@ def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
 
 _RUN_ID_IN_URL = re.compile(r"/actions/runs/([0-9]+)(?:[/?#]|$)")
 
-# How many distinct *workflows* one PR may be reconciled against before the op
-# stops paying for it. The cost is one `gh api` call per workflow and `:status`
-# is a hot path; a PR fanning out past this is outside what a single merge-gate
-# call should spend, so the tally declines (UNVERIFIED) rather than either
-# skipping the check or quietly blocking on N calls.
-#
-# Was 4, measured against the four workflows this repo had when #724 was
-# written. Copilot code review added a fifth, and every PR carrying it rendered
-# `TALLY UNVERIFIED` — a decline caused entirely by the op's own budget, worded
-# as though something about the PR were unknown (#1181). 8 leaves room for a
-# repo to grow a workflow without silently blinding its own merge gate; the
-# per-workflow collapse below is what keeps the call count near the old one.
+
+
+
+
+
+
+
+
+
+
+
+
 MAX_RECONCILED_RUNS = 8
 
 
 def _rollup_run_ids(rollup: object) -> list[str]:
-    """Distinct Actions run ids named by a rollup, in first-seen order.
 
-    The id rides on `detailsUrl`, already fetched — the same field
-    `_checks.github_job_id()` reads for the job id (#619), so this costs no
-    extra request. Entries pointing at anything other than an Actions run
-    (external CI, legacy commit statuses) contribute no id, which is what
-    keeps them out of the reconciliation entirely.
-    """
+
+
+
+
+
+
+
     if not isinstance(rollup, list):
         return []
     seen: list[str] = []
@@ -151,7 +151,7 @@ def _rollup_run_ids(rollup: object) -> list[str]:
 
 
 def _actions_leg_names(rollup: object) -> list[str]:
-    """Names of the rollup entries that belong to an Actions run."""
+
     if not isinstance(rollup, list):
         return []
     out: list[str] = []
@@ -164,7 +164,7 @@ def _actions_leg_names(rollup: object) -> list[str]:
 
 
 def _missing_names(declared: Sequence[str], found: Sequence[str]) -> list[str]:
-    """Declared leg names with the found ones removed, duplicates respected."""
+
     remaining = Counter(found)
     out: list[str] = []
     for name in declared:
@@ -176,31 +176,31 @@ def _missing_names(declared: Sequence[str], found: Sequence[str]) -> list[str]:
 
 
 def _runs_on_commit(owner: str, repo: str, sha: str) -> list | None:
-    """`[(run_id, workflow_name, workflow_id)]` for the head commit, or `None`.
 
-    The third element is the identity the collapse in `_one_run_per_workflow`
-    keys on. A workflow's `name:` is not unique — two workflow files may spell
-    it identically — and collapsing on the name would drop one of them from the
-    declared count, which then reconciles silently on `declared <= found`. That
-    is the shortfall this whole mechanism exists to catch, hidden by the fix
-    for the noise it was making. `workflow_id` rides on the same response and
-    costs nothing.
 
-    **This is the fix for #804's comment, and it is one line of reasoning.**
-    The declared count used to be summed over the run ids parsed out of the
-    rollup — the very list it was checking. A run entirely absent from the
-    rollup then contributes nothing to *either* side and cancels out, so the
-    mechanism was structurally unable to see the case it was built for. On PR
-    #822 that rendered `checks: 4 total: 4 passed` against an 18-leg matrix,
-    with #724's reconciliation present, silent, and correct about the one run
-    it could see.
 
-    Runs are listed from the commit instead, so a run whose legs have not
-    reached the rollup is still on the declared side. One extra request per
-    render, on an op that sits in the merge gate — the trade #804 asks to be
-    stated: `gh-pr:status` is the line a maintainer reads before merging, and
-    a request is cheaper than a merge on four green CodeQL legs.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not owner or not repo or not sha:
         return None
     try:
@@ -229,26 +229,26 @@ def _runs_on_commit(owner: str, repo: str, sha: str) -> list | None:
 
 
 def _one_run_per_workflow(ordered: list, keys_by_id: dict) -> list:
-    """Collapse repeat run records of one workflow on one commit (#1181).
 
-    `actions/runs?head_sha=` returns a record per run, and a re-run or a second
-    trigger of the same workflow file adds another against the same sha: PRs
-    #1177 and #1178 each carry **five** `changelog` records. They declare the
-    same legs, so reconciling all five buys nothing and costs the whole
-    budget — measured, both PRs tipped past the cap and rendered
-    `TALLY UNVERIFIED` with nothing about them actually unknown.
 
-    First seen wins. The rollup's own ids lead `ordered`, and GitHub lists runs
-    newest-first, so the record kept is the one the rollup is showing.
 
-    Keyed on `workflow_id`, never on the workflow's display name: `name:` is
-    not unique across workflow files, and merging two real workflows would
-    shrink `declared` into a silent reconcile.
 
-    A run whose workflow id is unresolvable keys on its own run id rather than
-    on the empty string: collapsing two unknowns into one would be this fix
-    inventing the silence it exists to remove.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     out: list = []
     seen: set[str] = set()
     for rid, name in ordered:
@@ -261,30 +261,30 @@ def _one_run_per_workflow(ordered: list, keys_by_id: dict) -> list:
 
 
 def _declared_for_commit(d: dict) -> tuple:
-    """`(declared, names, uncovered, reason)` — the second source, off the commit.
 
-    `reason` is why `declared` is `None`, in words, and it is the point of
-    #1181: "could not be established" is true of every cause and actionable for
-    none, so a decline that fires for a whole afternoon reads exactly like the
-    one that matters. Empty whenever `declared` is a number.
 
-    **This is #804's comment, and the whole of it.** The declared count used to
-    be summed over the run ids parsed out of the rollup — the very list it was
-    checking. A run entirely absent from the rollup contributes nothing to
-    *either* side and cancels out, so the mechanism was structurally unable to
-    see the case it was built for. On PR #822 that rendered
-    `checks: 4 total: 4 passed` against an 18-leg matrix, with #724's
-    reconciliation present, silent, and correct about the one run it could see.
 
-    `uncovered` names the runs on this commit that declare no leg at all. They
-    are unreachable by arithmetic — zero on both sides reconciles — so they are
-    reported in words. A run whose jobs GitHub has not created yet is the exact
-    shape of the just-pushed window #822 was read in.
 
-    `(None, [], [])` on every failure and never a fallback: falling back to the
-    rollup's own ids restores the blind mechanism silently, which is worse than
-    declining because it looks like an answer.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     rollup = d.get("statusCheckRollup")
     rollup_ids = _rollup_run_ids(rollup)
     owner, repo = _declared_legs.owner_repo(d.get("url") or "")
@@ -322,22 +322,22 @@ def _declared_for_commit(d: dict) -> tuple:
 
 
 def _reconcile_checks(d: dict) -> tuple[str, list[str]]:
-    """`(marker, lines)` disclosing legs the rollup never carried (#724/#804).
 
-    Two independent gaps, because they are established two different ways and
-    a reader deciding a merge needs both:
 
-    * **the leg shortfall** — `shortfall()`'s arithmetic over every run on the
-      commit, which catches a rollup short of runs whose jobs exist.
-    * **the uncovered run** — a whole run contributing nothing, which the
-      arithmetic cannot see. Stated in words, because an omitted field reads
-      as "nothing to report", and that reading is the defect.
 
-    Silent when nothing Actions-shaped is reachable at all: no legs read, no
-    run declared, nothing to be short of. Printing a warning over a purely
-    external check suite is noise where nothing is missing, and a marker that
-    fires on every PR is one nobody reads.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
     found_names = _actions_leg_names(d.get("statusCheckRollup"))
     declared, declared_names, uncovered, reason = _declared_for_commit(d)
     if declared is None and not found_names and not uncovered:
@@ -361,23 +361,23 @@ def _reconcile_checks(d: dict) -> tuple[str, list[str]]:
     return (marker, lines)
 
 def _leg_unit_line(check_states: Sequence[str]) -> str:
-    """Say that the failed count counts legs, when there is a failed count.
 
-    #1050. `checks: 20 total: 16 passed, 4 failed, 0 pending` was read as four
-    failing *tests*. There were six, uniform across four *legs*, and the wrong
-    reading is not a careless one — nothing in the line names its unit, and the
-    named disclosure under it lists check names that look exactly like test
-    parametrisations (`pytest (windows-latest, 3.9)`).
 
-    The two readings point at opposite investigations. Three visible names out
-    of "four failures" says some legs passed where their twins failed, which is
-    ordering or shared state; six-of-six on every leg says the fixture. The
-    render was consistent with both and settled neither.
 
-    Printed only when something is in the failed bucket. A unit note on a green
-    PR is a line nobody needs, and a line that appears on every render is one
-    nobody reads by the time it matters — this repo has paid for that twice.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not any(_checks.bucket(s) == "failed" for s in check_states):
         return ""
     return ("  (those are LEGS — one check run each, not one test each. For the "
@@ -385,45 +385,45 @@ def _leg_unit_line(check_states: Sequence[str]) -> str:
 
 
 def _local_branch_check(source: str) -> str:
-    """Return a one-line local-branch-vs-PR-source check.
 
-    Delegated to `_branch_locale` (#850): a branch held by a linked worktree is
-    neither a match nor a MISMATCH, and saying MISMATCH there prescribed a
-    checkout git refuses.
-    """
+
+
+
+
+
     return _branch_locale.check(source)
 
 
-#: How many threads the dashboard index renders before it stops and says how
-#: many it withheld. The GraphQL selection caps at `THREADS_PAGE_MAX` below (the
-#: number used to be hand-copied into this sentence); a PR carrying more index
-#: rows than this is past what belongs in a header, and `:threads` is one call
-#: away. The cap is disclosed rather than silent — a list that stops without
-#: saying so is the same defect this whole change is about, and the withheld
-#: count itself is a floor once the *fetch* stopped short too (#1491).
+
+
+
+
+
+
+
 THREAD_INDEX_MAX = 20
 
-#: Characters of a thread's first comment kept on its index row. The row is an
-#: *identifier*, not the finding: enough to tell two bot comments apart and to
-#: decide whether to spend a `:threads` call.
+
+
+
 THREAD_EXCERPT_MAX = 90
 
 
-#: The `first:` on the threads selection. **A page, not a total.** The query
-#: requests no `pageInfo`, so a reply holding exactly this many threads and a PR
-#: holding exactly this many threads are the same bytes — and both renders used
-#: to divide by `len(threads)`, which states a fetch limit as a fact about the
-#: pull request (#1491). They compare against this constant now and print a
-#: floor instead. Named rather than left as a literal inside the query string
-#: because that inference is only sound while the two agree, and until #1491
-#: nothing made them: the number was hand-copied into a comment as well.
+
+
+
+
+
+
+
+
 THREADS_PAGE_MAX = 100
 
-#: The `first:` on the comments inside one thread. Well past anything observed,
-#: and the same reading: a thread at this cap had its comment list cut and
-#: `gh-pr:N:threads` said nothing at all (#1491). The old comment here said the
-#: cap was "stated so a future reader knows it is a cap" — stated to the reader
-#: of this file, not to the operator reading the receipt.
+
+
+
+
+
 COMMENTS_PAGE_MAX = 50
 
 _THREADS_QUERY = (
@@ -439,15 +439,15 @@ _THREADS_QUERY = (
 
 def _fetch_review_threads_detailed(
         url: str, number: int | str) -> tuple[list | None, str]:
-    """`(nodes, error)` — and `None` is not `[]`.
 
-    There used to be a second, lossy fetcher next to this one that returned
-    `[]` on every failure, and the default dashboard ran it — so a PR with
-    threads and a PR whose GraphQL call was rate-limited rendered identically
-    in the header, which is this repo's defect class. That fetcher is gone
-    (#1445): `gh-pr`, `gh-pr:N:threads` and `gh-prs` all read through this,
-    and every caller has to decide what to do with a `None` that is not `[]`.
-    """
+
+
+
+
+
+
+
+
     if not url:
         return (None, "the PR has no URL, so its owner/repo could not be read")
     m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/\d+", url)
@@ -464,15 +464,15 @@ def _fetch_review_threads_detailed(
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         return (None, f"the GraphQL call did not complete: {exc}")
     if r.returncode != 0:
-        # Copied from `pr_merge.py::_gh_json` and fixed with it (#1648). The
-        # #1119 register argued this one should STAY on `str.splitlines()`,
-        # because that consumes an exotic separator where `split_lines` would
-        # leave a forged U+2028 inside the extracted string. That reasoning
-        # only holds if the split is the whole fix: consuming the separator
-        # means discarding everything before it, so the server still chose
-        # which segment became the decline reason and the real error was
-        # dropped. `split_lines` decides the boundary and `flat()` spells the
-        # separator — nothing forged, nothing lost.
+
+
+
+
+
+
+
+
+
         tail = _untrusted.split_lines((r.stderr or r.stdout or "").strip())
         return (None, _untrusted.flat(tail[-1]) if tail
                 else f"gh exited {r.returncode}")
@@ -480,11 +480,11 @@ def _fetch_review_threads_detailed(
         data = json.loads(r.stdout)
     except json.JSONDecodeError:
         return (None, "the GraphQL reply was not JSON")
-    # Every hop is isinstance-checked, not `or {}`-chained. A reply whose
-    # `data` is a list — GraphQL's own error envelope is one shape that does
-    # this — made `.get` raise, and the raise escaped to the caller: the whole
-    # `gh-pr` dashboard aborted over a decorative header field. Declining by
-    # name is the third state; crashing is not one of the three (#1445).
+
+
+
+
+
     node: object = data
     for key in ("data", "repository", "pullRequest", "reviewThreads"):
         if not isinstance(node, dict):
@@ -498,20 +498,20 @@ def _fetch_review_threads_detailed(
 
 
 def _thread_page_floors(threads: list, unresolved: int) -> tuple[str, str, str]:
-    """`(unresolved, total, note)` — as counts, or as floors at the page cap.
 
-    `reviewThreads(first: N)` carries no `pageInfo`, so a reply of exactly N
-    threads is indistinguishable from a PR of exactly N threads. Both numbers
-    are then bounds and neither is a count: the unresolved tally is off the same
-    truncated set as the denominator. `at least` is true in both readings and is
-    the only claim the reply supports — the three-state rule (`docs/validators.md`,
-    "Declining instead of guessing") applied to a number rather than a verdict.
 
-    Below the cap the reply *does* establish the total, and it is printed bare.
-    Qualifying a number that is known would be the same defect pointed the other
-    way: a reader who cannot tell `0 / 0` from `0 / at least 0` learns nothing
-    from either.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
     if len(threads) < THREADS_PAGE_MAX:
         return (str(unresolved), str(len(threads)), "")
     return (f"at least {unresolved}", f"at least {len(threads)}",
@@ -520,18 +520,18 @@ def _thread_page_floors(threads: list, unresolved: int) -> tuple[str, str, str]:
 
 
 def _render_threads(number: str, comment_max: int | None) -> int:
-    """`gh-pr:N:threads` — the review comments the dashboard only counts.
 
-    The header of the default view prints `Unresolved threads: 1 / 1` and there
-    was no op that answered the one question a reader then has, so the agent
-    that hit it fell back to `gh api repos/.../pulls/N/comments` (#1346). This
-    is one op's render, not a new op: the count and the bodies come off the
-    same `reviewThreads` selection.
 
-    Its own light `pr view` rather than the dashboard's: this needs the URL,
-    the number and the branch pair, and the dashboard call is ~20x the payload
-    — the same reason `:diff` runs before it.
-    """
+
+
+
+
+
+
+
+
+
+
     try:
         meta = _gh(["pr", "view", number, "--json",
                     "number,title,url,headRefName,baseRefName"])
@@ -544,8 +544,8 @@ def _render_threads(number: str, comment_max: int | None) -> int:
     try:
         d = json.loads(meta.stdout)
     except json.JSONDecodeError:
-        # Fenced, not flattened (#1648) — see `run.py` for why a body is a
-        # block. Slice first, fence second: the markers are the outermost thing.
+
+
         print("ERROR: invalid JSON from gh — its body, verbatim, below")
         print(_untrusted.banner())
         print(_untrusted.fence(meta.stdout[:500]))
@@ -562,9 +562,9 @@ def _render_threads(number: str, comment_max: int | None) -> int:
 
     threads, err = _fetch_review_threads_detailed(d.get("url", ""), iid)
     if threads is None:
-        # The same string as the dashboard's line, from the same fetcher, at
-        # column 0 in a render whose line above is the branch pair. Flattening
-        # one sink and not the other is the half-fixed seam #1470 is about.
+
+
+
         print(f"Threads: UNKNOWN — they could not be read "
               f"({_untrusted.flat(err)}).")
         print("This is not 'none'. Nothing here establishes whether this PR "
@@ -578,8 +578,8 @@ def _render_threads(number: str, comment_max: int | None) -> int:
     unresolved = sum(1 for t in threads if not t.get("isResolved"))
     shown, total, floor_note = _thread_page_floors(threads, unresolved)
     print(f"Threads: {shown} unresolved of {total}{floor_note}")
-    # Unresolved first: the resolved ones are history and the unresolved ones
-    # are the reason anybody ran this.
+
+
     ordered = sorted(threads, key=lambda t: bool(t.get("isResolved")))
     for t in ordered:
         state = "RESOLVED" if t.get("isResolved") else "UNRESOLVED"
@@ -603,15 +603,15 @@ def _render_threads(number: str, comment_max: int | None) -> int:
             if trunc:
                 print(trunc)
             if c.get("url"):
-                # `flat()`, not raw. This permalink is the one field in this
-                # render that no other read op prints, so no existing scanner
-                # covers it — and it lands at column 0 directly under a fenced
-                # body, which is where supertool's own output belongs. A
-                # U+2028 in it renders as a line break there (#965's shape).
+
+
+
+
+
                 print(_untrusted.flat(str(c["url"])))
-        # The comment list has its own page cap and used to stop at it in
-        # silence — the one cut in this delta that disclosed nothing at all
-        # (#1491). A thread cut here reads as a thread that ended.
+
+
+
         if len(comments) >= COMMENTS_PAGE_MAX:
             print()
             print(f"[the first {COMMENTS_PAGE_MAX} comments on this thread — "
@@ -621,21 +621,21 @@ def _render_threads(number: str, comment_max: int | None) -> int:
 
 
 def _thread_excerpt(thread: dict) -> str:
-    """The opening of a thread's first comment, flattened onto one line.
 
-    The whole body flattened and then cut, **not** its first line. Measured on
-    PR #1443, the pair of findings that filed #1445: an automated reviewer
-    writes a Markdown heading first, so both threads' first lines were
-    `## Empty except` and the index rendered two identical rows for two
-    different findings — a render that cannot tell its own entries apart is
-    not much better than the bare count it replaced.
 
-    `flat()` and not raw: these rows are supertool's own output at a fixed
-    indent, so an unflattened body could paint a row no thread produced — by
-    newline, and equally by the U+2028 that only a Markdown reader breaks on
-    (#965). The cap ends in an ellipsis, so a truncated row cannot be mistaken
-    for a short comment.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
     comments = ((thread.get("comments") or {}).get("nodes")) or []
     if not comments:
         return "(no comment body)"
@@ -649,26 +649,26 @@ def _thread_excerpt(thread: dict) -> str:
 
 
 def _thread_index(threads: list | None, err: str, number: int | str) -> list[str]:
-    """The `Unresolved threads:` line and one row per thread, in three states.
 
-    The old shape was `if review_threads:` around a bare count, fed by a
-    fetcher that returned `[]` for every failure. That collapsed three
-    different answers into two renderings and lost the important one: a
-    rate-limited GraphQL call printed **no line at all**, which reads as a PR
-    with nothing to discuss. `gl-mr` has printed `Unresolved threads: UNKNOWN`
-    since #812; this is GitHub catching up (#1445).
 
-    The rows are an index, not the content. A bot review runs to kilobytes per
-    thread and the dashboard is not where that belongs, so each row carries
-    `path:line`, the author and a first line, and points at `:threads` for the
-    bodies — a mode that already existed (#1346) and that nothing in this
-    render used to mention.
 
-    Resolved threads are rendered too, lowercased and sorted last. "Resolved"
-    is one person's decision about another person's finding; a reader who
-    cannot see it cannot disagree with it. The count line states the split, so
-    showing them conflates nothing.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if threads is None:
         return [
             f"Unresolved threads: UNKNOWN — they could not be read "
@@ -687,12 +687,12 @@ def _thread_index(threads: list | None, err: str, number: int | str) -> list[str
     for t in ordered[:THREAD_INDEX_MAX]:
         state = "resolved  " if t.get("isResolved") else "UNRESOLVED"
         where = _untrusted.flat(str(t.get("path") or "(no file)"))
-        # `line` is null on an outdated thread — the diff moved out from under
-        # it — and GitHub keeps the position it was written against in
-        # `originalLine`. Falling back to it is what makes an outdated row
-        # actionable: on PR #1443 both threads rendered as a bare path, and
-        # `pkg_paths.py:87` is the whole address of the finding. `[outdated]`
-        # below already says the number is against an earlier diff.
+
+
+
+
+
+
         line_no = t.get("line")
         if not isinstance(line_no, int):
             line_no = t.get("originalLine")
@@ -708,8 +708,8 @@ def _thread_index(threads: list | None, err: str, number: int | str) -> list[str
                    f"{_thread_excerpt(t)}")
     withheld = len(ordered) - THREAD_INDEX_MAX
     if withheld > 0:
-        # Off the same truncated set as the denominator, so at the page cap this
-        # under-reports by whatever the fetch did not see (#1491).
+
+
         at_least = "at least " if len(threads) >= THREADS_PAGE_MAX else ""
         out.append(f"  … {at_least}{withheld} more not indexed here")
     out.append(f"  bodies: gh-pr:{number}:threads — the rows above are one "
@@ -718,24 +718,24 @@ def _thread_index(threads: list | None, err: str, number: int | str) -> list[str
 
 
 def _head_commit_age_secs(url: str, number: int | str) -> int | None:
-    """Seconds since the PR's head commit was made, or None if unestablished.
 
-    Costs one GraphQL call, so it is only ever asked when a commit carries zero
-    check runs — the tally needs no help when runs exist, and `gh-pr` is a hot
-    path.
 
-    GraphQL exposes `pushedDate`, which is the field this wants and which
-    GitHub now returns as `null` for every commit (verified against this repo's
-    own PRs), so the age comes from `committedDate`. That can predate the push
-    — a commit can sit locally for a day — which only ever makes the age look
-    *older* than the wait actually was. `_checks.absence()` treats old-and-empty
-    on an open PR as UNKNOWN rather than as proof, so the skew cannot
-    manufacture a "no runs will be created"; the worst it does is turn a
-    freshly pushed old commit's "not yet" into "go look", which is safe.
 
-    None on every failure — no repo in the URL, gh error, missing node. The
-    caller must render that as a decline, not as either verdict.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not url:
         return None
     m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/\d+", url)
@@ -774,7 +774,7 @@ def _head_commit_age_secs(url: str, number: int | str) -> int | None:
 
 
 def _absence_lines(d: dict, number: int | str) -> tuple[str, str]:
-    """`(checks_text, mergeable_note)` for a head commit with zero check runs."""
+
     return _checks.absence(
         d.get("state"),
         _head_commit_age_secs(d.get("url") or "", number),
@@ -783,7 +783,7 @@ def _absence_lines(d: dict, number: int | str) -> tuple[str, str]:
 
 
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
-    """Classify gh errors into actionable messages for LLMs."""
+
     s = stderr.lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
         return _repo_target.no_repo_error("gh-pr:265:status")
@@ -791,36 +791,36 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return (f"ERROR: {resource} #{identifier} not found "
                 f"{_repo_target.not_found_scope()}. "
                 f"{_repo_target.not_found_hint()}")
-    # A status, never a number (#1846). `401` sits inside a GitHub user id
-    # (`API rate limit exceeded for user ID 44012345`) and inside a request id,
-    # and this arm is above the rate-limit and permission arms -- so a throttle
-    # printed `gh auth login`, a remedy for a cause nothing established, and
-    # never reached the arm that says "retry".
-    # A bare `token` went the same way: `Resource not accessible by personal
-    # access token` is a 403 about scopes, and the permission arm below was
-    # unreachable for it.
+
+
+
+
+
+
+
+
     if _auth_probe.says_not_authenticated(s):
         return f"ERROR: gh CLI not authenticated. Run: gh auth login (verify with: gh auth status)"
     if "rate limit" in s or "429" in s:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
     if _status_probe.says_forbidden(s):
         return f"ERROR: permission denied for {resource} #{identifier}. Check repo access (gh auth status)."
-    # The one sink both `gh-pr` error prints share, so the flatten belongs here
-    # rather than at either of them (#1475). `gh` echoes the GitHub API's own
-    # error body on stderr, and this line is at column 0: a reply carrying a
-    # separator wrote a second, forged line under supertool's own authority.
+
+
+
+
     return (f"ERROR: gh failed for {resource} #{identifier}: "
             f"{_untrusted.flat(stderr.strip())}")
 
 
 def _diff_header(number: str) -> list[str]:
-    """The two lines a diff needs for context, and never a reason to fail.
 
-    The diff is the load-bearing read; the title and branch pair are context.
-    So a metadata call that does not come back degrades those to `?` rather
-    than aborting — blocking the review read on the decorative one would be
-    this repo's defect class wearing a helpful face.
-    """
+
+
+
+
+
+
     head = [_untrusted.banner()]
     try:
         meta = _gh(["pr", "view", number, "--json",
@@ -830,8 +830,8 @@ def _diff_header(number: str) -> list[str]:
         return head
     if meta.returncode != 0:
         head.append(
-            # Flattened for the same reason `_format_error` is (#1475): this
-            # sits at column 0 directly above the diff a review is read from.
+
+
             f"# PR #{number} (title unavailable: "
             f"{_untrusted.flat((meta.stderr or '').strip()[:80]) or 'gh pr view failed'})")
         return head
@@ -850,25 +850,25 @@ def _diff_header(number: str) -> list[str]:
 
 
 def _run_diff(number: str, path: str | None) -> int:
-    """`gh-pr:N:diff[:PATH]` — the merge gate's read, in a reviewable shape.
 
-    `gh pr diff` carries `--repo` through `_gh`, so a call made from the wrong
-    directory answers about the repo the caller named rather than about
-    whatever the cwd's remote happens to be (#677/#678).
 
-    **No `--patch` (#1068).** `--patch` is format-patch: one section per
-    commit, so a file touched by three commits arrives three times and the
-    hunks route served the first and stopped. The bare `gh pr diff` is the net
-    three-dot diff — merge-base to head, one entry per path — which is the
-    thing being merged and therefore the thing under review. GitHub computes
-    it, so nothing here reassembles anything. A per-commit view is a different
-    question ("what changed since I last looked") and needs a since-ref rather
-    than a flag; it is not this op.
 
-    Every failure route hands `_pr_diff.render` a `None` file list with the
-    cause attached. An exception, a non-zero exit and an unreadable patch are
-    three different reasons and none of them is "this PR changes nothing".
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     header = _diff_header(number)
     files: list[dict] | None
     reason: str | None = None
@@ -894,33 +894,33 @@ def _run_diff(number: str, path: str | None) -> int:
 def main() -> int:
     use_utf8_stdout()
     if len(sys.argv) < 2:
-        # Kept in step with MODES and with _mode_refusal's own list: a usage
-        # line that omits a mode the op has is the #1346 defect pointed the
-        # other way — the caller is told a working request will not work.
+
+
+
         print("ERROR: usage: pr.py NUMBER_OR_BRANCH "
               "[status|full|diff[:PATH]|threads]")
         return 1
 
     arg = sys.argv[1]
     flags = sys.argv[2:]
-    # Before the branch lookup and before any fetch: a mode this op cannot
-    # honour is refused, and "nothing was read" has to be true (#1346).
+
+
     refusal = _mode_refusal(flags)
     if refusal:
         print(refusal)
         return 1
     slim = "status" in flags
-    # gh-pr had no :full at all. The truncation disclosure names one as the way
-    # to get the withheld text, so one has to exist — a stated escape hatch
-    # that does not work is worse than none, because it stops the reader
-    # looking for another (#698).
+
+
+
+
     full = "full" in flags
     desc_max = None if full else DESCRIPTION_MAX
     comment_max = None if full else COMMENT_MAX
 
-    # If not all ASCII digits, treat as branch name. `str.isdigit()` was the
-    # test until #1727 and admitted `٢`, which then went to `gh pr view ٢` as
-    # though the caller had named a PR.
+
+
+
     if not _digits.is_ascii_int(arg):
         try:
             branch_result = _gh([
@@ -932,7 +932,7 @@ def main() -> int:
                 if prs:
                     arg = str(prs[0].get("number", arg))
                 else:
-                    # Try closed PRs too
+
                     branch_result2 = _gh([
                         "pr", "list", "--head", arg, "--state", "all",
                         "--json", "number", "--limit", "1"
@@ -948,17 +948,17 @@ def main() -> int:
             print(f"ERROR: branch lookup failed: {e}")
             return 1
 
-    # The diff route runs before the dashboard fetch: it needs none of those
-    # fields and the dashboard call is ~20x the payload.
+
+
     if "diff" in flags:
         rest = flags[flags.index("diff") + 1:]
         return _run_diff(arg, rest[0] if rest else None)
 
-    # Same reasoning as the diff route: needs none of the dashboard's fields.
+
     if "threads" in flags:
         return _render_threads(arg, comment_max)
 
-    # Fetch PR with all needed fields
+
     try:
         result = _gh([
             "pr", "view", arg, "--json",
@@ -968,7 +968,7 @@ def main() -> int:
             "statusCheckRollup,assignees,createdAt,updatedAt,headRefOid"
         ])
     except FileNotFoundError:
-        print("ERROR: gh not found — install from https://cli.github.com")
+        print("ERROR: gh not found — install the GitHub CLI")
         return 1
     except subprocess.TimeoutExpired:
         print("ERROR: gh timed out")
@@ -981,19 +981,19 @@ def main() -> int:
     try:
         d = json.loads(result.stdout)
     except json.JSONDecodeError:
-        # Fenced, not flattened (#1648) — see `run.py` for why a body is a
-        # block. Slice first, fence second: the markers are the outermost thing.
+
+
         print("ERROR: invalid JSON from gh — its body, verbatim, below")
         print(_untrusted.banner())
         print(_untrusted.fence(result.stdout[:500]))
         return 1
 
-    # `statusline` (#1850) publishes here rather than re-deriving its own
-    # tally: this is the reconciliation `presets/_checks.py` already did for
-    # THIS run, so there is no second verdict path that could ever disagree
-    # with it. Best-effort and silent -- see `_statusline_fragments.publish`'s
-    # docstring for why a cache-write failure must never turn a working
-    # `gh-pr` call into a failing one.
+
+
+
+
+
+
     _statusline_fragments.publish("gh-pr", os.getcwd(), {
         "summary": _checks.summarize_github(d.get("statusCheckRollup")),
         "number": d.get("number"),
@@ -1001,21 +1001,21 @@ def main() -> int:
         "mergeable": d.get("mergeable"),
     })
 
-    # Write-through mirror (#1955, #2472): the RAW reply, before any
-    # truncation below touches it, exactly like `gh-issue`'s own wiring in
-    # `presets/github/issue.py` -- see that file's comment for the full
-    # reasoning, and `presets/_mirror.py`'s module docstring for why PRs get
-    # their own SUBDIR (`write_pr`/`read_pr`) rather than sharing the issue
-    # manifest. Opt-in and best-effort: an unconfigured mirror is a silent
-    # no-op, and a configured-but-failing one must never take this read down
-    # with it.
+
+
+
+
+
+
+
+
     mirror_cfg = _mirror.load_config(pathlib.Path.cwd().resolve())
     if mirror_cfg.error is not None:
         print(f"note: gh mirror not written -- {mirror_cfg.error}")
     elif mirror_cfg.path is not None:
-        # Same defense-in-depth as `gh-issue`'s write side (#1955
-        # self-review): a mirror write must not be the one place in this
-        # file that trusts remote text into a path.
+
+
+
         mirror_number = str(d.get("number", arg))
         if _digits.is_ascii_int(mirror_number):
             mirror_err = _mirror.write_pr(mirror_cfg.path, mirror_number, d)
@@ -1033,20 +1033,20 @@ def main() -> int:
         mergeable = d.get("mergeable", "?")
         review_decision = d.get("reviewDecision") or "none"
         check_states = _checks.github_states(d.get("statusCheckRollup"))
-        # Live only (#1792). The full set answers "is there a rollup at all"
-        # and feeds the reconciliation, which is a coverage question; anything
-        # that reads a *verdict* off the tally has to see what the tally says,
-        # and the tally no longer counts a superseded leg as failed.
+
+
+
+
         live_states = _checks.github_live_states(d.get("statusCheckRollup"))
         merge_commit = (d.get("mergeCommit") or {}).get("oid", "")
-        # Merge evidence, at parity with `gl-mr:status` (#628). `gh pr merge`
-        # can print nothing on success, so the merge is read back off the
-        # remote — and this op answered only half of it, which cost four
-        # hand-rolled `gh pr view --json state,mergedAt,mergeCommit` calls in
-        # one evening. `mergedAt` rides in the dashboard fetch already being
-        # made, so the line costs no extra call. Printed unconditionally with
-        # `-` for absent, the way the GitLab twin does: a key that appears only
-        # on merged PRs cannot be grepped for on an open one.
+
+
+
+
+
+
+
+
         merged_at = d.get("mergedAt") or "-"
         web_url = d.get("url", "")
         conflicts = "yes" if mergeable == "CONFLICTING" else "no"
@@ -1055,9 +1055,9 @@ def main() -> int:
               f"{_untrusted.flat(d.get('baseRefName') or '?')}")
         shortfall_lines: list[str] = []
         if check_states:
-            # `with_age` is #801: a pending count with no age reads the same
-            # whether the legs are queued and progressing or wedged, and this
-            # is the line read on a poll loop.
+
+
+
             checks_text = _checks.summarize_github(
                 d.get("statusCheckRollup"), with_age=True)
             marker, shortfall_lines = _reconcile_checks(d)
@@ -1074,9 +1074,9 @@ def main() -> int:
             _checks.github_named_live(d.get("statusCheckRollup"))
         ):
             print(line)
-        # #1792: a leg a later run of the same name replaced is not red, and it
-        # is not gone either. Named separately so the reader sees that a leg
-        # failed *and* that it stopped deciding anything.
+
+
+
         for line in _checks.superseded_disclosure(
             _checks.github_named_superseded(d.get("statusCheckRollup"))
         ):
@@ -1092,7 +1092,7 @@ def main() -> int:
             print(f"url: {web_url}")
         return 0
 
-    # One-line fields are flattened rather than fenced — see presets/_untrusted.py.
+
     title = _untrusted.flat(d.get("title", "?"))
     state = d.get("state", "?")
     iid = d.get("number", arg)
@@ -1114,8 +1114,8 @@ def main() -> int:
     body_total = len(body)
     body, body_withheld = _body.cut(body, desc_max)
 
-    # Header. The fence convention is declared before the first thing inside a
-    # fence — the reader this protects is the one who acts on the first line.
+
+
     draft_marker = " [DRAFT]" if draft else ""
     print(_untrusted.banner())
     print(f"# #{iid} {title}{draft_marker}")
@@ -1127,16 +1127,16 @@ def main() -> int:
     print(f"Labels: {labels}")
     print(f"Milestone: {milestone}")
     if body_withheld:
-        # In the header, before ## Description — a footer-only notice is read
-        # by nobody in exactly the case it exists for (#681, #698).
+
+
         print(_body.header_notice(body, body_total, body_withheld))
 
-    # Assignees (distinct from reviewers)
+
     assignees = d.get("assignees") or []
     assignee_names = [a.get("login", "?") for a in assignees]
     print(f"Assignees: {', '.join(assignee_names) if assignee_names else 'none'}")
 
-    # Age — created/updated, for stale-PR signal
+
     created_at = d.get("createdAt") or ""
     updated_at = d.get("updatedAt") or ""
     if created_at:
@@ -1145,54 +1145,54 @@ def main() -> int:
             age_str += f" | Updated: {_relative_age(updated_at)}"
         print(age_str)
 
-    # Unresolved review threads — GraphQL, since `gh pr view --json` has no
-    # field for them. One line in all three states, and an index under it: the
-    # count alone was #1445, where `Unresolved threads: 2 / 2` sat above
-    # `## Comments (0)` and the only route to the two findings was raw
-    # `gh api .../pulls/N/comments`.
+
+
+
+
+
     review_threads, threads_err = _fetch_review_threads_detailed(
         d.get("url", ""), iid)
     for line in _thread_index(review_threads, threads_err, iid):
         print(line)
 
-    # Reviews — always print so absence is signal, not silence
+
     reviews = d.get("reviews", [])
     if reviews:
         reviewers = {}
         for r in reviews:
             login = _untrusted.flat((r.get("author") or {}).get("login", "?"))
             r_state = r.get("state", "?")
-            reviewers[login] = r_state  # latest review state per reviewer
+            reviewers[login] = r_state  
         parts = [f"{login} ({state})" for login, state in reviewers.items()]
         print(f"Reviews: {', '.join(parts)}")
     else:
         print("Reviews: none")
     print(f"Review decision: {review_decision}")
 
-    # Checks (CI status) — the tally accounts for every entry it was handed;
-    # see presets/_checks.py for why the sum matters more than the labels.
-    # An absent tally is two opposite readings, so the zero case is classified
-    # rather than named — see _checks.absence() (#585). It buys the evidence for
-    # that (one GraphQL call) only here, never when runs exist.
+
+
+
+
+
     check_states = _checks.github_states(d.get("statusCheckRollup"))
-    # Live states, not every state: a leg a later run of the same name replaced
-    # no longer decides the check on GitHub's side either, and counting it here
-    # is what made a PR the forge calls `clean` unmergeable through this op
-    # (#1792). `check_states` stays the full set — the reconciliation it feeds
-    # is a coverage question, not a verdict.
+
+
+
+
+
     live_states = _checks.github_live_states(d.get("statusCheckRollup"))
     shortfall_lines: list[str] = []
     if check_states:
-        # `with_age` is #801 — see the `:status` branch above.
+
         checks_text = _checks.summarize_github(
             d.get("statusCheckRollup"), with_age=True)
         merge_note = "" if _checks.all_green(live_states) else (
             f" — checks {_checks.NOT_GREEN}, see Checks above"
         )
-        # A tally that does not cover every leg is not a merge signal even when
-        # every leg it *does* cover passed, so the caveat printed next to
-        # `Mergeable:` has to carry it too — that is the line a reader stops
-        # at when the answer looks green (#724).
+
+
+
+
         marker, shortfall_lines = _reconcile_checks(d)
         if marker:
             checks_text += f" {marker}"
@@ -1209,7 +1209,7 @@ def main() -> int:
         _checks.github_named_live(d.get("statusCheckRollup"))
     ):
         print(line)
-    # #1792 — see the `:status` branch above.
+
     for line in _checks.superseded_disclosure(
         _checks.github_named_superseded(d.get("statusCheckRollup"))
     ):
@@ -1218,15 +1218,15 @@ def main() -> int:
     if unit_line:
         print(unit_line)
 
-    # Changes
+
     print(f"Changes: {changed_files} files, +{additions} -{deletions}")
 
-    # Mergeable — GitHub's *merge conflict* state, not a CI verdict. Printed
-    # bare underneath a check tally it reads as one, which is half of what made
-    # #454 dangerous, so it names what it measures and carries the CI caveat.
-    # merge_note was computed with the Checks line above: "unknown because
-    # nothing has run yet" and "unknown because nothing will run" are different
-    # answers to a merge question, and this printed one sentence for both.
+
+
+
+
+
+
     if mergeable == "CONFLICTING":
         print(f"Conflicts: YES — cannot merge{merge_note}")
     elif mergeable == "MERGEABLE":
@@ -1234,25 +1234,25 @@ def main() -> int:
     else:
         print(f"Mergeable: {mergeable}{merge_note}")
 
-    # Merge commit
+
     if merge_commit:
         print(f"Merge commit: {merge_commit[:12]}")
 
     if web_url:
         print(f"URL: {web_url}")
 
-    # Linked issue — every issue a GitHub closing keyword actually binds to a
-    # number, not the first `#N` in the body (#591). The pattern this replaces
-    # made the keyword optional, and it lived here *and* in `git-status`
-    # character-for-character; both now go through the one extractor.
+
+
+
+
     issue_refs = _checks.closing_issue_refs(d.get("body"))
     if not issue_refs:
         print(f"\n{_checks.linked_issue_line(issue_refs)}")
     for ref in issue_refs:
-        # A cross-repo reference is printed as written and never fetched:
-        # `gh issue view 5` resolves 5 against *this* repository, so fetching it
-        # would print a different issue's title under this PR's closing
-        # reference — #591's defect with more confidence attached.
+
+
+
+
         if not ref.startswith("#"):
             print(f"\nIssue: {ref} — in another repository, not fetched")
             continue
@@ -1278,11 +1278,11 @@ def main() -> int:
         except (subprocess.TimeoutExpired, json.JSONDecodeError):
             print(f"\nIssue: {ref}")
 
-    # Classify budget for this call (#2049) -- one call, one budget, spent
-    # across the body and every comment below, never per-block.
+
+
     classify_budget = _classify_render.Budget()
 
-    # Description
+
     if body:
         print(f"\n## Description\n{_untrusted.fence(body)}")
         if body_withheld:
@@ -1291,11 +1291,11 @@ def main() -> int:
     else:
         print("\n## Description\n_(empty)_")
 
-    # Comments — the header printed the total and then showed the last ten of
-    # them, with nothing in between saying so (#719). The ten are now the first
-    # three and the last seven, because either end alone drops a load-bearing
-    # region and leaves the reader unable to tell which (#738) — see
-    # presets/_body.comment_window.
+
+
+
+
+
     comments = d.get("comments", [])
     shown, gap_hidden = ((list(comments), 0) if full
                          else _body.comment_window(comments))
@@ -1305,8 +1305,8 @@ def main() -> int:
             print(f"\n{_body.comments_gap_notice(gap_hidden)}")
         c_author = _untrusted.flat((c.get("author") or {}).get("login", "?"))
         c_body = c.get("body") or ""
-        # The truncation notice is supertool's, so it prints outside the fence
-        # — see the same call in gh-issue.
+
+
         c_trunc = ""
         if comment_max is not None and len(c_body) > comment_max:
             c_body = c_body[:comment_max]

@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
-"""Git merge — merge REF and on conflict surface what to fix.
 
-Combines: fetch (optional) + merge + on conflict: list UU files +
-extract first conflict block per file + show merge-base/ours/theirs
-SHAs + suggest abort command. Replaces the merge/status/read-each-file
-hunt with one round-trip.
-"""
+
+
+
+
+
+
 from __future__ import annotations
 
 import os
 import sys
 
-# Sibling import: runtime puts this dir on sys.path[0]; the test harness
-# loads scripts via importlib (no dir on path), so add it explicitly.
+
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
+sys.path.insert(0, os.path.dirname(_HERE))  
 
-from _git_common import (  # noqa: E402
+from _git_common import (  
     _git, _list_conflicts, reject_fetch_option, use_utf8_stdout,
 )
-from _env import env_int  # noqa: E402  (the one numeric-knob reader)
-import _untrusted  # noqa: E402  (a remote writes onto fetch's stderr — #1654)
+from _env import env_int  
+import _untrusted  
 
 DEFAULT_PREVIEW_LINES = 12
 
-# The merge itself, which runs merge drivers and can touch every file in the
-# tree. The rest of this preset is rev-parse plumbing on the shared 10s
-# default; this one call carries the 30s the whole module used to assume.
+
+
+
 _MERGE_TIMEOUT = 30
 
 
@@ -85,50 +85,50 @@ def _behind_count(local: str, remote: str) -> int:
 
 
 def _fresh_merge_ref(ref: str) -> tuple[str, str | None]:
-    """Fetch the freshest version of REF before merging.
 
-    Merging a bare local branch (e.g. `master`) silently uses the local ref,
-    which is stale the moment origin moves ahead — a real footgun (see the
-    asset-stats timeout fix that "wasn't there" because local master lagged).
 
-    Returns (merge_ref, note). When the local branch is behind its upstream we
-    redirect the merge to the upstream so the caller gets the latest commits.
-    Offline / no-upstream cases fall back to REF unchanged.
-    """
-    # Determine which remote ref to refresh.
+
+
+
+
+
+
+
+
+
     upstream = ""
     if _is_local_branch(ref):
         upstream = _upstream(ref)
     elif "/" in ref:
-        # Already a remote-tracking ref like origin/master — refresh it directly.
+
         upstream = ref
 
     if not upstream or "/" not in upstream:
         return ref, None
 
     remote, rbranch = upstream.split("/", 1)
-    # #818: `upstream` is a remote-tracking ref name (attacker-choosable), and
-    # `rbranch` lands as a bare argv element in the fetch below — a value like
-    # `--upload-pack=<cmd>` executes on fetch. The #150 argv-REF guard in main()
-    # never sees this one. Refuse it by name and merge the local ref (safe: no
-    # fetch, no exec), the same fallback the offline branch below already takes.
+
+
+
+
+
     refuse = reject_fetch_option(remote, rbranch)
     if refuse:
         return ref, f"WARN: {refuse} — merging local {ref}, not fetching {upstream}"
     fetch = _git(["fetch", remote, rbranch], timeout=45)
     if fetch.returncode != 0:
-        # `core.quotePath` does not reach this: it quotes PATHS, and this is
-        # stderr, carrying `remote:` lines the far end wrote (#1654). The
-        # selection is `[-1]`, so a U+2028 ahead of a reassuring tail made
-        # `str.splitlines()` hand back the tail alone and drop git's own
-        # `fatal:` off the front of a WARN the caller acts on. `split_lines`
-        # keeps the whole line; `flat` keeps it to the one line it prints on.
+
+
+
+
+
+
         said = _untrusted.split_lines(fetch.stderr.strip())
         msg = _untrusted.flat(said[-1]) if said else "unknown error"
         return ref, f"WARN: fetch {upstream} failed ({msg}) — merging local {ref}, may be stale"
 
     if ref == upstream:
-        return ref, None  # already merging the freshly-fetched remote ref
+        return ref, None  
 
     behind = _behind_count(ref, upstream)
     if behind > 0:
@@ -143,12 +143,12 @@ def main() -> int:
         return 1
 
     ref = sys.argv[1]
-    # #150: a REF like `--abort` would call `git merge --abort` (state-mutating).
-    # `-X theirs` smuggles a strategy option. Refuse leading-dash refs.
+
+
     if ref.startswith("-"):
         print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}")
         return 1
-    preview = env_int("SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
+    preview = env_int(os.environ.get("SUPERTOOL_PREVIEW_LINES"), "SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
 
     if _git(["rev-parse", "--verify", "--quiet", ref]).returncode != 0:
         print(f"ERROR: ref {ref!r} not found. Try `git fetch` first.")
@@ -208,8 +208,8 @@ def main() -> int:
 
     for path in conflicts:
         nblocks = _count_blocks(path)
-        # Real path since #1708 (`-z`), so it opens — and so it can carry a
-        # separator into this heading. Flattened for the render only.
+
+
         print(f"\n## {_untrusted.flat(path, disclose_newline=True)} "
               f"({nblocks} block(s))")
         print(_first_conflict_block(path, preview))

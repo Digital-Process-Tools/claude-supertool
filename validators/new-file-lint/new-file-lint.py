@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
-"""new-file-lint validator adapter -- catch a lint finding a tree-wide ignore
-hides for a genuinely new file, locally, before it costs a CI round trip (#2155).
 
-**This adapter states no rules of its own**, the same shape as
-`changelog-fragment.py` (#1132): it looks for the PROJECT's own script that
-already knows which extra rules apply to a file with no git history, and
-imports its `EXTRA_RULES` constant. A project with no such script gets
-`skipped`, not `ok` -- this is not a claim that every project ignores
-anything tree-wide, only that this one does and knows how to say so.
 
-Why this shape and not a hardcoded ruleset or a hardcoded path to one
-project's script (#2196 review): the first census this repo runs over its
-own `.supertool.json` -- `test_every_configured_validator_cmd_is_an_adapter`
--- refuses a `cmd` wired to a raw tool rather than a SCHEMA.md adapter, and
-the first cut of this file (`.github/scripts/new_file_ruff_gate.py`) was a
-proper adapter in every way EXCEPT that it lived outside `validators/` and
-imported one repo's `lint_new_files.py` by a path relative to itself. That
-made it correct for this repository and inexpressible as a shipped adapter
-for any other. `changelog-fragment.py` solved the identical problem for
-`assemble_changelog.py` -- import nothing, walk up from the target file
-looking for the project's own script at a known location, `skipped` if there
-is none -- so this file borrows that shape rather than inventing a second
-one for a near-identical case.
 
-What is genuinely generic and stays in THIS file rather than the found
-script: the git-blob-at-`HEAD` test (does this path have no history at all,
-the `lint_new_files.py`-style `ACR` case re-derived against `HEAD` because
-there is no PR base ref locally) and the `ruff --extend-select` invocation
-itself. What is genuinely project-specific and is never guessed at here:
-which three (or however many) rules apply, and where the project keeps that
-answer.
 
-Three states. `ok`, a finding, and `skipped` -- no such script found above
-the file (a project that has not adopted this convention), ruff itself
-absent, or the question "does this path have history at HEAD" could not be
-answered at all (no git, not a repo, a probe timeout).
 
-Usage: new-file-lint.py <file>
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import importlib.util
@@ -49,33 +49,33 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
-from refusal import absent, guard_main, skipped, tool_fault  # noqa: E402
-from spawnable import argv0, spawnable  # noqa: E402
+from refusal import absent, guard_main, skipped, tool_fault  
+from spawnable import argv0, spawnable  
 
 TOOL = "new-file-lint"
 
 INSTALL_HINT = "ruff not found on PATH — pip install ruff"
 
-# Where the project keeps the script that owns "which extra rules apply to a
-# file with no history". Overridable so this adapter is not asserting one
-# repo's layout as a fact about every repo -- same reasoning, same env-var
-# shape, as `changelog-fragment.py`'s `SUPERTOOL_CHANGELOG_ASSEMBLER`.
+
+
+
+
 ENV_LINT_SCRIPT = "SUPERTOOL_NEW_FILE_LINT_SCRIPT"
 
-#: Known conventions, tried in order. `.github/scripts/lint_new_files.py` is
-#: this repo's own layout and the only one observed so far -- unlike
-#: `changelog-fragment.py`'s three-entry `ASSEMBLER_LOCATIONS`, there is no
-#: second convention on record yet. A project using a different location
-#: still has `SUPERTOOL_NEW_FILE_LINT_SCRIPT`, and this tuple is exactly
-#: where a second observed convention would be added, not a place to guess
-#: one in ahead of evidence.
+
+
+
+
+
+
+
 LINT_SCRIPT_LOCATIONS = (
     os.path.join(".github", "scripts", "lint_new_files.py"),
 )
 
-# Same budget as the shared ruff validator (validators/ruff/ruff.py) plus the
-# git probes below -- several spawns, none of them ruff's own selling point
-# (milliseconds), so this stays a hang-guard rather than a performance floor.
+
+
+
 TIMEOUT_S = 30
 
 RC_CLEAN = 0
@@ -94,147 +94,151 @@ def _adapter_error(file: str, msg: str, dur_ms: int) -> None:
 
 
 def _locations() -> tuple:
-    """The relative path(s) to try, in order. `ENV_LINT_SCRIPT` names one
-    path and takes it exactly -- an operator who set it meant that location
-    and no other."""
-    override = os.environ.get(ENV_LINT_SCRIPT, "").strip()
+
+
+
+
+
+    override = os.environ.get("SUPERTOOL_NEW_FILE_LINT_SCRIPT", "").strip()
     return (override,) if override else LINT_SCRIPT_LOCATIONS
 
 
-#: Set by supertool's own validator runner (`_supertool.py`'s
-#: `_validator_run_one`) to the directory holding the `.supertool.json`
-#: that wired THIS validator run -- never set by this adapter itself.
-#:
-#: Closes #2228: `_find_lint_script`'s walk was bounded at the edited
-#: file's own git root, which stops an escape ABOVE that repo (the shape
-#: `changelog-fragment.py` closed for itself in #2178) but trusted
-#: whatever CONVENTIONALLY-NAMED script sits inside that repo unconditionally
-#: -- including a repo that is not the one whose `.supertool.json` wired
-#: this validator at all. A maintainer whose own `.supertool.json` sits
-#: above a directory of clones, editing a `.py` file inside one of them,
-#: had that clone's own `.github/scripts/lint_new_files.py` imported (and
-#: `_load` executes what it imports) with the maintainer's privileges.
+
+
+
+
+
+
+
+
+
+
+
+
+
 CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
 
 
 def _config_dir() -> "tuple[Path | None, bool, str]":
-    """`(config_dir, scope_known, reason)`.
 
-    `scope_known` is False only when `CONFIG_DIR_ENV` is absent entirely --
-    this adapter was invoked directly, outside supertool's own validator
-    wiring (a test harness, an operator running the script by hand). No
-    scope claim is being made either way in that case, so the pre-#2228
-    repo-bound walk applies unchanged: running this script directly is
-    exactly as safe as it always was, and nothing here narrows that.
 
-    `scope_known` is True whenever supertool's real validator runner set
-    the variable -- empty or unresolvable counts as "no directory to
-    trust", never as "trust everything", because reaching this adapter at
-    all through that runner implies a `.supertool.json` WAS found (this
-    validator's own wiring lives inside one).
-    """
-    if CONFIG_DIR_ENV not in os.environ:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    if "SUPERTOOL_CONFIG_DIR" not in os.environ:
         return None, False, ""
-    raw = os.environ[CONFIG_DIR_ENV].strip()
+    raw = os.environ["SUPERTOOL_CONFIG_DIR"].strip()
     if not raw:
         return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
     try:
         return Path(raw).resolve(), True, ""
     except (OSError, ValueError) as exc:
-        # ValueError, not just OSError: a malformed value (e.g. an embedded
-        # NUL byte) raises ValueError out of Path.resolve() on some
-        # platforms, not OSError -- self-review (#2228, auditor finding).
+
+
+
         return None, True, "{0}={1!r} could not be resolved: {2}".format(
             CONFIG_DIR_ENV, raw, exc)
 
 
 def _config_dir_is_untrusted_ancestor(root: Path, config_dir: Path) -> bool:
-    """True exactly when `config_dir` (where `.supertool.json` lives) sits
-    STRICTLY ABOVE `root` -- the directory-of-clones shape #2228 was filed
-    for: a maintainer's own config, above a directory holding several
-    clones, silently wiring this validator against whichever clone the
-    edited file happens to be inside. That is the one relationship this
-    adapter cannot tell apart from "the project that configured supertool
-    IS the project whose script is about to run" without asking.
 
-    False for every other relationship, deliberately -- including two
-    disjoint trees with no ancestry between them at all. Self-review
-    (#2228, reviewer finding): an explicit `path=` argument naming a file
-    outside the config-owning project entirely is ordinary supertool usage
-    -- `test_changelog_fragment_write_receipt_1132.py`'s own end-to-end
-    case pastes into a fragment under a *sibling* tmp_path project while
-    cwd sits in this repo's own `.supertool.json` scope -- and that shape
-    was never the vulnerability: nothing about it lets one clone's script
-    execute in place of another's the way walking DOWN from a shared
-    parent does. Refusing it too would be broader than #2228 asked for and
-    breaks that pre-existing, unmodified guarantee (#1132) for no
-    additional safety.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     root_s = os.path.normcase(str(root))
     config_s = os.path.normcase(str(config_dir))
     if config_s == root_s:
         return False
     try:
         common = os.path.commonpath([root_s, config_s])
-    except ValueError:  # e.g. different drives on Windows -- no ancestry
+    except ValueError:  
         return False
     return common == config_s
 
 
 def _config_dir_may_authorize_execution(root: Path, config_dir: Path) -> bool:
-    """True only when `config_dir` is `root` itself, or nested inside it
-    (a monorepo `.supertool.json` living in a subdirectory of the project
-    whose file is being edited) -- the two relationships that mean "the
-    project that configured supertool IS the project whose script is about
-    to run" without asking.
 
-    #2236: `_config_dir_is_untrusted_ancestor` answers a narrower question
-    -- "is `config_dir` a strict ancestor of `root`" -- and stays exactly
-    as it was: an explicit `path=` argument naming a file in a project the
-    operator's own config does not own is ordinary supertool usage, and
-    nothing about that alone should be refused -- `_containment_error`
-    elsewhere already gates whether the path can be touched at all. But
-    `_load` does not merely resolve a path -- it imports and executes
-    whatever conventionally-named script it finds, which is the checkout
-    under inspection running ITS OWN code with the operator's privileges.
-    That is a second, stricter question this function answers on its own:
-    not "may this path be substituted for the target" (already settled),
-    but "may a script found under `root` be imported and run
-    automatically, with no explicit operator pin."
 
-    A gate-3 audit (#2236) found `_config_dir_is_untrusted_ancestor` alone
-    left sibling and fully-disjoint checkouts TRUSTED for exactly that
-    execution -- config=/Users/x/src/mine, root=/Users/x/src/evil (no
-    ancestry either direction) ran `evil`'s own script the same as
-    config==root would. This function closes that: only `root` itself, or
-    a `root` that CONTAINS `config_dir`, authorizes automatic execution;
-    every other relationship -- config strictly above root (the original
-    #2228 shape) AND disjoint/sibling trees with no ancestry at all -- does
-    not, and falls back to `ENV_LINT_SCRIPT` naming an exact path as the
-    operator's own explicit trust.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     root_s = os.path.normcase(str(root))
     config_s = os.path.normcase(str(config_dir))
     if config_s == root_s:
         return True
     try:
         common = os.path.commonpath([root_s, config_s])
-    except ValueError:  # e.g. different drives on Windows -- no ancestry
+    except ValueError:  
         return False
     return common == root_s
 
 
 def _repo_root(start: Path) -> "tuple[Path | None, str | None]":
-    """The git repo root above `start`, and why not when there is none.
 
-    Mirrors `changelog-fragment.py`'s own `_repo_root` (and
-    `validators/common/ci_lint_resolve_root.py`'s) -- the convention this
-    tree already uses for the same question, including the "could not look"
-    vs "looked, found nothing" split (#2177): a caller that folds every
-    failure mode into a bare `None` cannot tell "git is not on PATH" from
-    "this is not a git repository" from "walked the whole repo and there is
-    genuinely no script here."
-    """
+
+
+
+
+
+
+
+
+
     try:
         r = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
@@ -254,14 +258,14 @@ def _repo_root(start: Path) -> "tuple[Path | None, str | None]":
 
 
 def _find_lint_script(target: Path, root: Path) -> "Path | None":
-    """The nearest project script at or above `target`, bounded at `root`.
 
-    Bounded the same way `changelog-fragment.py`'s `_find_assembler` is
-    (#2178): an unbounded walk to filesystem root would let a file inside
-    one repo pick up and get IMPORTED -- `_load` executes what it finds --
-    a same-named script sitting anywhere above the repo, which is attacker
-    territory the moment this runs against an untrusted checkout.
-    """
+
+
+
+
+
+
+
     resolved_start = target.parent.resolve()
     for parent in [resolved_start, *resolved_start.parents]:
         for relative in _locations():
@@ -284,25 +288,25 @@ def _load(script: Path):
 
 
 def _is_new_at_head(realpath: str, root: Path) -> "tuple[bool | None, str]":
-    """`(is_new, reason_if_None)`.
 
-    `is_new` is `True` when `HEAD:<path-relative-to-root>` has no blob --
-    this path was never committed, so it carries none of whatever debt the
-    project's own tree-wide ignore exists for. `False` when it does. `None`
-    when the question could not be answered at all (the probe timed out, or
-    the path cannot be related to `root` -- Windows: different drives) --
-    never guessed at either way, because guessing `False` would silently
-    exempt a genuinely new file and guessing `True` would re-surface debt on
-    a file this validator has no business relitigating.
 
-    `realpath` and `root` must already agree on symlink resolution -- `root`
-    comes from `git rev-parse --show-toplevel`, which reports the PHYSICAL
-    path (every symlink resolved), so the caller must resolve `realpath`
-    the same way before calling this (#2196 review finding: mixing
-    `abspath` on one side with `--show-toplevel` on the other silently
-    misclassified an already-committed file reached through a symlinked
-    ancestor as new).
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         rel = os.path.relpath(realpath, str(root)).replace(os.sep, "/")
     except ValueError as exc:
@@ -316,9 +320,9 @@ def _is_new_at_head(realpath: str, root: Path) -> "tuple[bool | None, str]":
         return None, "git could not be spawned to probe HEAD: {0}".format(exc)
     if r.returncode == 0:
         return False, ""
-    # Anything else -- no such path at HEAD, or no HEAD at all (unborn
-    # branch, brand-new repo) -- means this path carries no history to be
-    # exempt from checking, which is exactly the case this gate covers.
+
+
+
     return True, ""
 
 
@@ -345,14 +349,16 @@ def main() -> None:
                      int((time.time() - start) * 1000)))
         return
 
-    override_set = bool(os.environ.get(ENV_LINT_SCRIPT, "").strip())
+
+
+    override_set = bool(os.environ.get("SUPERTOOL_NEW_FILE_LINT_SCRIPT", "").strip())
     if not override_set:
         config_dir, scope_known, scope_reason = _config_dir()
-        # `scope_reason` is only ever non-empty when `config_dir` is None
-        # (the env var was set but unreadable/empty) -- a config_dir that
-        # resolved fine never sets it, so `None` here always means "no
-        # directory to compare against" rather than "compared and it
-        # happened to be untrusted".
+
+
+
+
+
         if scope_known and config_dir is None:
             emit(skipped(TOOL, file,
                          "a new-file-lint script may exist at the default "
@@ -380,17 +386,17 @@ def main() -> None:
                              root, config_dir, ENV_LINT_SCRIPT),
                          int((time.time() - start) * 1000)))
             return
-        # #2236: the ancestor check above answers "is config_dir strictly
-        # above root" -- it does NOT cover a sibling or fully-disjoint
-        # config_dir, which shares no ancestry with root at all. `_load`
-        # imports and EXECUTES whatever it finds, so that gap let any
-        # checkout the operator happened to point supertool at (via an
-        # explicit path=, reachable once SUPERTOOL_ALLOW_OUTSIDE_CWD is
-        # set) have its own conventionally-named script run automatically,
-        # whether or not the operator's own .supertool.json has anything to
-        # do with that checkout. Only root==config_dir or config_dir nested
-        # inside root means "the project that configured supertool IS the
-        # project whose script is about to run."
+
+
+
+
+
+
+
+
+
+
+
         if (scope_known and config_dir is not None
                 and not _config_dir_may_authorize_execution(root, config_dir)):
             emit(skipped(TOOL, file,
@@ -422,7 +428,7 @@ def main() -> None:
 
     try:
         found = _load(script)
-    except Exception as exc:  # the script is the project's, may not import
+    except Exception as exc:  
         _adapter_error(file, "{0} could not be imported, so the file was "
                              "NOT checked: {1}: {2}".format(
                                  script, type(exc).__name__, exc),
@@ -438,9 +444,9 @@ def main() -> None:
                      int((time.time() - start) * 1000)))
         return
 
-    # #2196 review finding: resolve symlinks the same way `root` already has
-    # (git reports the PHYSICAL path) before relating the two -- see
-    # `_is_new_at_head`'s own docstring.
+
+
+
     is_new, reason = _is_new_at_head(os.path.realpath(file), root)
     if is_new is None:
         emit(skipped(TOOL, file,

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""xml_count:PATH:XPATH — count XPath matches. Prints one integer.
 
-Returns 0 (not an error) when nothing matches.
-Memory scales with file size — does not stream.
-"""
+
+
+
+
 from __future__ import annotations
 
 import sys

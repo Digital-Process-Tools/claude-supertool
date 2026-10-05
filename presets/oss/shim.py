@@ -1,34 +1,34 @@
-"""Locate the installed `oss` plugin's scripts directory (#1985).
 
-`claude-oss` declares supertool as a dependency and this repository has no
-symmetrical reach into it: `_find_preset_file` only ever looks in the
-project's own `presets/`, `~/.config/supertool/presets/` or supertool's own
-install directory -- none of them is `${CLAUDE_PLUGIN_ROOT}`. So a preset
-that wants to run one of `claude-oss`'s own scripts has to find them the
-same way `claude-oss`'s own `doctor.py:plugin_supertool_entries` /
-`dependency_install_roots` resolve supertool's install: read the plugin
-marketplace's install record for the *active* version, then the record's
-own `installPath` for that version, falling back to a cache-directory glob
-for an install record that predates the field.
 
-Three states, never two -- a plugin that could not be resolved must not
-render like one that resolved to nothing:
 
-* ``resolved``              -- (version, scripts_dir); scripts_dir exists.
-* ``resolved-but-different``-- an active version was found and a root
-  resolved for it, but that root carries no `scripts/` directory.
-* ``could-not-resolve``     -- no active version, or no root for it.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import json
 import os
 from pathlib import Path
 
-#: Where Claude Code records which version of each installed plugin is
-#: active. NOT the cache directory listing -- old versions stay unpacked on
-#: disk and more than one marketplace can carry the same plugin name, so a
-#: glob across the cache answers "what was ever unpacked", never "what is
-#: running" (the same distinction `claude-oss`'s own `active_versions`
-#: docstring draws).
+
+
+
+
+
+
 INSTALL_RECORD = "~/.claude/plugins/installed_plugins.json"
 
 PLUGIN_CACHE_ROOT = "~/.claude/plugins/cache"
@@ -37,12 +37,12 @@ PLUGIN_NAME = "oss"
 
 
 def _load_record(record=None):
-    """`(doc, reason)`. `doc` is `{}` on failure; `reason` is `None` on
-    success or when the record is simply absent -- a missing install
-    record is the ordinary state for a plugin that was never installed,
-    never a read failure. `reason` is a string only when the record
-    exists but could not be read or parsed, so that case does not render
-    like a plugin that is simply absent either (#2638)."""
+
+
+
+
+
+
     path = Path(os.path.expanduser(record or INSTALL_RECORD))
     try:
         text = path.read_text(encoding="utf-8")
@@ -57,17 +57,17 @@ def _load_record(record=None):
 
 
 def _version_key(version):
-    """Numeric sort key for a dotted version string, e.g. `"0.9.0"`.
 
-    A plain `sorted(strings)` is lexicographic: `"0.9.0" > "0.10.0"` as
-    strings, so the highest-scope version selection below would silently
-    pick the OLDER release the moment two versions straddle a
-    single-digit/double-digit boundary in any segment -- already true today
-    for any `0.40.x` line the moment two patch releases straddle `0.40.9`/
-    `0.40.10` (#1985 self-review). Split on `.` and compare as ints; a
-    non-numeric segment falls back to the raw string so a malformed version
-    still sorts (last, deterministically) rather than raising.
-    """
+
+
+
+
+
+
+
+
+
+
     parts = []
     for segment in str(version).split("."):
         try:
@@ -78,13 +78,13 @@ def _version_key(version):
 
 
 def _active_version(name, record=None):
-    """`(version, reason)`. `version` is `None` for both "not in the
-    record" and "record could not be read" -- `reason` is what tells them
-    apart: `None` for the former, the read/parse failure for the latter
-    (#2638). One entry per scope is possible; the highest wins, matching
-    `claude-oss`'s own `active_versions` (the scope that wins at load).
-    Compared numerically via `_version_key`, never as plain strings.
-    """
+
+
+
+
+
+
+
     doc, reason = _load_record(record)
     plugins = doc.get("plugins") if isinstance(doc, dict) else None
     if not isinstance(plugins, dict):
@@ -102,10 +102,10 @@ def _active_version(name, record=None):
 
 
 def _install_roots(name, version, record=None, cache_root=None):
-    """`(roots, reason)`. `reason` is `None` on success, or the reason no
-    root could be resolved -- either the install record's own read/parse
-    failure (propagated from `_load_record`) or an `OSError` scanning the
-    cache-directory fallback (#2638)."""
+
+
+
+
     doc, reason = _load_record(record)
     plugins = doc.get("plugins") if isinstance(doc, dict) else None
     roots = []
@@ -132,11 +132,11 @@ def _install_roots(name, version, record=None, cache_root=None):
 
 
 def resolve(name=PLUGIN_NAME, record=None, cache_root=None):
-    """`(state, detail)`.
 
-    `detail` is `(version, scripts_dir)` on `"resolved"`; a one-line reason
-    string on `"resolved-but-different"` and `"could-not-resolve"`.
-    """
+
+
+
+
     version, reason = _active_version(name, record)
     if not version:
         if reason:

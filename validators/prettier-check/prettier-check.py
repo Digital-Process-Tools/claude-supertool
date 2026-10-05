@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""prettier-check validator adapter. Emits SCHEMA.md JSON.
 
-Usage: prettier-check.py <file>
 
-Env vars:
-  PRETTIER_BIN         prettier binary (default: prettier)
-  PRETTIER_CONFIG      path to config file (optional, adds --config FILE)
-  PRETTIER_IGNORE_PATH path to ignore file (optional, adds --ignore-path FILE)
-"""
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -25,64 +25,64 @@ TOOL = "prettier-check"
 
 
 def contained_target(file: str) -> str:
-    """`file`, spelled so `--file-info` cannot read it as an option value (#2412).
 
-    `prettier --file-info` takes the path as ITS OWN option value, not as
-    a plain positional after prettier's flags -- so `-- file` (the fix
-    used elsewhere in this repo, ahead of a plain positional) does not
-    apply here: measured against a real installed prettier 3.6.2,
-    `prettier --file-info -- -flagged.json` silently drops `--file-info`
-    (its value becomes the literal string `--`) and instead formats
-    `-flagged.json` under prettier's DEFAULT command, printing formatted
-    source where a `{"ignored": ..., "inferredParser": ...}` verdict was
-    expected. Prefixing a relative, `-`-leading target with `os.curdir`
-    (the same containment `validators/pyright/pyright.py` (#2379) uses)
-    fixes it without moving the value away from the option it belongs to:
-    `prettier --file-info ./-flagged.json` answers the JSON verdict
-    correctly. An absolute path is already unambiguous and is left alone.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not file or os.path.isabs(file) or not file.startswith("-"):
         return file
     return os.path.join(os.curdir, file)
 
-# Budget for each spawn below. Named so a decline can quote it: a reader who
-# sees "timeout" cannot tell a hung prettier from a busy machine (#658).
+
+
 TIMEOUT_S = 15
 
-# What an ignored file looks like, and why the clean arm needs a second question.
-#
-# prettier honours `.prettierignore` (and `--ignore-path`) for a path handed to
-# it explicitly: it opens nothing, prints "All matched files use Prettier code
-# style!" and exits 0 — byte for byte what a correctly formatted file produces
-# (measured, prettier 3.6.2). So a zero exit is two different facts wearing the
-# same output, and the only way to tell them apart is to ask prettier which of
-# them this was.
-#
-# `prettier --file-info FILE` is that question: it resolves the same ignore
-# files and answers `{"ignored": true|false, "inferredParser": ...}`. Asking
-# prettier beats reimplementing the answer here — ignore resolution is
-# gitignore-syntax over a file whose location is itself configurable.
-#
-# It costs one extra spawn and only on the arm where the answer is ambiguous:
-# a run that reported a formatting difference has demonstrably read the file.
-# The probe is handed the same `--config`/`--ignore-path` flags as the check,
-# because a probe resolving a different ignore set answers about a different
-# run.
-#
-# It is bounded by what is LEFT of TIMEOUT_S rather than given a fresh one, so
-# this adapter still finishes inside the one budget its registration is set
-# against. Two full walls would put the worst case at 2x the `"timeout": 15`
-# in `.supertool.example.json`, and the core kills the adapter at its own
-# wall: the caller would get `NOT CHECKED (timed out)` naming nothing, where a
-# probe that runs out of clock declines and says which question went
-# unanswered (`docs/validators.md`, on html-check's deliberate headroom).
-#
-# That claim was false while the probe carried a `max(1.0, budget)` floor: at
-# 14.5s elapsed it still launched with a full second, for 15.5s against a
-# 15s registration — the exact overrun the paragraph promises not to have
-# (#1601 audit). A spent budget is now the third state below, not a borrowed
-# second, and the test asserts elapsed + probe timeout against TIMEOUT_S
-# rather than the probe alone, which the floor satisfied while overshooting.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 IGNORED_REASON = ("prettier declined to check this file — it matched an ignore "
                   "pattern (`.prettierignore`, or the `--ignore-path` file); "
                   "`prettier --file-info` on this path answers "
@@ -103,16 +103,16 @@ def emit(obj: dict) -> None:
 
 def _is_ignored(file: str, prettier_bin: str, flags: list,
                 budget: float) -> "bool | None":
-    """Was this file in scope? `None` when the question itself failed.
 
-    `None` is not `False`. A probe that could not run leaves the zero exit
-    unattributable, and publishing `ok` over it is the fabrication this arm
-    exists to prevent — the caller gets the third state with the reason.
 
-    `budget` is whatever is left of `TIMEOUT_S` and is passed through
-    unclamped: the caller has already declined when it is not positive, and a
-    floor here would spend time the registration does not have.
-    """
+
+
+
+
+
+
+
+
     try:
         r = subprocess.run([argv0(prettier_bin), "--file-info", contained_target(file)] + flags,
                            capture_output=True, text=True,
@@ -188,11 +188,11 @@ def main() -> None:
 
     dur = int((time.time() - start) * 1000)
 
-    # prettier --check exits 0 if file is formatted, 1 if it needs formatting
-    # — and also when it never opened the file at all, which is the case the
-    # probe above exists to separate (#1601). The duration is recomputed
-    # afterwards: one that stops before the probe under-reports what the caller
-    # waited for.
+
+
+
+
+
     if r.returncode == 0:
         remaining = TIMEOUT_S - (time.time() - start)
         if remaining <= 0:

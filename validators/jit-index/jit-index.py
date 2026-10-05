@@ -1,63 +1,63 @@
 #!/usr/bin/env python3
-r"""jit-index validator adapter — a jit-context rule that can never fire (#1254).
 
-A `.claude/jit-context/**/00-index.tsv` row is written by an ordinary `paste`
-or `edit`, so nothing in the write path ever looked at its `match` column. That
-column is compiled by **awk**, not PCRE:
 
-    pre-tool-hook.sh:80   if (match(tolower(full_command), substr(r_match, 2)) == 0) continue
-    pre-path-hook.sh:105  if (match(all_paths[pi], pattern)) { path_matched = 1; break }
 
-macOS ships the one-true-awk, whose regex lexer drops an escape it does not
-define. `gh\s+pr` compiles to `ghs+pr` and matches nothing. On 2026-08-10 two
-`block` rules were dead exactly this way, one of which had never fired since the
-day it was written. (Counting the denominator is a moving target and not the
-point: the file held five rules that morning and holds seven now.) A rule that never
-matches and a rule that never runs render identically — in the index, in a
-directory listing, and in the hook's own log, which shows `(none) [shown:0]`
-for both.
 
-**Two checks, answering different questions.**
 
-*Structural, and deliberately awk-independent.* awk does **not** fail to
-compile `\s`; it compiles it, silently, into the wrong thing and exits 0.
-Handing each pattern to the local awk and reading the exit status therefore
-returns a clean verdict on the very row that produced this issue. So the
-load-bearing check is a property of the pattern text: an escaped ASCII letter
-or digit that awk does not define is dropped, and the pattern matches the bare
-character. That rule catches `\s`, `\d`, `\w` and equally the next construct
-nobody has thought of yet, and it gives the same answer on every platform —
-which is the point. A pattern has to survive the most conservative POSIX awk,
-because compiling under gawk is not a licence to write `\s` for a hook that
-fires on somebody's Mac.
 
-*Compile, against the awk that is actually installed.* This answers the other
-failure: a genuinely malformed pattern (`gh[a`) is a **fatal** awk error, and
-both hooks are invoked as `bash "$S" || true`, so one unbalanced bracket does
-not disable one row — it silences every rule in the file, quietly. Only a real
-engine can tell you that, so this half runs when awk is present and is declined
-when it is not.
 
-Three states, per `docs/validators.md` §"Declining instead of guessing":
 
-- `ok` — every regex column in the index survives both checks
-- a finding — a pattern that will silently never match, or that aborts the hook.
-  A finding-carrying result may also hold one `code: "adapter"` row naming the
-  patterns awk never reached, so a partial run is not published as a complete
-  one (#1714). See the caveat on that arm in `main`: `count` is what
-  `_validator_regressed` subtracts, and this adapter has `rollback_on_fail`.
-- `skipped` — the file is not a jit-context index, or awk is absent and the
-  structural half found nothing. **A structural pass alone is not a clean
-  result**, because half the check did not run; reporting `ok` there would be
-  this issue's own defect wearing the validator's clothes. A structural
-  *finding* is still published without awk — declining to answer must never
-  suppress an answer already in hand.
 
-Nothing here is keyed on a hardcoded path: scope is the `match` glob in the
-project's `.supertool.json`, and each row is classified by its own shape.
 
-Usage:  jit-index.py <file>
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 from __future__ import annotations
 
@@ -68,21 +68,21 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
-from refusal import absent, guard_main, skipped  # noqa: E402
-from linebreaks import split_lines  # noqa: E402
-from spawnable import spawnable  # noqa: E402
+from refusal import absent, guard_main, skipped  
+from linebreaks import split_lines  
+from spawnable import spawnable  
 
 TOOL = "jit-index"
 
 AWK_ABSENT = ("awk is not on PATH, so no pattern in this index could be "
               "compiled against the engine the hooks actually use")
 
-#: Escapes awk defines that a rule author plausibly means, and that survive.
+
 INTENDED = set("ntr")
 
-#: Escapes awk defines whose PCRE meaning is a different thing entirely. The
-#: pattern compiles, so nothing complains, and then it matches a control
-#: character no command line contains.
+
+
+
 CONTROL = {
     "b": ("use (^|[^[:alnum:]_]) for a word boundary",
           "awk defines it as a backspace (0x08), so it is not dropped — it is "
@@ -94,9 +94,9 @@ CONTROL = {
     "f": ("remove it", "awk defines it as a form feed (0x0c)"),
 }
 
-#: The PCRE classes the hooks' own rules reached for. A construct outside this
-#: map is still refused — by the structural rule, not by being listed. The map
-#: only decides whether the finding can name the replacement.
+
+
+
 POSIX_EQUIVALENT = {
     "s": "[[:space:]]", "S": "[^[:space:]]",
     "d": "[[:digit:]]", "D": "[^[:digit:]]",
@@ -106,8 +106,8 @@ POSIX_EQUIVALENT = {
 BS = "\\"
 TAB = "\t"
 
-#: Budget for one awk spawn. awk compiling a handful of short regexes is
-#: microseconds; anything near this is a machine in trouble, not a slow check.
+
+
 TIMEOUT_S = 10
 
 
@@ -124,43 +124,43 @@ def _err(line, msg, code):
 
 
 def _rows(text, is_vocab_layer):
-    """Classify each row by its own shape -- with one exception, disambiguated by directory.
 
-    A tools row and a paths row cannot collide: 6/7 fields versus 2 never
-    overlap. A vocabulary row's 3 fields DO collide with a truncated tools
-    row that is missing its last three columns (`tool<TAB>match<TAB>file`,
-    with `file` itself empty reads identically to `keyword<TAB>file<TAB>
-    verdict`), and unlike the tools/paths pair, nothing checks a vocabulary
-    row's keyword column at all -- it is never handed to awk, so a
-    corrupted tools row misread as vocabulary would pass with ZERO checks,
-    not merely the wrong ones (#2211 review). `is_vocab_layer` -- true when
-    "vocabulary" is a path component of the file being validated, per this
-    repo's own layout and the `jit-index` `match` glob in `.supertool.json`
-    -- is the one place this function is keyed on a path rather than a
-    shape, and it exists only to break that one collision.
 
-    A tools row is `tool<TAB>match<TAB>file<TAB>mode<TAB>require<TAB>forbid`,
-    optionally followed by a 7th `requires` column (claude-jit-context 0.6.0,
-    #1992), and only its second column is a regex, and only when it opens
-    with `~`.
-    A paths row is `pattern<TAB>file`, and its first column is *always* handed
-    to `match()` — calling it a "prefix" is what made that easy to miss.
 
-    A vocabulary row is `keyword<TAB>file<TAB>verdict` (claude-jit-context
-    0.7.1's `build_vocab_tsv`, #2211), where `verdict` is empty or the literal
-    string `generic` (the deferred generic-word classifier, #232/#255).
-    `keyword` is never handed to awk: `pre-prompt-hook.sh` matches it with a
-    literal `index()` against a padded, space-delimited prompt, not `match()`,
-    so a vocabulary row's first column joins neither `patterns` nor the
-    escape/case/compile checks below — there is no regex to check.
 
-    Returns (patterns, shape_errors, parsed_row_count, tabbed_row_count); each
-    pattern is (line, text, family).
 
-    `tabbed_row_count` is what separates "this file is not an index" from "this
-    index has a broken row". Both leave `parsed` at zero, and collapsing them
-    would drop a real finding into a skip.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     patterns = []
     shape_errors = []
     parsed = 0
@@ -216,7 +216,7 @@ def _rows(text, is_vocab_layer):
 
 
 def _escapes(pattern):
-    """Every backslash escape as (offset, char); a trailing backslash gives None."""
+
     found = []
     i = 0
     while i < len(pattern):
@@ -239,7 +239,7 @@ def _escape_findings(line, pattern):
                                   "will not compile as written", "escape"))
             continue
         if not (ch.isascii() and ch.isalnum()):
-            continue          # escaped punctuation: a real escape, and meant
+            continue          
         if ch in INTENDED:
             continue
         if ch in CONTROL:
@@ -291,11 +291,11 @@ def _uppercase_outside_brackets(pattern):
 
 
 def _case_findings(line, pattern):
-    """Tools family only: pre-tool-hook.sh:80 lowercases the subject.
 
-    A bracket expression is left alone — `[A-Za-z]` still matches through its
-    lower half, so refusing it would be a false alarm at write time.
-    """
+
+
+
+
     hits = _uppercase_outside_brackets(pattern)
     if not hits:
         return []
@@ -314,23 +314,23 @@ def _awk_version(awk):
                               text=True, encoding="utf-8", errors="replace",
                               timeout=TIMEOUT_S)
     except (OSError, subprocess.SubprocessError):
-        return "awk"          # TimeoutExpired included: it subclasses SubprocessError
+        return "awk"          
     blob = (proc.stdout or proc.stderr or "").strip().splitlines()
     return blob[0].strip() if blob else "awk"
 
 
-#: One awk process for a whole index, so a seven-rule file costs one spawn.
-#: The hook reads its pattern with `getline`, so the string reaches `match()`
-#: with its backslashes intact and the *regex* compiler — not awk's string
-#: lexer — is what processes them. Feeding patterns on stdin reproduces that
-#: exactly, and keeps them out of the program text, where they could not be
-#: quoted safely. One pattern per line is sound because a TSV row cannot carry
-#: a raw newline: it would be two rows.
+
+
+
+
+
+
+
 AWK_PROGRAM = 'BEGIN { while ((getline p) > 0) { if (match("", p)) x = 1 } }'
 
 
 def _awk_run(awk, patterns):
-    """(returncode, stderr) — or (None, why) when awk could not be run at all."""
+
     try:
         proc = subprocess.run(
             [awk, AWK_PROGRAM],
@@ -345,19 +345,19 @@ def _awk_run(awk, patterns):
 
 
 def _compile_findings(awk, patterns):
-    """(errors, could_not_run_reason, lines_never_compiled).
 
-    The whole set goes through one process first: if every pattern compiles,
-    awk exits 0 and there is nothing more to do. Only a non-zero exit buys a
-    second pass, one process per pattern — awk aborts at the *first* bad regex,
-    so the batch run knows that something is wrong and cannot say which row.
 
-    The third element is the half that was missing (#1714). A stall is not a
-    property of the run as a whole: the batch call losing awk means *nothing*
-    was compiled, while the loop losing it at index `i` means everything from
-    `i` on was not. Returning the reason alone let the caller say "something
-    stalled" and never "and these are the rows nobody looked at".
-    """
+
+
+
+
+
+
+
+
+
+
+
     code, stderr = _awk_run(awk, [p for _line, p, _family in patterns])
     if code is None:
         return [], stderr, [line for line, _p, _f in patterns]
@@ -392,19 +392,19 @@ def _compile_findings(awk, patterns):
 
 
 def _unrun_error(reason, unchecked, total):
-    """The `adapter` row that says which patterns were never compiled (#1714).
 
-    `code: "adapter"` is SCHEMA.md's channel for the adapter talking about
-    itself rather than about the file, and it is the right one here even though
-    real findings sit beside it: `_supertool.py:_validator_not_checked` asks
-    whether **every** error is `adapter` before it declares a file unmeasured,
-    so a mixed payload keeps rendering as the finding count it is. That test is
-    documented in the core as deliberate, and this is the shape it was written
-    for.
 
-    `line: None` because the row is about a set of lines, not one of them, and
-    the caller's sort puts it last — after the findings that do have a location.
-    """
+
+
+
+
+
+
+
+
+
+
+
     where = ", ".join(str(line) for line in unchecked)
     return _err(
         None,
@@ -441,10 +441,10 @@ def main():
     is_vocab_layer = "vocabulary" in path.parts
     patterns, errors, parsed, tabbed = _rows(text, is_vocab_layer)
     if parsed == 0 and tabbed == 0:
-        # Nothing here is even tabular, so this is prose sitting at an index's
-        # path rather than a broken index. Declining is the honest answer; a
-        # *broken* row falls through to the finding below instead, because a
-        # skip there would drop an answer already in hand.
+
+
+
+
         emit(skipped(TOOL, target,
                      "no row here has the shape of a jit-context index row "
                      "(6 or 7 tab-separated fields for tools, 2 for paths, "
@@ -465,38 +465,38 @@ def main():
         errors.extend(compile_errors)
 
     if errors and unrun:
-        # The stall has to travel WITH the findings, not instead of them
-        # (#1714). Publishing the findings alone made a run that compiled 2 of
-        # 20 patterns render as `2 err` — byte-identical to a complete run that
-        # found two things, which is this repo's house defect: an absence
-        # produced by the tool, read as an absence in the world.
-        #
-        # Loud here and quiet in the `absent()` arm below is the same cost
-        # calculation reaching two answers. This adapter carries
-        # `rollback_on_fail`, so the reason that arm must not raise an error is
-        # that a stalled machine would otherwise revert a correct edit.
-        #
-        # **The equivalent claim about THIS arm is not yet true, and the gap is
-        # in the core, not here.** `validators/SCHEMA.md` §`adapter` states the
-        # guarantee unconditionally — "the result never triggers rollback,
-        # whatever `rollback_on_fail` says ... the core never subtracts it from
-        # a baseline in either direction". `_supertool.py:_validator_regressed`
-        # honours that only when **every** error is `adapter`
-        # (`_validator_not_checked`), so in a mixed payload this row is
-        # subtracted like a finding. Measured against the core's own function:
-        #
-        #     before 1 finding, after 1 finding            -> regressed False
-        #     before 1 finding, after 1 finding + this row -> regressed True
-        #
-        # So a pre-existing finding plus a transient stall reverts a correct
-        # edit. `cargo-check` already emits mixed payloads (`_parse_errors`,
-        # #754) and is exposed the same way, which makes this a core gap this
-        # arm joins rather than one it invents — but it is a gap, and the fix
-        # is for `_validator_regressed` to subtract only non-`adapter` rows.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         errors.append(_unrun_error(unrun, unchecked, len(patterns)))
 
-    # A finding already in hand is published whatever happened to the other
-    # half. Declining to answer must never suppress an answer.
+
+
     if errors:
         errors.sort(key=lambda e: (e["line"] is None, e["line"] or 0))
         emit({"tool": TOOL, "file": target, "ok": False, "count": len(errors),
@@ -505,24 +505,24 @@ def main():
         return
 
     if patterns and not awk:
-        # An absent tool, so `$SUPERTOOL_REQUIRE_VALIDATORS` can escalate it.
+
         emit(absent(TOOL, target, AWK_ABSENT, _ms(start)))
         return
 
     if patterns and unrun:
-        # awk is installed and never completed — a hang or a failed exec, not a
-        # non-zero exit (that is a *finding* above, and it is loud).
-        #
-        # Not `tool_fault()`, which is for a tool that exited non-zero with no
-        # verdict and stays `ok: false`. Here the structural half — the half
-        # that catches the construct this validator exists for — did run and did
-        # pass, and this adapter carries `rollback_on_fail`, so a hung awk would
-        # revert a correct edit because a machine stalled.
-        #
-        # It still goes through `absent()` rather than a bare `skipped()`, so
-        # `$SUPERTOOL_REQUIRE_VALIDATORS` escalates it exactly as it escalates a
-        # missing awk. Both are "this file was NOT fully checked", and #1202's
-        # lesson is that the decision belongs in one place, not in each adapter.
+
+
+
+
+
+
+
+
+
+
+
+
+
         emit(absent(TOOL, target,
                     "the structural check passed but {0}, so these patterns "
                     "were never compiled".format(unrun), _ms(start)))

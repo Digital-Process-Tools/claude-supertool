@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Whole-session digest: model, duration, tokens, tool calls, errors, final text."""
+
 from __future__ import annotations
 
 import sys
@@ -8,16 +8,16 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import Redactor, event_content_parts, event_role, read_jsonl, session_path, trunc, wants_raw  # noqa: E402
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
+from _common import Redactor, event_content_parts, event_role, read_jsonl, session_path, trunc, wants_raw  
+from _console import use_utf8_stdout  
 
 
 def _parse_ts(ts: str) -> datetime | None:
-    """Parse an ISO-8601 timestamp ending in 'Z' or with offset."""
+
     if not ts:
         return None
     try:
-        # Python's fromisoformat accepts offsets but not the 'Z' suffix prior to 3.11
+
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return None
@@ -56,7 +56,7 @@ def main() -> int:
 
     tool_counts: Counter[str] = Counter()
     error_results = 0
-    error_by_tool_position: list[str] = []  # tool name preceding each error result
+    error_by_tool_position: list[str] = []  
     last_tool_name: str | None = None
     user_msgs = 0
     assistant_msgs = 0
@@ -64,7 +64,7 @@ def main() -> int:
     last_assistant_text = ""
     first_user_text = ""
 
-    # Token + meta tracking
+
     tokens_in = 0
     tokens_out = 0
     tokens_cache_read = 0
@@ -120,10 +120,10 @@ def main() -> int:
                     if not (txt.startswith("<") or txt.startswith("# ")):
                         first_user_text = txt
 
-    # summary already refuses to echo tool inputs, but it prints two blocks of
-    # free text — and a pasted credential arrives as free text far more often
-    # than as a tool argument. Redacting only tail would leave the likeliest
-    # surface open while claiming the preset was covered.
+
+
+
+
     first_user_text = red(first_user_text)
     last_assistant_text = red(last_assistant_text)
 

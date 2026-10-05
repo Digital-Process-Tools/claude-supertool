@@ -1,54 +1,54 @@
 #!/usr/bin/env python3
-"""claims:PATH — does this document's references still hold?
 
-A doc that asserts something about the repo can go stale, and a stale line in
-a doc that is *loaded* rather than *read* produces the behaviour it describes:
-this repo's own maintainer skill said no op rendered a commit's
-run list months after `gh-branch:COMMIT_SHA` shipped, and the maintainer
-hand-rolled jq in obedience to it. The same file recorded the same failure with
-`repo:` before that. (That skill is gone since #1729 — the `oss` plugin's
-`/oss:manager` replaced it — and the quote is in `CHANGELOG.md` under #1220.)
 
-This checks **references, not reasoning**, and the boundary is not an
-aesthetic choice — it was measured. A probe that flagged issue citations by
-issue-state plus an absence-marker word list scored 15 flagged, 2 real (13%),
-because past-tense narration of a fixed bug is lexically identical to a
-present-tense claim that a hole exists. Three narrower lexical anchors were
-measured against this repo's whole doc corpus while building this op and
-scored 14%, 11% and 20%. None beat the number that was already rejected. So
-there is no lexical lens here. A sentence is never a finding.
 
-Three lenses, all of them mechanical:
 
-``op``       a backticked ``name:...`` token, against the live op registry.
-             Only ``key=`` named flags are checked; a bare segment sits in a
-             placeholder slot and is a value, not a flag (measured: a
-             membership test flagged ``gh-pr:master:status`` and two others,
-             all wrong). A head that resolves to no op is *unchecked*, never
-             contradicted — 19 such tokens in this repo's docs were skill ids,
-             label filters and other tools' namespaces, and none was a stale
-             op name.
 
-``path``     a backticked path, optional ``:LINE``, optional section name.
-             A missing file under a directory that exists is a claim about
-             this repo and it is wrong. A missing file under a directory that
-             does not exist is probably the sibling repo's, and answering for
-             it would be this tool inventing a verdict.
 
-``issue``    an issue cited under a heading that *declares* it an open defect
-             (``# Open defects``, ``# Open defect #1202 — ...``). This is the
-             narrow third rule and it carries a verdict where prose cannot,
-             because it reads the document's own structural annotation rather
-             than guessing at its grammar. Measured on ``.claude/jit-context/``
-             — injected automatically at tool-call time, so it lands with more
-             authority than a doc someone chose to open — 5 cited open
-             defects, 5 closed.
 
-Three states throughout: ``holds``, ``contradicted``, ``couldn't check``. The
-third never collapses into either neighbour, and a doc carrying unchecked
-references never renders as a clean doc (docs/validators.md, "Declining
-instead of guessing").
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import _repo_target  # noqa: E402  (the repo this call is about, when not cwd's)
+import _repo_target  
 
 HOLDS = "holds"
 CONTRADICTED = "contradicted"
@@ -77,75 +77,75 @@ _FOOTER = (
 )
 
 _CODE_SPAN = re.compile(r"`([^`\n]+)`")
-# `[ \t]*\Z`, not `\s*$` and not `\s*\Z`. `$` matches before a final newline,
-# so the old pattern accepted a heading with one glued on (#1188) — but `\Z`
-# alone does not fix it, because `\s*` swallows the newline either way and the
-# match still succeeds with the same title. Measured. The trailing run is
-# narrowed instead, to the only whitespace a markdown heading can actually
-# carry: the newline is this op's own record delimiter, never heading text.
+
+
+
+
+
+
 _HEADING = re.compile(r"^(#{1,6})\s+(.*?)[ \t]*\Z")
-# Anchored, because a heading that *mentions* open defects is not a heading
-# that declares a list of them. This op's own docs/presets/claims.md carries
-# "### `issue` — only under a heading that declares an open defect", and an
-# unanchored match turned that whole section into a defect list and reported a
-# quoted example issue number as a live stale citation.
+
+
+
+
+
 _OPEN_DEFECTS = re.compile(r"^open\s+defects?\b", re.IGNORECASE)
 _FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
 
 _EXTS = ("py|md|json|toml|yml|yaml|sh|bash|cfg|ini|txt|tsv|xml|html|js|ts|"
-         "jsx|tsx|rs|php|rb|go|sql|css|lock|env|service")
-# Same reasoning as `_OP_TOK`, and the same anchor. #1188's guard could not see
-# this one until #1241 taught it to read a `+` splice: a whole-value test on
-# author-controlled bytes does not stop being one because the check cannot read
-# it, and for a while this sat three lines from a twin the guard did flag.
-_PATH_TOK = re.compile(
-    r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*\.(?:" + _EXTS + r"))(?::(\d+))?\Z")
+         "jsx|tsx|rs|php|rb|go|sql|css|lock|service")
 
-# `\Z`, and deliberately not an `anchored-ok` waiver -- writing that sentence
-# used to trip the guard itself, which demanded a reason for an exit nobody had
-# taken; #1241 made the token count only when it opens a comment. This decides
-# whether a backticked token is read as an op reference, and its input is the
-# contents of a code span — bytes the document's author wrote, not a line this
-# op sliced out of a larger text. `_CODE_SPAN` already excludes U+000A and
-# `_op_findings` rejects any token holding whitespace, so nothing exploited the
-# old `$`; the anchor is what makes that true of the pattern rather than of its
-# two callers.
+
+
+
+_PATH_TOK = re.compile(
+    r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*(?:\.(?:" + _EXTS + r")|\.env))(?::(\d+))?\Z")
+
+
+
+
+
+
+
+
+
+
 _OP_TOK = re.compile(r"^([a-z][a-z0-9_-]*):(\S.*)\Z")
 
 _CITATION = re.compile(
     r"(?:(?P<slug>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<num>\d{1,6})\b")
-# Deliberately NOT a general `owner/name` scan of the prose. Measured on
-# .claude/jit-context/paths/00-manual/presets-github.md: a slash-scan read
-# `dependabot/outside-contributor` and `presets/github` as other repositories
-# and demoted two real contradictions to "couldn't check". A third state that
-# eats findings is the same defect as a third state that never fires. Only two
-# signals are exact enough: the attached `owner/name#N` form, and a sibling
-# project named on the line — sibling meaning it shares this repo's own family
-# prefix (`claude-supertool` -> `claude-`), which is derived, never hardcoded.
+
+
+
+
+
+
+
+
 
 _QUOTED_REF = re.compile(
     r'^[\s,]*(?:§|section)?\s*["“‘]([^"”’]{2,200})["”’]')
 
-# A `NNN`-shaped path component is a naming convention being described, not a
-# file being cited. Only consulted for a path that does not exist, so real
-# shouty filenames (README.md, SCHEMA.md) are resolved before this ever runs.
+
+
+
 _PLACEHOLDER_VOCAB = frozenset((
     "N", "NN", "NNN", "NNNN", "PATH", "FILE", "NAME", "OWNER", "REPO", "ID",
     "UUID", "SHA", "BRANCH", "TAG", "SECTION", "VERSION", "ISSUE", "NUMBER"))
 
-# `ok:true`, `code:"adapter"`, `count:0` are field notation, not op calls.
+
 _JSON_SCALAR = re.compile(r'^(?:true|false|null|-?\d|["“\[{])', re.IGNORECASE)
 
-# `presets/mytools/status.py`, not `scripts/status.py`. The second path is the
-# shape being warned against and was never meant to exist; reporting it as a
-# broken reference is the tool manufacturing a defect out of a good sentence.
-# The trailing character class absorbs markdown emphasis. contributing.md
-# writes it plain; docs/presets/claims.md writes it bolded, and without this
-# the op reported its own documentation's counter-example as a broken path.
-# The trailing run is spaces and tabs, not `\s`, for the reason `_HEADING`
-# gives — and it matters more here, because this pattern *suppresses* a
-# finding. A run that swallows a newline is a way to make a path go unreported,
-# which is the worse direction to be lax in.
+
+
+
+
+
+
+
+
+
+
 _COUNTEREXAMPLE = re.compile(
     r"(?:\bnot|\bnever|\brather than|\binstead of)[*_` \t]*\Z", re.IGNORECASE)
 
@@ -170,16 +170,16 @@ class Finding(NamedTuple):
 
 
 def _split_lines(text: str) -> List[str]:
-    """Split on U+000A only, exactly as `grep -n` and `wc -l` do.
 
-    `str.splitlines()` also breaks on U+2028, U+2029, U+000B, U+000C and
-    U+0085. A document carrying any of them would have every line number after
-    it reported one too high — and reporting line numbers is most of what this
-    op does. #1210 is the same defect in git-diff's two readers.
 
-    A trailing U+000D is dropped per line, so a CRLF file reads the same and
-    this stays in step with `_count_lines`, which counts U+000A bytes.
-    """
+
+
+
+
+
+
+
+
     lines = [line[:-1] if line.endswith("\r") else line
              for line in text.split("\n")]
     if lines and lines[-1] == "":
@@ -188,26 +188,26 @@ def _split_lines(text: str) -> List[str]:
 
 
 def _read_text(path: Path) -> str:
-    """Read without universal-newline translation.
 
-    `Path.read_text` rewrites a lone U+000D as U+000A, which would put the
-    text side of a line count out of step with `_count_lines`, which counts
-    bytes on disk.
-    """
+
+
+
+
+
     with path.open("r", encoding="utf-8", errors="replace", newline="") as fh:
         return fh.read()
 
 
-# --------------------------------------------------------------------------
-# fences
-# --------------------------------------------------------------------------
+
+
+
 
 def _live_lines(lines: Sequence[str]) -> List[bool]:
-    """Which lines are prose. An unclosed fence swallows the rest of the file.
 
-    A fence is where examples, sample output and other projects' code live.
-    Scanning one manufactures findings about text that was never a claim.
-    """
+
+
+
+
     live = [True] * len(lines)
     inside = False
     for i, line in enumerate(lines):
@@ -220,9 +220,9 @@ def _live_lines(lines: Sequence[str]) -> List[bool]:
     return live
 
 
-# --------------------------------------------------------------------------
-# lens: issue citations under a declared open-defects heading
-# --------------------------------------------------------------------------
+
+
+
 
 def _open_defect_lines(lines: Sequence[str], live: Sequence[bool]) -> List[bool]:
     flagged = [False] * len(lines)
@@ -251,24 +251,24 @@ def _looks_like_path(slug: str) -> bool:
 
 
 def _family_prefix(this_repo: Optional[str]) -> Optional[str]:
-    """`Digital-Process-Tools/claude-supertool` -> `claude-`.
 
-    With no repo known there is no answer to "another project than which?",
-    so sibling detection is off rather than guessed. The attached
-    `owner/name#N` form still works; it needs no context.
-    """
+
+
+
+
+
     name = (this_repo or "").split("/")[-1]
     return name.split("-", 1)[0].lower() + "-" if "-" in name else None
 
 
 def _resolve_repo(this_repo) -> Optional[str]:
-    """`this_repo` may be a string or a thunk that costs a `gh` call.
 
-    It is resolved here, inside the issue lens, and nowhere else — so a
-    document with no open-defects heading makes no network call at all, which
-    is what docs/presets/claims.md and the index row both promise. Resolving
-    it eagerly in main() broke that promise on every invocation.
-    """
+
+
+
+
+
+
     return this_repo() if callable(this_repo) else this_repo
 
 
@@ -317,12 +317,12 @@ def _issue_findings(idx: int, line: str, this_repo,
     return out
 
 
-# --------------------------------------------------------------------------
-# lens: paths, line numbers, headings
-# --------------------------------------------------------------------------
+
+
+
 
 class _Tree:
-    """Basename index, built once and only if a bare basename shows up."""
+
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -363,9 +363,9 @@ def _line_verdict(idx: int, token: str, target: Path,
 
 def _path_findings(idx: int, token: str, rel: str, lineno: Optional[str],
                    root: Path, tree: _Tree) -> Tuple[List[Finding], Optional[Path]]:
-    # A Windows drive-letter prefix is absolute too. A backslash path never
-    # reaches here — _PATH_TOK's character class excludes it — so the drive
-    # letter is the only POSIX-blind case the guard was missing.
+
+
+
     if (rel.startswith("/") or ".." in rel.split("/")
             or re.match(r"^[A-Za-z]:", rel)):
         return ([Finding(idx + 1, "path", UNCHECKED, token,
@@ -387,9 +387,9 @@ def _path_findings(idx: int, token: str, rel: str, lineno: Optional[str],
                          "not in this repository, and neither is its "
                          "directory, so this may be another project's path")],
                 None)
-    # A basename that also sits at the repository root is that file. Without
-    # this, `README.md` in a doc resolved to 16 candidates and went unchecked,
-    # which is the third state used as a shrug rather than as a verdict.
+
+
+
     at_root = root / rel
     if at_root.is_file():
         return ([_line_verdict(idx, token, at_root, lineno)], at_root)
@@ -412,14 +412,14 @@ def _normalise_heading(text: str) -> str:
 
 
 def _quote_finding(idx: int, target: Path, lineno: int, wanted: str) -> Finding:
-    """`docs/validators.md:650, "No verdict never rolls back an edit"`.
 
-    A line number alone only proves the file is long enough — and 650 was, so
-    the reference read as holding while pointing at an unrelated table row.
-    With a quotation beside it the reference becomes checkable *by content*
-    without reading meaning: either that text is on that line or it is not,
-    and if it moved, the new line number is the finding.
-    """
+
+
+
+
+
+
+
     try:
         body = _split_lines(_read_text(target))
     except OSError:
@@ -454,9 +454,9 @@ def _heading_finding(idx: int, target: Path, wanted: str) -> Finding:
                    "no such heading in %s" % target.name)
 
 
-# --------------------------------------------------------------------------
-# lens: op names and named flags
-# --------------------------------------------------------------------------
+
+
+
 
 def _op_findings(idx: int, token: str, registry: Dict[str, str]) -> List[Finding]:
     if any(ch.isspace() for ch in token):
@@ -494,9 +494,9 @@ def _op_findings(idx: int, token: str, registry: Dict[str, str]) -> List[Finding
     return out
 
 
-# --------------------------------------------------------------------------
-# scan
-# --------------------------------------------------------------------------
+
+
+
 
 def scan(text: str, *, root, registry: Dict[str, str],
          issue_state: Callable[[int], Tuple[Optional[str], str]],
@@ -534,9 +534,9 @@ def scan(text: str, *, root, registry: Dict[str, str],
     return out
 
 
-# --------------------------------------------------------------------------
-# render
-# --------------------------------------------------------------------------
+
+
+
 
 def render(path: str, findings: Sequence[Finding]) -> str:
     counts = {HOLDS: 0, CONTRADICTED: 0, UNCHECKED: 0}
@@ -562,17 +562,17 @@ def render(path: str, findings: Sequence[Finding]) -> str:
     return "\n".join(lines) + "\n"
 
 
-# --------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------
+
+
+
 
 def _load_registry(root: Path) -> Dict[str, str]:
-    """Op name -> syntax, from .supertool.json plus the presets beside it.
 
-    An empty registry is a state, not a clean answer: with no config the op
-    lens cannot run, and main() says that out loud instead of letting the
-    absence read as "every op reference resolved".
-    """
+
+
+
+
+
     registry: Dict[str, str] = {}
     sources = [root / ".supertool.json"] + sorted((root / "presets").glob("*.json"))
     for source in sources:
@@ -588,11 +588,11 @@ def _load_registry(root: Path) -> Dict[str, str]:
                 if not isinstance(info, dict):
                     continue
                 syntax = str(info.get("syntax", name))
-                # Key by the *syntax head*, not the JSON key, and merge. An op
-                # can hold several entries under different keys — `read` and
-                # `read-grep` both document `read:`, and keying by JSON key
-                # hid `read:PATH:::grep=PATTERN` so `read:grep=` was reported
-                # as a flag that does not exist. It is the documented form.
+
+
+
+
+
                 head = syntax.split(":", 1)[0].split("[", 1)[0].strip() or name
                 registry[head] = (registry[head] + " " + syntax
                                   if head in registry else syntax)
@@ -644,7 +644,7 @@ def _issue_state_reader(repo):
 
 
 def _memo(thunk: Callable[[], Optional[str]]) -> Callable[[], Optional[str]]:
-    """One `gh repo view` at most, and only if an issue citation asks for it."""
+
     box: List[Optional[str]] = []
 
     def get() -> Optional[str]:
@@ -656,21 +656,21 @@ def _memo(thunk: Callable[[], Optional[str]]) -> Callable[[], Optional[str]]:
 
 
 def _repo_slug(root: Path) -> Optional[str]:
-    """`OWNER/NAME` for the repo an issue citation should be looked up in.
 
-    `None`, not `""`, and that is preserved rather than defended: every
-    consumer here tests it with `if slug:`, so the two were already the same
-    answer at this site — which is why #1701's two-state
-    `_repo_target.effective_slug` loses nothing by arriving underneath it.
 
-    The hand-rolled version this replaced read `os.environ["SUPERTOOL_REPO"]`
-    directly and so skipped `target()`'s rule that a blank export is absence,
-    not an empty target. A whitespace-only value became the slug, reached
-    `gh issue view --repo "   "`, and every issue citation in the document
-    rendered "couldn't check" against gh's complaint — while the cwd, which
-    could have answered, was never asked. `root` is unused and kept: two test
-    files monkeypatch this as a one-argument callable.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
     return _repo_target.effective_slug(timeout=15) or None
 
 
@@ -684,42 +684,42 @@ def _root() -> Path:
     return Path.cwd()
 
 
-#: The boundary this op enforces, named once so the code and the refusal agree.
-#:
-#: `claims` resolves a relative argument against the git toplevel, and its path
-#: lens has always answered `path leaves the repository root` for a document
-#: that cites `/etc/hosts` or climbs out with `..`. The repository root is
-#: therefore the boundary this op already owned — it simply never applied it to
-#: the path it reads *from*, only to the paths it reads *about* (#1283).
-#:
-#: It is deliberately NOT the core's boundary, which is the cwd. The two differ
-#: whenever `claims` is called from a subdirectory, where a root-relative
-#: argument is the documented way to name a document and resolves above cwd.
-#: Picking cwd here would break the op's own resolution rule; picking root and
-#: not saying so would leave the next reader assuming the core's. The core's
-#: cwd rule stays underneath as defence in depth for the day preset ops reach
-#: `_PATH_ARG_POSITIONS` — this check is the op enforcing the boundary it owns,
-#: not a substitute for the chokepoint.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 _BOUNDARY = "repository root"
 
 _CONFIG = ".supertool.json"
 
 
 def _allow_outside_root(root: Path) -> bool:
-    """The core's two opt-outs, honoured here so the refusal does not lie.
 
-    `_safe_path` accepts `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` or an
-    `allow_outside_cwd` key in `.supertool.json`, and the message below names
-    both. An op that printed that sentence and then ignored the knob would be
-    the stale-claim defect this op exists to catch, written by this op. Read
-    from the root's config rather than by walking up from cwd — that is the
-    config this run already reads its registry from.
 
-    Wrapped, and failing CLOSED: a config that cannot be parsed is not an
-    opt-out. `_safe_path` wraps the same read to stop a broken file raising
-    out of a path check; the other half of that is that the exception must
-    not be read as permission.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
     if os.environ.get("SUPERTOOL_ALLOW_OUTSIDE_CWD") == "1":
         return True
     try:
@@ -730,19 +730,19 @@ def _allow_outside_root(root: Path) -> bool:
 
 
 def _containment_refusal(rel: str, target: Path, root: Path) -> Optional[str]:
-    """`None` when `target` is inside `root`, else the ERROR line to print.
 
-    Resolved, not lexical. The doc-facing lens in `_path_findings` can be
-    lexical because it never opens the file it judges; this one decides
-    whether a read happens, so a symlink inside the repo pointing at
-    `/etc/hosts` has to be refused on where its bytes are rather than on how
-    its name is spelled.
 
-    Runs BEFORE the `is_file` test on purpose. `no such file` for one outside
-    path and a rendered document for another answers exactly the question the
-    boundary refuses — the render leaks reference-shaped substrings of the
-    file, but the existence answer alone is already a read.
-    """
+
+
+
+
+
+
+
+
+
+
+
     if "\x00" in rel:
         return "ERROR: path contains a NUL byte\n"
     if _allow_outside_root(root):
@@ -758,17 +758,17 @@ def _containment_refusal(rel: str, target: Path, root: Path) -> Optional[str]:
     if resolved_cmp == base_cmp or resolved_cmp.startswith(base_cmp + os.sep):
         return None
     return (
-        # %r for the two user-derived paths, matching `_safe_path`'s rule of
-        # not echoing arbitrary input back raw. %s for the root: it is the
-        # tool's own resolved path, and on Windows a %r doubles every
-        # separator, so a caller comparing the printed root against a real one
-        # would never match (#1283).
+
+
+
+
+
         "ERROR: path escapes the %s: %r (resolved to %r, root %s).\n"
         "       claims reads documents in this repository, so its boundary is "
         "the %s —\n"
         "       wider than the core's cwd boundary when you call it from a "
         "subdirectory.\n"
-        '       To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add '
+        '       To allow: define SUPERTOOL_ALLOW_OUTSIDE_CWD=1 as an environment variable, or add '
         '`"allow_outside_cwd": true` to .supertool.json.\n'
         % (_BOUNDARY, rel, resolved, base, _BOUNDARY)
     )
@@ -782,8 +782,8 @@ def main(argv: Sequence[str]) -> int:
     root = _root()
     rel = argv[0].strip()
     target = Path(rel) if os.path.isabs(rel) else root.joinpath(*rel.split("/"))
-    # Containment first — see `_containment_refusal`. An out-of-boundary path
-    # must get one answer whether or not it exists (#1283).
+
+
     refusal = _containment_refusal(rel, target, root)
     if refusal:
         sys.stderr.write(refusal)

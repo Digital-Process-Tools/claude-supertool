@@ -1,59 +1,59 @@
 #!/usr/bin/env python3
-"""`dashboard` — the join behind "what do I do next", in one read-only call (#953).
 
-Four calls used to answer this, and none of them answered it. A fetch-then-pull
-says whether the clone is current; `gh run list --branch master` says whether the
-default branch is green; `gh-prs:state=open` says what is on the board;
-`git-worktrees` says which trees are occupied. The decision lives in the *join*,
-which was performed by hand every time — six times in one session, which is what
-filed the issue.
 
-Two of the columns here are assertions a human acts on immediately, so both are
-built to decline rather than to guess.
 
-**The verdict.** `MERGE` is read and acted on without a second look, so it is the
-worst thing this tool could get wrong. It is derived from the #454 arithmetic via
-the same `_checks` tally every other op uses, and from the same second leg count
-`gh-pr` reconciles against (#724/#804) — reused by importing `gh-pr`'s own
-`_reconcile_checks`, not by re-deriving it. **A tally that does not sum to the
-legs the run declares is `UNKNOWN`** — never `WAITING`, and certainly never
-`MERGE`. `CANCELLED`, `SKIPPED`, `TIMED_OUT`, `NEUTRAL` and `ACTION_REQUIRED` are
-none of them passes, and neither is a state added after this file was written:
-`MERGE` requires `_checks.all_green`, which is true only when *every* leg landed
-in the passed bucket, so an unrecognised state falls out as `UNKNOWN` by
-construction rather than by enumeration.
 
-**Lane occupancy.** A lane reported free while an agent is working in it is how
-two agents end up editing one file, which is the failure the lane system exists
-to prevent. Occupancy is inferred, and every hop of the inference can be absent,
-so the three states are carried all the way up:
 
-* an open PR, or a worktree `git-worktrees` calls `occupied`, makes a lane
-  `occupied`;
-* a lane whose only signal is a worktree `git-worktrees` could not decide is
-  `unknown`, because `cannot tell` is not `idle` one layer down either;
-* `free` additionally requires that **every** live occupancy in the repository
-  was attributable to some lane. A worktree on `feat/pr-ops` carries no issue
-  number, so nothing maps it to a lane — and a lane printed `free` beside an
-  occupancy nobody could place is a claim the data does not support. When that
-  happens every otherwise-free lane degrades to `unknown` and names the stray.
 
-**Partial failure.** This is several network reads behind one op. A section that
-could not be fetched prints its heading, says `!! unread` with the reason, and is
-counted in the `[result]` line — because a dashboard missing its board section reads
-exactly like a dashboard with an empty board, and that misreading is this repository's
-most-filed defect.
 
-**Read-only, permanently.** Nothing here spawns, heals, fetches or mutates. The
-clone-currency check is `git ls-remote`, which reads the remote without writing
-the local one; every command `next:` can print is a supertool read op. A
-subsystem whose inspection was fused to its actions once stayed unobservable for
-hours, and `tests/test_dashboard_953.py` pins that this file names no mutating verb.
 
-**GitHub only.** There is no GitLab equivalent and none is half-built here: the
-lane vocabulary, `gh-prs` and `git-worktrees`' PR awareness are all GitHub-shaped
-today. `gl-mrs` answers the board half for GitLab; the join does not exist there.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import concurrent.futures as _futures
@@ -68,26 +68,26 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PRESETS = os.path.dirname(_HERE)
 sys.path.insert(0, _PRESETS)
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
+from _console import use_utf8_stdout  
 
-import _checks  # noqa: E402  (the one check tally — #454, shared with every board)
-import _git_run  # noqa: E402  (the one git invocation chokepoint — #2447)
-import _pr_board  # noqa: E402  (the board/default-branch fetch, shared with radar's GitHub tier — #958)
-import _untrusted  # noqa: E402  (branch names and paths are not ours — #694/#876)
+import _checks  
+import _git_run  
+import _pr_board  
+import _untrusted  
 
 
 def _sibling(preset: str, name: str, alias: str):
-    """Load `presets/<preset>/<name>.py` under its own module name.
 
-    Composition rather than reimplementation: `gh-pr`'s leg reconciliation and
-    `git-worktrees`' three-state assessment are the two pieces of judgement this
-    op must not fork. They are imported by path because `pr`, `branch` and
-    `worktrees` are names two presets could both want, and an alias keeps a
-    traceback readable.
-    """
+
+
+
+
+
+
+
     path = os.path.join(_PRESETS, preset, f"{name}.py")
     spec = importlib.util.spec_from_file_location(alias, path)
-    if spec is None or spec.loader is None:  # pragma: no cover - unreachable
+    if spec is None or spec.loader is None:  
         raise ImportError(path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[alias] = mod
@@ -105,7 +105,7 @@ _gh_branch = _sibling("github", "branch", "dashboard_gh_branch")
 _worktrees = _sibling("git", "worktrees", "dashboard_git_worktrees")
 
 
-# ── vocabulary ───────────────────────────────────────────────────────────
+
 
 MERGE = "MERGE"
 RED = "RED"
@@ -114,32 +114,32 @@ REBASE = "REBASE"
 DRAFT = "DRAFT"
 UNKNOWN = "UNKNOWN"
 
-#: Board order, worst-understood first. `UNKNOWN` leads because it is the row a
-#: reader must resolve before trusting the rest of the column.
+
+
 VERDICT_ORDER = (UNKNOWN, RED, REBASE, WAITING, DRAFT, MERGE)
 
 LANE_OCCUPIED = "occupied"
 LANE_FREE = "free"
 LANE_UNKNOWN = "unknown"
 
-#: The lane vocabulary is **configuration, never a literal** (#1007). `lane:`
-#: was hardcoded here out of the *title* of #964 — an issue whose whole subject
-#: is a colon that appears in no label name — and selected none of this
-#: repository's seven `lane-*` labels, so every lane resolved to unplaced and
-#: this section reported nothing. There is no prefix that is right everywhere:
-#: `claude-supertool` spells lanes `lane-watch`, `claude-remember` spells
-#: priorities `priority:high` — same organisation, one repository apart, opposite
-#: convention. Radar's property therefore applies (#528): **unconfigured refuses**
-#: rather than silently matching nothing, because a prefix that selects zero
-#: labels renders byte-identically to a healthy board with no work on it. There
-#: is deliberately no default — a default makes this repository green and hands
-#: the next one the identical defect, minus the evidence that filed it.
-#: `ops.dashboard.lane_prefix` reaches a preset as `SUPERTOOL_<KEY>` — the op
-#: runner uppercases the config key alone and does not namespace it by op, the
-#: same route `ops.radar.radar_tiers` and `ops.git-diff.red_flags_extra` take.
-#: Naming a variable the runner never sets makes a fully configured repository
-#: refuse, and every unit test below passes either way, so
-#: `test_the_config_key_reaches_the_preset_under_the_name_it_reads` pins it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 LANE_PREFIX_ENV = "SUPERTOOL_LANE_PREFIX"
 
 NO_LANE_PREFIX = (
@@ -150,38 +150,42 @@ NO_LANE_PREFIX = (
     "chose would select zero labels and print as a lane board with nothing on it"
 )
 
-#: Worktree states that count as a live occupancy. `cannot tell` is here on
-#: purpose — an undecidable tree is an occupancy for attribution purposes, and
-#: only its *lane* verdict softens to `unknown`.
+
+
+
 LIVE_WORKTREE_STATES = (_worktrees.STATE_OCCUPIED, _worktrees.STATE_UNKNOWN)
 
-#: Wall clock the whole render may spend on network reads. Past it a section
-#: says it ran out rather than blocking a maintainer who asked a status
-#: question. Generous by design: the honest slow answer beats a fast `UNKNOWN`,
-#: and every second here is one the four hand-run calls were spending anyway.
+
+
+
+
 BUDGET_DEFAULT = 90
 
-#: Concurrency for the per-PR leg reconciliation. Each PR costs one run list
-#: plus up to `_declared_legs.MAX_RECONCILED_RUNS` job lists, so the board is
-#: the fan-out and everything else is a handful of calls.
+
+
+
 WORKERS_DEFAULT = 8
 
 _ISSUE_IN_BRANCH = re.compile(r"(?<![0-9])([0-9]{2,6})(?![0-9])")
 
 
-def _env_int(name: str, default: int) -> int:
+def _positive_int(raw: "str | None", default: int) -> int:
+
+
+
+
     try:
-        value = int(str(os.environ.get(name, "")).strip())
+        value = int(str(raw if raw is not None else "").strip())
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
 
 
-# ── data holders ─────────────────────────────────────────────────────────
-#
-# Plain classes, not `@dataclass`: `tests/_preset_loader` executes a preset
-# module without registering it in `sys.modules`, and `dataclasses` on 3.14
-# dereferences `sys.modules[cls.__module__]` while building the class.
+
+
+
+
+
 
 class PullRequest:
     __slots__ = ("number", "branch", "title", "states", "tally_marker",
@@ -193,15 +197,15 @@ class PullRequest:
         self.number = number
         self.branch = branch
         self.title = title
-        #: `None` means the rollup never came back. `[]` means it came back
-        #: empty. Collapsing those two is the defect this op is built against.
+
+
         self.states = states
         self.tally_marker = tally_marker
         self.mergeable = mergeable
         self.merge_state = merge_state
         self.draft = draft
         self.lanes = list(lanes or [])
-        #: `(kind, id)` of a red leg, so `next:` can name the log to read.
+
         self.red_ref = red_ref
 
 
@@ -216,11 +220,11 @@ class Worktree:
 
 
 class Section:
-    """One block of the render, which prints whether or not it has data.
 
-    `error` is the whole point: a section holding neither lines nor an error
-    would be indistinguishable from one that looked and found nothing.
-    """
+
+
+
+
 
     __slots__ = ("name", "lines", "error", "warning")
 
@@ -228,9 +232,9 @@ class Section:
         self.name = name
         self.lines = list(lines or [])
         self.error = error
-        #: Rendered, but from inputs that did not all arrive. Counted apart from
-        #: `unread` in the footer, because "0 sections unread" beside a section
-        #: built on a failed read is the same sentence as an omitted section.
+
+
+
         self.warning = warning
 
     @property
@@ -246,24 +250,24 @@ class Report:
         self.repo = repo
         self.sections = dict(sections or {})
         self.prs = list(prs or [])
-        #: `None` when the lane universe could not be read, `{}` when it was
-        #: read and came back empty. Those are different states and #1007 is
-        #: what happens when they render the same.
+
+
+
         self.lanes = lanes
-        #: The configured vocabulary, or `None` when nothing configured one.
+
         self.lane_prefix = lane_prefix
 
 
-# ── the verdict ──────────────────────────────────────────────────────────
+
 
 def pr_verdict(pr: PullRequest) -> tuple:
-    """`(word, why)` — and every ambiguity resolves to `UNKNOWN`.
 
-    Ordered the way a reader acts: what was not read beats what failed, which
-    beats what cannot merge, which beats what is still moving. `MERGE` is the
-    last branch and the only one that asserts anything, so it is reachable only
-    after every doubt above it has been excluded.
-    """
+
+
+
+
+
+
     if pr.states is None:
         return (UNKNOWN, "the check rollup did not come back — nothing about "
                          "this PR's CI is established, so it is not a merge signal")
@@ -294,9 +298,9 @@ def pr_verdict(pr: PullRequest) -> tuple:
         n = buckets.count("pending")
         return (WAITING, f"{n} of {len(buckets)} legs still moving")
 
-    # Every leg passed. Nothing below can produce a MERGE that the tally has
-    # not already earned; it can only take one away.
-    if not _checks.all_green(pr.states):  # pragma: no cover - belt and braces
+
+
+    if not _checks.all_green(pr.states):  
         return (UNKNOWN, "the tally is green by count but not by identity")
 
     if pr.draft:
@@ -319,17 +323,19 @@ def pr_verdict(pr: PullRequest) -> tuple:
                      "state this op will read as mergeable")
 
 
-# ── lane occupancy ───────────────────────────────────────────────────────
+
 
 def read_lane_prefix(raw=None):
-    """`(prefix, complaint)` from `ops.dashboard.lane_prefix`, which may refuse.
 
-    Nothing here raises and nothing here guesses. Absent or blank yields `None`
-    plus the sentence naming the key, and the lanes section prints that as
-    `!! unread` — the third state. The alternative, which is what #1007 was, is
-    a prefix that matches nothing rendering as a tally of zeroes.
-    """
-    raw = os.environ.get(LANE_PREFIX_ENV, "") if raw is None else raw
+
+
+
+
+
+
+
+
+    raw = os.environ.get("SUPERTOOL_LANE_PREFIX", "") if raw is None else raw
     raw = str(raw).strip()
     if not raw:
         return None, NO_LANE_PREFIX
@@ -337,19 +343,19 @@ def read_lane_prefix(raw=None):
 
 
 def _lane_stem(prefix: str) -> str:
-    """`lane:` and `lane-` both stem to `lane` — the separator is the variable."""
+
     return re.sub(r"[^0-9A-Za-z]+$", "", str(prefix))
 
 
 def select_lane_universe(labels, prefix: str):
-    """`(lanes, near_misses, error)` — what this prefix selects, and what it nearly did.
 
-    `near_misses` is the field that makes an empty universe actionable instead
-    of mysterious: the same stem behind a different separator is the exact shape
-    of #1007. It is reported as a suggestion the reader applies, never as a
-    fallback the op applies for them — silently trying the other separator would
-    rebuild the guess this whole change removes.
-    """
+
+
+
+
+
+
+
     if not isinstance(labels, list):
         return None, [], "gh label list did not return a list"
     names = [str(item.get("name")) for item in labels if isinstance(item, dict)]
@@ -363,14 +369,14 @@ def select_lane_universe(labels, prefix: str):
 
 
 def lane_universe_note(prefix: str, lanes, near) -> str:
-    """An empty lane universe, said as its own state rather than as `0, 0, 0` (#1007).
 
-    "No label matched my prefix" and "this repository declares no lanes" are
-    different worlds — the first is a defect, the second is fine — and
-    `0 free, 0 occupied, 0 unknown` is the same sentence for both. This is the
-    sentence that would have made #1007 self-reporting on its first run instead
-    of needing someone to grep the source.
-    """
+
+
+
+
+
+
+
     if lanes:
         return ""
     if near:
@@ -389,40 +395,40 @@ def lane_universe_note(prefix: str, lanes, near) -> str:
 
 
 def render_lane_refusal(complaint: str) -> Section:
-    """The unconfigured case, as an unread section rather than an empty one."""
+
     return Section("lanes", error=complaint)
 
 
 def stray_worktrees(worktrees, default_branch: str = "") -> list:
-    """Live worktrees that could not be placed in any lane.
 
-    The set that denies `free` to every lane, named once by the render rather
-    than repeated under each one — the same finding printed seven times is a
-    wall a reader skips, and a skipped disclosure is an absent one.
-    """
+
+
+
+
+
     return [w for w in worktrees
             if w.state in LIVE_WORKTREE_STATES and not w.lanes
             and not (default_branch and w.branch == default_branch)]
 
 
 def lane_states(lanes, prs, worktrees, default_branch: str = ""):
-    """`{lane: (state, evidence)}`, or `None` when the lane universe is unread.
 
-    `None` in and `None` out: a lane board built from the labels that happened
-    to be reachable would report every unseen lane as free, which is the
-    inference this whole function exists to refuse.
 
-    **The clone on the default branch is excluded from the stray set**, and it
-    is the one exclusion here. Lane work happens on a `fix/NNN` branch in its
-    own worktree; the main clone sits on `master` permanently and is where the
-    symlinked binary lives, so counting it as an unplaced occupancy would deny
-    `free` to every lane on every call forever. An alarm that can never clear is
-    one nobody reads, which is the same failure as no alarm. Every *other*
-    unattributable live tree still denies `free` — including a second worktree
-    that merely happens to be on the default branch is not possible here,
-    because that is what the path comparison would need and git does not allow
-    two worktrees on one branch.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if lanes is None:
         return None
 
@@ -460,16 +466,16 @@ def lane_states(lanes, prs, worktrees, default_branch: str = ""):
     return out
 
 
-# ── `next:` — one opinion, and it reads as one ───────────────────────────
+
 
 def next_action(report: Report) -> str:
-    """The single highest-value action, as a command, or a plain "nothing".
 
-    It is an opinion over the same rows the reader can see above it, so it never
-    introduces a fact the board does not already carry — and it declines outright
-    when the board is unread, because the most confident wrong sentence this op
-    could print is advice derived from data it never got.
-    """
+
+
+
+
+
+
     board = report.sections.get("board")
     if board is None or board.unread:
         why = board.error if board is not None else "the board section never ran"
@@ -527,10 +533,10 @@ def next_action(report: Report) -> str:
     return "next: nothing ready — no PR is mergeable and no lane is free"
 
 
-# ── render ───────────────────────────────────────────────────────────────
+
 
 def render(report: Report) -> str:
-    """Every section prints. `[result]` is always the last line."""
+
     out = [f"# dashboard — {_untrusted.flat(str(report.repo))}", ""]
 
     unread = 0
@@ -580,7 +586,7 @@ def render(report: Report) -> str:
     return "\n".join(out)
 
 
-# ── plumbing ─────────────────────────────────────────────────────────────
+
 
 def _run(argv: list, timeout: int = 30):
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
@@ -588,7 +594,7 @@ def _run(argv: list, timeout: int = 30):
 
 
 def _json_cmd(argv: list, timeout: int = 30):
-    """`(data, error)`. Never `([], "")` for a call that did not answer."""
+
     try:
         res = _run(argv, timeout=timeout)
     except FileNotFoundError:
@@ -607,35 +613,35 @@ def _json_cmd(argv: list, timeout: int = 30):
         return None, f"{' '.join(argv[:3])} returned unparseable JSON"
 
 
-#: This board's own budget for one git call, when `SUPERTOOL_GIT_TIMEOUT` does
-#: not name another. Kept at the 15 this file has always used rather than
-#: dropped to `_git_run`'s module default of 10: every call here is a courtesy
-#: read on the render path and nothing measured 10 as enough for `ls-remote`,
-#: which reaches the network.
+
+
+
+
+
 _GIT_TIMEOUT_DEFAULT = 15
 
 
 def _git(args: list, timeout: int | None = None):
-    """`(stdout, error)` for a read-only git command.
 
-    The invocation itself is `_git_run._git` (#2447) -- the one chokepoint --
-    so this file no longer builds a git argv, no longer chooses a spawn shape,
-    and gets `--no-optional-locks` (#1944/#1945), the `_stop()` SIGTERM grace
-    (#2033), `_with_lock_retry` (#2034) and `SUPERTOOL_GIT_TIMEOUT` (#650)
-    without having to carry any of them. It carried the flag alone and none of
-    the other three until then, because it was a private wrapper over a bare
-    `subprocess.run`.
 
-    What is left here is the rendering: this board wants `(stdout, error)`,
-    with `error` non-empty for anything that did not answer, because a section
-    that could not be fetched must not print like an empty one. That is this
-    file's own contract and not the chokepoint's.
 
-    `TimeoutExpired` no longer reaches this function -- `_git_run` folds it to
-    `TIMEOUT_RC` with `timed out after Ns` on stderr, which the `returncode`
-    branch below already renders as an error. The `except` is kept for the one
-    thing that still escapes: `git` missing from PATH raises from `Popen`.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     budget = _git_run.git_timeout(_GIT_TIMEOUT_DEFAULT) if timeout is None else timeout
     try:
         res = _git_run._git(args, timeout=budget)
@@ -647,15 +653,15 @@ def _git(args: list, timeout: int | None = None):
     return res.stdout.strip(), ""
 
 
-# ── section: local clone ─────────────────────────────────────────────────
+
 
 def collect_local(default_branch: str) -> Section:
-    """Is this clone current, established without writing to it.
 
-    `ls-remote` reads the remote's ref; it does not update ours. That is the
-    difference between answering the question and performing half of the fix,
-    and the reason this op can be run from a worktree an agent is using.
-    """
+
+
+
+
+
     head, err = _git(["rev-parse", "--short", "HEAD"])
     if err:
         return Section("local", error=err)
@@ -693,24 +699,24 @@ def collect_local(default_branch: str) -> Section:
     return Section("local", lines)
 
 
-# ── section: default branch ──────────────────────────────────────────────
+
 
 def collect_default(repo: str, default_branch: str) -> Section:
-    """`gh-branch`'s conjunctive verdict, reused rather than re-derived.
 
-    Every piece of judgement here — selection of every run on the head, the four
-    states kept apart, the leg reconciliation — is `gh-branch`'s. This function
-    only sequences its calls and keeps one line.
-    """
+
+
+
+
+
     if not default_branch:
         return Section("default", error="the repository's default branch was "
                                         "not established")
-    # `_pr_board.head_and_runs` (#958) -- the same two-call sequence radar's
-    # `default_branch_report` runs, mechanically: resolve the head commit,
-    # then the run list on it. Everything after this point -- concurrency,
-    # `declared_pair` scoping -- stays here rather than joining the shared
-    # module; the two callers currently do that composition differently on
-    # purpose (see `_pr_board.py`'s own docstring).
+
+
+
+
+
+
     sha, age, runs, err = _pr_board.head_and_runs(_gh_branch, default_branch)
     if err:
         return Section("default", error=err)
@@ -727,21 +733,21 @@ def collect_default(repo: str, default_branch: str) -> Section:
             for wf, jobs in fetched.items()}
     marker, detail = _gh_branch._reconcile(repo, selected, fetched)
     _prev_sha, prev_names = _gh_branch.previous_head(runs, sha)
-    # #1959: fetched once and handed to both `missing_workflows` (so a
-    # workflow the trigger set proves could not have run here does not hold
-    # this board's own verdict inside the creation window) and `scope_for`
-    # below, the same call this board's own "release gate 1" read the
-    # contradiction through.
+
+
+
+
+
     owner, name = _gh_branch._declared_legs.owner_repo(repo)
     declared_pair = _gh_branch._declared_workflows.declared_at(owner, name, sha)
-    # `missing_workflows`, not `prev_names - set(selected)`: the selection is
-    # keyed per run since #1640, so a workflow with two runs on the head is in
-    # neither key verbatim and the subtraction reported it as absent.
+
+
+
     missing = _gh_branch.missing_workflows(prev_names, selected, declared_pair[0])
-    # #846: the scope of the green, not only the green. This section is the
-    # board a human reads immediately before tagging a release, and it was
-    # printing "every workflow on X concluded and every leg passed" over a
-    # commit three of whose four declared workflows had produced no run.
+
+
+
+
     scope, scope_lines, _unresolved = _gh_branch.scope_for(
         repo, sha, selected, declared_pair=declared_pair,
         age_secs=age, grace=_gh_branch._GRACE)
@@ -758,20 +764,20 @@ def collect_default(repo: str, default_branch: str) -> Section:
     return Section("default", lines)
 
 
-# ── section: board ───────────────────────────────────────────────────────
+
 
 _PR_FIELDS = ("number,headRefName,title,url,headRefOid,mergeable,"
               "mergeStateStatus,isDraft,statusCheckRollup,body,labels")
 
 
 def _red_ref(rollup) -> object:
-    """The namespaced id of a red leg, so `next:` can name the log to read.
 
-    `github_named_live`, not `github_named_states` (#1804): a leg a later run
-    of the same name replaced is not decided by anything anymore, and pointing
-    `next:` at its log sends the reader to read a run GitHub itself no longer
-    counts.
-    """
+
+
+
+
+
+
     for _name, state, kind, ident in _checks.github_named_live(rollup):
         if _checks.bucket(state) == "failed" and kind and ident:
             return (kind, ident)
@@ -780,11 +786,11 @@ def _red_ref(rollup) -> object:
 
 def _build_pr(payload: dict, issue_lanes: dict, prefix: str) -> PullRequest:
     rollup = payload.get("statusCheckRollup")
-    # `github_live_states`, not `github_states` (#1804): `pr.states` feeds
-    # `pr_verdict()` directly, and a check run a later run of the same name
-    # replaced is not a live failure — same discriminator #1792 gave the
-    # merge gate, so this board and the merge gate cannot disagree about one
-    # PR.
+
+
+
+
+
     states = (_checks.github_live_states(rollup)
               if isinstance(rollup, list) else None)
     marker, _lines = _gh_pr._reconcile_checks(payload)
@@ -812,17 +818,17 @@ def _build_pr(payload: dict, issue_lanes: dict, prefix: str) -> PullRequest:
 
 
 def collect_board(issue_lanes: dict, workers: int, prefix: str = ""):
-    """`(Section, prs)` — the open PRs, each with its verdict derived.
 
-    The per-PR reconciliation is the fan-out: one run list plus up to four job
-    lists each. It runs concurrently because the answer is a join and a serial
-    join is six sequential round trips wearing one command's clothes.
-    """
-    # The spawn, the JSON parse and the "is this even a list" check are
-    # `_pr_board.run_pr_list` (#958) -- radar's GitHub tier runs the identical
-    # mechanical sequence over its own filtered argv. This op needs none of
-    # its richer exit-code classification (no retry policy here, just a
-    # Section), so only `data` and `error` are used.
+
+
+
+
+
+
+
+
+
+
     data, err, _rc, _raw = _pr_board.run_pr_list(
         ["gh", "pr", "list", "--state", "open", "--limit", "50", "--json",
          _PR_FIELDS], timeout=60)
@@ -845,16 +851,16 @@ def collect_board(issue_lanes: dict, workers: int, prefix: str = ""):
     return Section("board", lines), prs
 
 
-# ── section: worktrees ───────────────────────────────────────────────────
+
 
 def _branch_lanes(branch: str, issue_lanes: dict, pr_by_branch: dict) -> list:
-    """Lanes a branch belongs to — from its PR, then from its issue numbers.
 
-    The issue-number hop is a *naming convention* (`fix/941`), not data, so it
-    is only ever additive: a branch it cannot parse contributes no lane rather
-    than a guessed one, and `lane_states` treats that absence as a reason to
-    decline `free` rather than as an absence of occupancy.
-    """
+
+
+
+
+
+
     lanes = set(pr_by_branch.get(branch, ()))
     for number in _ISSUE_IN_BRANCH.findall(str(branch or "")):
         lanes.update(issue_lanes.get(number, ()))
@@ -862,13 +868,13 @@ def _branch_lanes(branch: str, issue_lanes: dict, pr_by_branch: dict) -> list:
 
 
 def collect_worktrees(issue_lanes: dict, pr_by_branch: dict, prefix: str = ""):
-    """`(Section, worktrees)` — `git-worktrees`' own assessment, one line each.
 
-    The evidence lines are `git-worktrees`' to print; here the verdict word
-    carries the three states and the row names the op that expands it. Thirteen
-    trees times four evidence lines is a page nobody reads, and an unread
-    section is the same as no section.
-    """
+
+
+
+
+
+
     listing, err = _git(["worktree", "list", "--porcelain"])
     if err:
         return Section("worktrees", error=err), []
@@ -900,20 +906,20 @@ def collect_worktrees(issue_lanes: dict, pr_by_branch: dict, prefix: str = ""):
     return Section("worktrees", lines), trees
 
 
-# ── section: lanes ───────────────────────────────────────────────────────
+
 
 def collect_lane_universe(prefix: str):
-    """`(lanes, near_misses, error)` — every lane label the repository declares.
 
-    Read from the label list rather than from the labels in use, so a lane
-    nobody has filed against still appears. Derived from usage it would simply
-    not exist, and a lane that does not exist cannot be reported free — which
-    sounds safe and is the opposite: it silently shrinks the delegation menu.
 
-    The selection itself is `select_lane_universe`, which also reports what the
-    prefix nearly matched — see `lane_universe_note` for why an empty answer
-    here has to arrive with an explanation attached.
-    """
+
+
+
+
+
+
+
+
+
     data, err = _json_cmd(["gh", "label", "list", "--limit", "200", "--json",
                            "name"], timeout=30)
     if err:
@@ -922,17 +928,17 @@ def collect_lane_universe(prefix: str):
 
 
 def collect_issue_lanes(prefix: str):
-    """`({issue number: [lanes]}, error)` — the label lives on the issue.
 
-    Measured on this repository on 2026-08-07: seven lane labels exist (spelled
-    `lane-watch`, `lane-release`, … — dash-separated, which is why the prefix is
-    configuration and not a literal, #1007), 54 of 65 open issues carry one, and
-    **no open PR carries one at all**. A lane board built from PR labels would
-    therefore have rendered all seven lanes free while six PRs and thirteen
-    worktrees were live — the exact wrong answer, printed confidently. The PR
-    reaches its lane through its closing reference, and a worktree through the
-    issue number in its branch name.
-    """
+
+
+
+
+
+
+
+
+
+
     data, err = _json_cmd(["gh", "issue", "list", "--state", "all", "--limit",
                            "400", "--json", "number,labels"], timeout=60)
     if err:
@@ -955,9 +961,9 @@ def render_lanes(states, strays=(), prefix: str = "", note: str = "") -> Section
     if states is None:
         return Section("lanes", error="the lane label universe could not be read")
     if not states:
-        # Read, and empty. Degraded rather than `(none)`: an empty section reads
-        # as "nothing to report", and #1007 is what that sentence costs when the
-        # truth is "nothing was selectable".
+
+
+
         return Section("lanes", lines=[],
                        warning=note or lane_universe_note(prefix, [], []))
     lines = []
@@ -978,7 +984,7 @@ def render_lanes(states, strays=(), prefix: str = "", note: str = "") -> Section
     return Section("lanes", lines)
 
 
-# ── main ─────────────────────────────────────────────────────────────────
+
 
 def _repo_identity():
     name, default, err = _gh_branch._repo_identity()
@@ -992,9 +998,9 @@ def build_report(budget: int, workers: int) -> Report:
     def _left():
         return max(1, int(budget - (time.monotonic() - started)))
 
-    # Refused before any label read, not after: an unconfigured prefix has no
-    # right answer to fetch, and "matched 0 of 54 labels" is not a finding about
-    # this repository.
+
+
+
     prefix, prefix_complaint = read_lane_prefix()
 
     sections: dict = {}
@@ -1022,7 +1028,7 @@ def build_report(budget: int, workers: int) -> Report:
                 sections[key] = future.result(timeout=_left())
             except _futures.TimeoutError:
                 sections[key] = Section(key, error=f"budget of {budget}s ran out")
-            except Exception as exc:  # noqa: BLE001 - a section, not the render
+            except Exception as exc:  
                 sections[key] = Section(key, error=f"{type(exc).__name__}: {exc}")
 
         if f_labels is None:
@@ -1070,8 +1076,8 @@ def main() -> int:
         print("  usage: dashboard   (read-only; no repo target, GitHub only)")
         return 2
 
-    budget = _env_int("SUPERTOOL_DASHBOARD_BUDGET", BUDGET_DEFAULT)
-    workers = _env_int("SUPERTOOL_DASHBOARD_WORKERS", WORKERS_DEFAULT)
+    budget = _positive_int(os.environ.get("SUPERTOOL_DASHBOARD_BUDGET"), BUDGET_DEFAULT)
+    workers = _positive_int(os.environ.get("SUPERTOOL_DASHBOARD_WORKERS"), WORKERS_DEFAULT)
     report = build_report(budget, workers)
     print(render(report))
     return 0 if not any(s.unread for s in report.sections.values()) else 1

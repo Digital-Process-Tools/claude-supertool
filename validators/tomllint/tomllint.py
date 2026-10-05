@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""tomllint validator adapter — TOML syntax check via stdlib tomllib (3.11+) or tomli.
 
-Stdlib only on Python 3.11+. Falls back to the third-party `tomli` package.
 
-**Neither reachable reports the third state — `skipped` with the reason — and
-never `ok`** (#1157; validators/SCHEMA.md, "Skipped: the third state"). This
-adapter predates that section and used to emit `ok: true, count: 0`, which is a
-file nothing parsed published as a file that parsed clean. Where that quiet is
-not acceptable — CI, where "no parser" means the gate is not running — name
-this validator in `$SUPERTOOL_REQUIRE_VALIDATORS` and the same absence becomes
-a loud `adapter` error instead. See `refusal.required`.
 
-Usage:  tomllint.py <file>
-"""
+
+
+
+
+
+
+
+
+
+
+
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def emit(d: dict) -> None:
 
 
 def _adapter_error(file: str, msg: str, dur_ms: int) -> None:
-    """No verdict was obtained, and the process is at fault rather than the file."""
+
     emit({"tool": TOOL, "file": file, "ok": False, "count": 1,
           "errors": [{"line": None, "col": None, "severity": "error",
                       "code": "adapter", "msg": msg}],
@@ -45,16 +45,16 @@ def _adapter_error(file: str, msg: str, dur_ms: int) -> None:
 
 
 def resolve_parser():
-    """The TOML parser module, or None when neither candidate can be imported.
 
-    Both imports are guarded, including the stdlib one. `sys.version_info >=
-    (3, 11)` answers "does this Python ship tomllib", which is not the question
-    the next line depends on — whether `import tomllib` succeeds. A shadowing
-    module on `PYTHONPATH`, a partial install or a stripped stdlib all make the
-    two disagree, and the unguarded form turned that into a traceback with no
-    JSON on stdout at all: an adapter that exits non-zero having said nothing,
-    where the contract is to always answer.
-    """
+
+
+
+
+
+
+
+
+
     try:
         import tomllib
         return tomllib
@@ -89,7 +89,7 @@ def main() -> None:
             tomllib.load(fh)
     except tomllib.TOMLDecodeError as e:
         msg = str(e).strip()[:300]
-        # tomllib embeds line info in the message; try to extract it
+
         line = None
         col = None
         import re

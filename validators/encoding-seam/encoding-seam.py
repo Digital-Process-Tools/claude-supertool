@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""encoding-seam validator adapter -- the #418 tree-wide encoding guard, run
-per-file at write time rather than only inside the full CI suite (#2287).
 
-Same shape as `changelog-fragment.py` / `new-file-lint.py`: this adapter
-states no rule of its own. It locates the PROJECT's own
-`tests/test_encoding_seam.py`, imports its `encoding_violations` /
-`subprocess_encoding_violations` functions (never re-implements the AST
-walk), and runs them against the single file supertool is validating. A
-project with no such test file gets `skipped`, not `ok` -- this is not a
-claim that every project has no such convention, only that this one does
-and knows how to say so.
 
-Three states: `ok`, a finding, and `skipped` -- no `test_encoding_seam.py`
-found above the file, the module could not be imported, or the file could
-not be related to the repo root at all.
 
-Usage: encoding-seam.py <file>
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -25,8 +25,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
-from refusal import guard_main, skipped  # noqa: E402
-from encoding_seam import (  # noqa: E402
+from refusal import guard_main, skipped  
+from encoding_seam import (  
     config_dir, config_dir_may_authorize_execution, find_test_module,
     load_scan_module, repo_root, scan_one, scope_kinds,
 )
@@ -65,12 +65,12 @@ def main() -> None:
 
     cfg_dir, scope_known, scope_reason = config_dir()
     if scope_known and cfg_dir is not None and not config_dir_may_authorize_execution(root, cfg_dir):
-        # #2228/#2236, reproduced here: this adapter imports and EXECUTES
-        # a script it finds inside `root`, so `root` must be the project
-        # that configured supertool -- or nested inside it -- before that
-        # import is authorized. A `.supertool.json` sitting above a
-        # directory of clones does not authorize running an arbitrary
-        # clone's own (possibly attacker-controlled) test file.
+
+
+
+
+
+
         emit(skipped(TOOL, file, "a tests/test_encoding_seam.py may exist "
                      "inside {0}, but the .supertool.json that wired this "
                      "run lives at {1}, which shares no ownership "
@@ -99,7 +99,7 @@ def main() -> None:
 
     try:
         module = load_scan_module(module_path)
-    except Exception as exc:  # the guard module is the project's own
+    except Exception as exc:  
         _adapter_error(file, "{0} could not be imported, so this file was "
                        "NOT checked: {1}: {2}".format(
                            module_path, type(exc).__name__, exc),
@@ -129,9 +129,9 @@ def main() -> None:
     dur = int((time.time() - start) * 1000)
     errors = [{"line": r["line"], "col": None, "severity": r["severity"],
                "code": r["code"], "msg": r["msg"]} for r in records]
-    # count_basis/errors_truncated (#1728, validators/SCHEMA.md): count is
-    # always len(errors) above, and errors is never capped -- same shape as
-    # cargo-check's declaration, the 'total'/not-truncated worked example.
+
+
+
     emit({"tool": TOOL, "file": file, "ok": not errors, "count": len(errors),
           "errors": errors, "duration_ms": dur,
           "count_basis": "total", "errors_truncated": False})

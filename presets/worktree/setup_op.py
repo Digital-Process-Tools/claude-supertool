@@ -1,54 +1,54 @@
 #!/usr/bin/env python3
-"""`worktree:setup[:PATH]` — provision a worktree from the primary checkout,
-driven entirely by `ops.worktree.setup` in `.supertool.json` (#532).
 
-Three configured kinds, each with a different failure mode if you get it
-backwards (the issue's own warning, taken seriously here rather than left to
-discipline):
 
-  * `link`   — symlinked from the primary checkout. For large, immutable,
-    shared artefacts. NEVER for anything the worktree might mutate or that
-    is machine-specific — a symlink shares state back into the primary
-    checkout, so a write in the worktree is a write to everyone.
-  * `copy`   — copied, never linked. For machine/environment-specific state,
-    or anything the worktree owns and may rewrite. `shutil.copytree(...,
-    symlinks=False)` / `shutil.copy2` — deliberately not `os.symlink` under
-    any code path, because THAT is exactly the corruption the issue names:
-    a `copy`-declared path silently becoming a symlink by a coding
-    shortcut is the one mistake this module refuses to make no matter how
-    it is called.
-  * `exclude` — appended to a worktree-PRIVATE exclude file (see
-    `_common.git_path`'s docstring for why not `.git/info/exclude`, which
-    git shares across every worktree of the repo) so a symlinked artefact
-    can never be swept into a commit by `git add -A` / `git add .`.
 
-Every configured entry gets exactly one of three reported outcomes —
-linked/copied/excluded, skipped-with-a-reason, or warned-and-skipped for a
-missing source — never a bare "done". A missing source WARNS rather than
-FAILS: some artefacts are legitimately regenerated on demand (over HTTP, in
-this project's own case) and a hard failure here would make the op worse
-than not running it at all. The same "warn, never crash" discipline covers
-every FILESYSTEM operation below (#532 self-review): `os.symlink`,
-`shutil.copytree`/`copy2` and the exclude-file write can all raise a plain
-`OSError` for reasons that have nothing to do with this op's own logic
-(permission denied, a full disk, a Windows host with no symlink privilege),
-and none of those should abort every remaining configured entry with a raw
-traceback.
 
-Every `link`/`copy`/`exclude` entry is validated BEFORE anything touches
-disk (`_common.validate_entry`/`safe_join`, #532 self-review): entries come
-from `.supertool.json` in the worktree BEING PROVISIONED, which is routinely
-someone else's branch, so an entry containing a newline, an absolute path,
-or a `..` segment is refused rather than trusted — the first would let a
-crafted config forge a fake outcome line in this op's own receipt, the
-other two would let it name a source or destination outside the primary
-checkout / target worktree entirely.
 
-Idempotent by construction: an entry already in the state `setup` would
-produce is reported as already-there and touched a second time only to
-record it in the manifest if it somehow was not already (recovering from a
-manifest that was itself lost or hand-edited).
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import os
@@ -60,14 +60,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import _common  # noqa: E402
+import _common  
 
 
 DOC_POINTER = "declare ops.worktree.setup (link/copy/exclude) in .supertool.json — see docs/presets/worktree.md"
 
 
 def _same_target(link_path: Path, expected: Path) -> bool:
-    """Is LINK_PATH a symlink whose resolved target is EXPECTED?"""
+
     if not link_path.is_symlink():
         return False
     try:
@@ -77,10 +77,10 @@ def _same_target(link_path: Path, expected: Path) -> bool:
 
 
 def _validate(entries: tuple, root_a: Path, root_b: Path, lines: list) -> "tuple[tuple, dict]":
-    """Split ENTRIES into (valid, {entry: (source, dest)}), refusing any
-    entry `_common.safe_join` rejects against EITHER root — never touching
-    disk for a refused entry.
-    """
+
+
+
+
     valid = []
     joined = {}
     for entry in entries:
@@ -137,14 +137,14 @@ def _do_copy(entry: str, source: Path, dest: Path, lines: list, manifest: dict) 
         lines.append(f"  WARNING could not copy, skipped: {entry} ({exc})")
         return
     manifest["copied"].append(entry)
-    # Recorded now, right after the copy landed, so `teardown` has a real
-    # baseline to compare against later rather than reconstructing one from
-    # whatever is on disk at teardown time -- which would be the very thing
-    # it is trying to detect changes AGAINST (#2429). `fingerprint_copy` can
-    # itself return `None` (a permission error mid-walk, say) -- stored as
-    # `null` rather than skipped, so `teardown` sees "recorded, but setup
-    # itself could not compute one" as a real, distinguishable state from
-    # "never recorded at all" (an older manifest, pre-#2429).
+
+
+
+
+
+
+
+
     manifest["copy_fingerprints"][entry] = _common.fingerprint_copy(dest)
     lines.append(f"  copied: {entry}")
 
@@ -209,10 +209,10 @@ def run(target: Path) -> "tuple[int, str]":
         if w:
             lines.append(f"  WARNING {w}")
 
-    # A path declared in BOTH link and copy is the exact corruption hazard
-    # the issue names (link shares mutable state back to the primary
-    # checkout; copy exists precisely because some paths must NOT do that).
-    # Refuse to touch it under either heading rather than picking one.
+
+
+
+
     both = sorted(set(link_entries) & set(copy_entries))
     if both:
         for entry in both:
@@ -225,8 +225,8 @@ def run(target: Path) -> "tuple[int, str]":
             lines.append("  target is the primary checkout — nothing to link or copy into itself")
         link_entries, copy_entries = (), ()
 
-    # Validate structurally BEFORE anything touches disk -- untrusted config,
-    # see the module docstring and `_common.validate_entry`.
+
+
     link_entries, link_paths = _validate(link_entries, primary, target, lines)
     copy_entries, copy_paths = _validate(copy_entries, primary, target, lines)
     valid_exclude = []
@@ -239,22 +239,22 @@ def run(target: Path) -> "tuple[int, str]":
     exclude_entries = tuple(valid_exclude)
 
     manifest_result = _common.read_manifest(target)
-    # `.error` here is an UNKNOWN, never a genuine "no manifest was ever
-    # written" (#2371's own contract, and see `read_manifest`'s docstring):
-    # a transient `git` failure resolving the manifest path, or a manifest
-    # file that exists but failed to parse, both come back this way. A
-    # prior, successful setup run may have recorded real `linked`/`copied`/
-    # `excluded` entries in that very file. Rebuilding an empty in-memory
-    # manifest and writing it out unconditionally -- what this used to do
-    # -- would silently discard that record the moment `write_manifest`
-    # below ran, even though nothing about THIS run's own provisioning
-    # failed (#2386). So: proceed with provisioning (setup's own docstring
-    # already treats a missing/unreadable *source* as a WARN, never a
-    # refusal -- `.supertool.json` config may have a legitimate reason to
-    # provision even when the manifest can't be read), but track the
-    # failure so the manifest WRITE step below can skip clobbering
-    # whatever is already on disk rather than overwriting it with an
-    # incomplete record.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     manifest_unreadable = manifest_result.error is not None
     if manifest_unreadable:
         lines.append(
@@ -299,10 +299,10 @@ def run(target: Path) -> "tuple[int, str]":
 
     if not (link_entries or copy_entries or exclude_entries):
         if lines:
-            # Something WAS declared (e.g. a path refused for being in both
-            # `link` and `copy`) even though nothing is left to act on --
-            # that warning must reach the caller, never be swallowed by a
-            # generic "nothing to do" that reads as a clean, unremarkable run.
+
+
+
+
             return 0, "worktree:setup " + str(target) + "\n" + "\n".join(lines)
         return 0, "worktree.setup is configured but declares no link/copy/exclude entries — nothing to do"
 

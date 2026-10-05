@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""xml:PATH:XPATH[:full] — XPath query over an XML file.
 
-Default: one match per line as 'LINE:TAG @attr=val …'.
-:full   : dump matched subtrees as indented XML.
 
-Memory scales with file size (~6× bytes on disk). A 25 MB clover.xml
-loads ~150 MB into RAM — acceptable for one-shot CLI use.
-"""
+
+
+
+
+
+
 from __future__ import annotations
 
 import sys

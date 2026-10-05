@@ -1,56 +1,56 @@
 #!/usr/bin/env python3
-"""Comment on a GitHub issue, and prove what landed (#2078).
 
-`gh-issue-create` opens an issue and `gh-pr-edit` corrects a published pull
-request body; there was no op for the third routine write, a follow-up
-comment on an issue already filed, so it left supertool for raw
-`gh issue comment --body-file`. Observed on `Digital-Process-Tools/claude-oss`:
-filed an issue with `gh-issue-create:@FILE`, needed a scoping comment right
-after, and had no op for it while every other step of the same task had one.
 
-A trailing `:edit=COMMENT_ID` corrects a comment already posted (#2643).
-Observed 2026-09-19: a comment on #1868 went out with a wrong figure, and the
-only route to fix it was raw `gh api -X PATCH repos/.../issues/comments/ID
--f body=@file`, hand-verified afterwards -- no byte-identical read-back, and
-no re-application of the #2100 disclosure marker if the corrected body
-dropped it. `edit=COMMENT_ID` PATCHes `repos/{repo}/issues/comments/{id}`
-instead of POSTing a new comment, then runs the same read-back and the same
-disclosure step this op already gives a fresh comment. The id is already in
-this op own `[result]` line from when the comment was first posted
-(`comment id=5741496503`), so the caller has it without another lookup.
 
-A GET of the comment runs before the PATCH (#2665): the release auditor found
-that `edit=COMMENT_ID` sent the PATCH built from the id alone, with `NUMBER`
-never checked against the comment being edited -- a mistyped or stale id
-silently overwrote some other comment in the repo while the `[result]` line
-still reported success against the `NUMBER` the caller asked for. The GET's
-`issue_url` is compared against `/issues/{NUMBER}`; a mismatch, or a GET that
-fails outright, refuses before any PATCH is sent.
 
-`gh-pr-edit` (#1739) set the bar for a write in this family: publish, then
-read back what the server actually stored and compare it byte for byte
-against what was sent. `gh issue comment` gives no such proof -- a 0 exit
-means the API accepted the POST, not that the stored body is the one this
-call meant to publish. This carries the same three-part guarantee:
 
-* **The payload route**, because a comment body is free-form prose with
-  newlines and colons that cannot survive `:`-tokenization -- the same
-  argument `gh-pr-create` and `gh-pr-edit` are built on.
-* **The write goes through REST** (`POST
-  repos/{repo}/issues/{number}/comments`), which is a plain create with no
-  GraphQL field set to go stale under it the way `gh pr edit`'s did (#1739).
-* **The receipt.** The POST response carries the stored body, the comment id
-  and its URL -- compared against what was sent in the same call, in the
-  same four states `gh-pr-edit` uses: EXACT, line endings NORMALISED by the
-  server, MISMATCH naming the first differing line, or UNKNOWN when the
-  response carried no body field at all. Only EXACT and NORMALISED exit 0.
 
-No closing-reference gate here -- a comment does not replace a published
-body, so there is nothing an update could drop. No title: `edit=COMMENT_ID`
-is the only mode token this op takes, and it switches the write between the
-two shapes above (publish a new comment, or correct one already posted) --
-it does not add a third one.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -63,21 +63,21 @@ try:
     import tomllib
 except ModuleNotFoundError:
     try:
-        import tomli as tomllib  # type: ignore[no-redef]
+        import tomli as tomllib  
     except ModuleNotFoundError:
-        tomllib = None  # type: ignore[assignment]
+        tomllib = None  
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
-import _remote_default as _rd  # noqa: E402
-import _repo_target  # noqa: E402
-import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other @payload ops -- #2123)
-import _untrusted  # noqa: E402  (the GitHub API writes the receipt fields -- #1606)
-import _digits  # noqa: E402
-import _publish_safety  # noqa: E402  (#691 T4 -- the #2100 disclosure marker, wired here too)
+from _console import use_utf8_stdout  
+import _remote_default as _rd  
+import _repo_target  
+import _payload_keys  
+import _untrusted  
+import _digits  
+import _publish_safety  
 
-# What the server holds, against what was sent -- the same four states
-# gh-pr-edit uses for its own read-back (#1739).
+
+
 LANDED_EXACT = "exact"
 LANDED_NORMALISED = "normalised"
 LANDED_MISMATCH = "mismatch"
@@ -93,20 +93,20 @@ LF = chr(10)
 EDIT_PREFIX = "edit="
 
 
-# ---------------------------------------------------------------------------
-# arguments
-# ---------------------------------------------------------------------------
+
+
+
 
 def parse_args(argv: List[str]) -> Tuple[str, str, str, str]:
-    """`(number, payload_path, edit_id, error)` -- a non-empty error means stop.
 
-    A trailing `edit=COMMENT_ID` switches this op from posting a new
-    comment to correcting one already on the issue (#2643) -- PATCH instead
-    of POST, same payload, same read-back. Any other trailing token is
-    REFUSED rather than ignored -- the same reasoning `gh-pr-edit` gives for
-    its own `unlink` token: an ignored mode word on a writing op runs a call
-    nobody typed, at exit 0.
-    """
+
+
+
+
+
+
+
+
     tokens = [t for t in argv if t != ""]
     if not tokens:
         return ("", "", "", (
@@ -138,11 +138,11 @@ def parse_args(argv: List[str]) -> Tuple[str, str, str, str]:
         return ("", "", "", (
             "ERROR: gh-issue-comment needs a payload file -- "
             "gh-issue-comment:NUMBER:@FILE, or @- to read it from stdin."))
-    # A Windows drive letter is reassembled, the same way gh-pr-edit
-    # reassembles one: supertool splits the op argument on ':', so
-    # `gh-issue-comment:2078:@C:\repo\note.toml` arrives as `@C` plus the
-    # rest. Refusing that as an unknown trailing token would misreport a
-    # caller whose only mistake was standing on Windows.
+
+
+
+
+
     if len(rest) > 1 and len(rest[0]) == 2 and rest[0][1:].isalpha():
         rest = [":".join(rest)]
     if len(rest) > 1:
@@ -154,12 +154,12 @@ def parse_args(argv: List[str]) -> Tuple[str, str, str, str]:
     return (number, rest[0], edit_id, "")
 
 
-# ---------------------------------------------------------------------------
-# payload
-# ---------------------------------------------------------------------------
+
+
+
 
 def validate(payload: dict) -> str | None:
-    """The refusals, before anything is published. None means the payload is fine."""
+
     if not payload.get("repo"):
         return ("ERROR: payload missing required field: repo -- and it could "
                 "not be resolved from the origin remote either.")
@@ -169,15 +169,15 @@ def validate(payload: dict) -> str | None:
         return ("ERROR: payload has neither body nor body_file, so this op "
                 "has nothing to publish. An absent body is not an empty "
                 'one -- set body = "" if that is really what you mean.')
-    # #2322: a payload whose `body` key parses as a TOML array-of-tables
-    # (`[[body]]`, a list of `{"value": ...}` dicts) used to reach
-    # `_body_text`'s `str(payload.get("body") or "")` unchecked, which
-    # happily stringifies a list -- publishing the literal Python repr
-    # (`[{'value': '...'}]`) as the comment body. Confirmed against a real
-    # posted comment on issue #2310. #2315 made the same call for
-    # gh-issue-create's sibling case: refuse rather than guess at a join.
-    # Applied here too, for the same reason -- a published comment cannot
-    # be un-sent, so a loud refusal beats a silent garbage write.
+
+
+
+
+
+
+
+
+
     if "body" in payload and not isinstance(payload.get("body"), str):
         return (
             "ERROR: body must be a string, not "
@@ -203,13 +203,13 @@ def _load_payload(path: str) -> dict:
 
 
 def _body_text(payload: dict) -> Tuple[str, str]:
-    """`(content, error)` -- the bytes to publish, from `body` or `body_file`.
 
-    `validate()` already refuses a non-string `body` before this runs on the
-    real `main()` path (#2322) -- checked again here so a direct caller of
-    this function gets the same refusal rather than a stringified `repr()`
-    of whatever it was handed.
-    """
+
+
+
+
+
+
     body_file = payload.get("body_file")
     if not body_file:
         body = payload.get("body")
@@ -232,9 +232,9 @@ def _body_text(payload: dict) -> Tuple[str, str]:
                 f"ERROR: permission denied reading body_file: {body_file} — {e}")
 
 
-# ---------------------------------------------------------------------------
-# the receipt -- the same read-back gh-pr-edit's landed_verdict performs
-# ---------------------------------------------------------------------------
+
+
+
 
 def _newlines_only(text: str) -> str:
     return text.replace(CRLF, LF).replace(CR, LF)
@@ -254,13 +254,13 @@ def _first_difference(sent: str, stored: str) -> str:
 
 
 def landed_verdict(sent: str, stored: object) -> Tuple[str, str]:
-    """`(state, message)` -- what the server holds, against what was sent.
 
-    Four states. `unknown` is the one that matters: a response with no
-    `body` field says the write was accepted and says nothing about the
-    bytes, and rendering that as success is the receipt failure this op
-    exists to close.
-    """
+
+
+
+
+
+
     if not isinstance(stored, str):
         return (LANDED_UNKNOWN, (
             "the POST response carried no body field, so what the server "
@@ -281,7 +281,7 @@ def landed_verdict(sent: str, stored: object) -> Tuple[str, str]:
 
 def result_line(number: str, landed_state: str, comment_id: object,
                  edited: bool = False) -> str:
-    """One line, no newline, that survives `| tail -1`."""
+
     if landed_state == LANDED_EXACT:
         landed = "comment verified byte-identical on the server"
     elif landed_state == LANDED_NORMALISED:
@@ -301,20 +301,20 @@ def refusal_line(number: str, why: str, edited: bool = False) -> str:
 
 
 def edit_target_error(check_response: object, check_err: str, number: str) -> str:
-    """Empty string means `check_response` is the comment #number owns.
 
-    Anything else is the refusal reason: either the GET that should have
-    returned the comment failed outright, or it returned a comment whose own
-    `issue_url` does not end in `/issues/{number}` -- the ownership check
-    #2665 added ahead of the PATCH, so a mistyped or stale COMMENT_ID can no
-    longer silently overwrite a comment on some other issue or PR.
-    """
+
+
+
+
+
+
+
     if not isinstance(check_response, dict):
         return (f"could not verify the comment belongs to issue #{number} "
                 f"before editing it ({check_err or 'no detail'})")
-    # The GitHub API writes issue_url, same as html_url a few lines below in
-    # main() -- flatten it before it can reach column 0 of this op's own
-    # receipt (#1606, the reason _untrusted is imported here at all).
+
+
+
     issue_url = _untrusted.flat(str(check_response.get("issue_url") or ""))
     if not issue_url.endswith(f"/issues/{number}"):
         return (f"that comment belongs to "
@@ -323,9 +323,9 @@ def edit_target_error(check_response: object, check_err: str, number: str) -> st
     return ""
 
 
-# ---------------------------------------------------------------------------
-# gh plumbing
-# ---------------------------------------------------------------------------
+
+
+
 
 def _gh_json(args: List[str], stdin: str | None = None,
              timeout: int = 30) -> Tuple[object, str]:
@@ -334,7 +334,7 @@ def _gh_json(args: List[str], stdin: str | None = None,
                                 input=stdin, timeout=timeout, encoding="utf-8",
                                 errors="replace")
     except FileNotFoundError:
-        return (None, "gh not found — install from https://cli.github.com")
+        return (None, "gh not found — install the GitHub CLI")
     except subprocess.TimeoutExpired:
         return (None, "gh timed out")
     except OSError as e:
@@ -349,9 +349,9 @@ def _gh_json(args: List[str], stdin: str | None = None,
         return (None, "gh returned invalid JSON")
 
 
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
+
+
+
 
 def main() -> int:
     use_utf8_stdout()
@@ -409,12 +409,12 @@ def main() -> int:
         print(err)
         return 1
 
-    # #691 T4: `gh-pr-create`, `gh-pr-edit` and `gh-issue-create` already
-    # append the #2100 authorship marker; this op -- the fourth routine
-    # forge write, added later by #2078 -- never got it. No closing-reference
-    # parse runs on this body (a comment has no `Closes #N` gate), so unlike
-    # `gh-pr-edit` there is no "after the parse" ordering constraint here --
-    # the marker can be applied as soon as the body to send is known.
+
+
+
+
+
+
     content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
 
     repo = str(payload["repo"])

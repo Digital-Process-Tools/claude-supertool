@@ -1,59 +1,59 @@
-"""Write-through mirror for `gh-issue` reads (#1955).
 
-Every `gh-*` read op renders text and throws it away -- the next tick asking
-the same question pays a fresh API call for an answer it already had. The
-naive fix (a poller that refreshes on an interval) invents a freshness it
-cannot have: a cached answer that was correct when taken and false a minute
-later is indistinguishable from a fresh one at render time. A **write-through**
-mirror has no such problem by construction -- it is only ever populated as a
-side effect of a read the caller was already making, so a mirrored file's age
-*is* the age of the read that produced it. There is no second clock to
-disagree with.
 
-**Scope of this module, as of #2472**: `gh-issue` and `gh-pr` write through
-it -- each fetches one object's full dashboard reply already, so mirroring
-it is a same-shape side effect (see `write_pr`/`read_pr` below, and
-`presets/github/pr.py`'s wiring next to `write_pr`'s own call site). Issues
-and PRs live in **separate SUBDIRs** (`issues/` and `prs/`), each with its
-own manifest and lock, so an issue and a PR sharing the same NUMBER can
-never answer for each other.
 
-`gh-issues` and `gh-prs` are deliberately NOT wired, and this is a scoping
-decision made while implementing #2472, not an omission left for later. Both
-are LIST ops: `gh-issues`'s `--json` fields (`_LIST_FIELDS` in
-`presets/github/issues.py`) omit `body` entirely, and `gh-prs`'s list rows
-are similarly a projection, not the full dashboard shape `gh-issue`/`gh-pr`
-fetch. Writing those partial rows through this mirror would do one of two
-things, both wrong: overwrite a previously-full mirror entry with one
-missing `body` -- silently downgrading a future `gh-mirror:issue:N` answer
-from complete to partial with no signal that anything changed -- or need a
-field-level merge scheme this module does not have and #2472 did not size.
-There is also a cost axis: a list read can return dozens of rows in one
-call, and write-through would mean that many manifest-lock acquisitions per
-board poll, on the exact op class (`gh-prs`) this module's own "never an
-authority" design constraint singles out as what collision-avoidance
-depends on being live and fast. Extending list ops to populate this mirror
--- with a shape that cannot silently downgrade a full entry -- is tracked
-separately.
 
-Because only `gh-issue`/`gh-pr` write through it, `not-cached` here means
-"never read via the matching single-object op" -- it does NOT mean "does not
-exist on the tracker". A manifest built from the full list a `gh-issues`/
-`gh-prs` call already fetches is exactly the piece a list-aware extension
-would add; until then, a caller must not read `not-cached` as `no-such-issue`
-or `no-such-pr`.
 
-**What this must never become**: an authority for anything a decision turns
-on. Open/closed state, assignee, labels and linked-PR state stay live reads --
-`claude-oss`'s own collision-avoidance (two agents claiming the same issue)
-depends on the assignee field being live. This module stores exactly what
-`gh-issue` rendered, untruncated, and nothing here re-derives or infers a
-current value from it.
 
-Opt-in via a top-level `"gh_mirror_dir"` key in `.supertool.json`. Unset
-(the default) means the mirror is off and every call into this module is a
-no-op for the writer, or answers `not-configured` for the reader.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import contextlib
@@ -70,10 +70,10 @@ CONFIG_KEY = "gh_mirror_dir"
 CONFIG_FILENAME = ".supertool.json"
 
 ISSUES_SUBDIR = "issues"
-#: Separate subdirectory (and therefore separate manifest and lock) for PR
-#: mirror entries (#2472). An issue and a PR can share the same NUMBER on
-#: the tracker -- folding both into one manifest would let a `gh-pr` write
-#: silently answer a `gh-mirror:issue:N` read, or the reverse.
+
+
+
+
 PRS_SUBDIR = "prs"
 MANIFEST_NAME = "manifest.json"
 
@@ -83,54 +83,54 @@ UNREADABLE = "mirror-unreadable"
 
 
 class MirrorConfig(NamedTuple):
-    """The resolved mirror root, or why there isn't one.
 
-    Three states, matching every other walk-up loader in this codebase
-    (`presets/_remote_default.py`'s `config_default`, `presets/worktree/_common.py`'s
-    `load_config`): `path` set means configured and trusted; both `None`
-    means genuinely unset (nobody asked for a mirror, OR the nearest
-    `.supertool.json` was untrusted -- see below); `path` `None` with
-    `error` set means a `.supertool.json` was found, trusted, and STILL
-    could not be used (malformed JSON, a `gh_mirror_dir` of the wrong
-    type) -- which must render as `mirror-unreadable`, never silently as
-    "not configured".
 
-    **Untrusted ownership/permissions is deliberately the FIRST case, not
-    the third**, matching every sibling walk-up loader
-    (`presets/_publish_safety.py`, `presets/gitlab/_maintenance.py`,
-    `presets/worktree/_common.py`, `presets/slack/_authorization.py`): a
-    trust violation is skipped exactly like an absent file, with a stderr
-    warning, and the walk continues upward for a further, trusted config --
-    it never sets `.error`. Self-review finding (#1955): an earlier draft
-    of this docstring claimed the opposite, which
-    `tests/test_gh_mirror_1955.py::test_group_writable_config_is_skipped_like_an_absent_one`
-    already disproved (it asserts `cfg.error is None`). The practical
-    consequence, named rather than hidden: a `not configured` render from
-    `gh-mirror` cannot currently distinguish "nobody set `gh_mirror_dir`"
-    from "somebody did, but this process does not trust that file" -- the
-    same ambiguity every sibling loader already accepts.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     path: Optional[str] = None
     error: Optional[str] = None
 
 
 def _config_trust_violation(candidate: Path) -> Optional[str]:
-    """POSIX ownership/permission guard (mirrors `_supertool._load_config`'s
-    #695 hardening; presets cannot import the core module, so -- like
-    `presets/_publish_safety.py` #2366, `presets/gitlab/_maintenance.py`
-    #2365, `presets/worktree/_common.py` #2370 and `presets/slack/_authorization.py`
-    #2416 before it -- this is a sixth copy of the same check rather than a
-    shared import).
 
-    A group/world-writable `.supertool.json`, or one owned by a different
-    local user, is exactly the file another local account could rewrite
-    between the moment it was reviewed and the moment this module reads it
-    to decide where to write mirrored issue bodies on disk.
 
-    POSIX-only: `st_uid` and the write bits are meaningless on Windows, so
-    this returns `None` (trusted) unconditionally there. Root is treated as
-    trusted, matching every sibling copy.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if os.name != "posix":
         return None
     try:
@@ -149,16 +149,16 @@ def _config_trust_violation(candidate: Path) -> Optional[str]:
 
 
 def load_config(start: Path) -> MirrorConfig:
-    """Walk up from START for the nearest `.supertool.json`'s `gh_mirror_dir`,
-    stopping at the nearest `.git` ancestor and skipping a config this
-    process does not own.
 
-    The mirror path is resolved relative to the directory HOLDING the
-    `.supertool.json` that named it, not relative to the caller's cwd, so
-    the writer (`gh-issue`, invoked from wherever a maintainer loop happens
-    to be standing) and the reader (the `gh-mirror` op) agree on the same
-    absolute directory regardless of how deep either one was invoked from.
-    """
+
+
+
+
+
+
+
+
+
     d = start
     while True:
         candidate = d / CONFIG_FILENAME
@@ -178,16 +178,16 @@ def load_config(start: Path) -> MirrorConfig:
                     return MirrorConfig(error=f"{candidate}: top level is not a JSON object")
                 raw = data.get(CONFIG_KEY)
                 if raw is None:
-                    return MirrorConfig()  # found the config; the key is simply absent -- not configured
+                    return MirrorConfig()  
                 if not isinstance(raw, str) or not raw.strip():
                     return MirrorConfig(error=f"{candidate}: {CONFIG_KEY!r} must be a non-empty string")
                 mirror_path = Path(raw.strip())
                 if not mirror_path.is_absolute():
                     mirror_path = candidate.parent / mirror_path
                 return MirrorConfig(path=str(mirror_path))
-            # An untrusted candidate is skipped exactly like an absent one --
-            # fall through to the .git/parent walk below, matching every
-            # sibling implementation.
+
+
+
         if (d / ".git").exists():
             return MirrorConfig()
         parent = d.parent
@@ -209,14 +209,14 @@ def _manifest_path(root: str, subdir: str) -> Path:
 
 
 def _age(iso: str) -> str:
-    """ISO timestamp -> 'Nd'/'Nh'/'Nm' ago. '' on parse failure, 'now' on skew.
 
-    Same shape as `presets/github/issues.py::_age` and
-    `presets/github/pr.py::_relative_age` -- this codebase's convention is to
-    keep each small age-formatter local rather than share one across preset
-    files (see `presets/_publish_safety.py`'s docstring for the same
-    reasoning applied to the trust check above).
-    """
+
+
+
+
+
+
+
     if not iso:
         return ""
     try:
@@ -233,76 +233,76 @@ def _age(iso: str) -> str:
     return f"{secs // 86400}d"
 
 
-#: How long a write waits for the manifest lock before giving up, and how
-#: often it polls while waiting. Module-level so tests can shrink both
-#: without a real multi-second sleep (#1955 self-review).
+
+
+
 _LOCK_TIMEOUT = 10.0
 _LOCK_POLL = 0.05
 
 
 class _LockTimeout(Exception):
-    """The manifest lock could not be acquired within `_LOCK_TIMEOUT`."""
+    pass
 
 
 @contextlib.contextmanager
 def _manifest_lock(root: str, subdir: str) -> Iterator[None]:
-    """Exclusive lock spanning one manifest read-modify-write.
 
-    Self-review finding (#1955, Explore spawn, first pass): without this,
-    two concurrent `gh-issue` reads for two DIFFERENT issue numbers could
-    each read the manifest before the other wrote it back, so whichever
-    `os.replace` landed second silently dropped the other's newly-added key
-    -- exactly the multi-agent scenario this module's own docstring names
-    as a live concern ("two agents claiming the same issue"). `write_issue`
-    holds this for its whole read-modify-write, not just the final
-    `os.replace` (which is atomic on its own but does not make the READ
-    that preceded it atomic with it).
 
-    `os.open(..., O_CREAT | O_EXCL)` is the lock primitive because it is
-    atomic on both POSIX and Windows, unlike `fcntl`/`msvcrt`, so this
-    needs no platform branch.
 
-    **Never steals a lock it cannot prove is dead.** The first cut of this
-    function unlinked a lock purely on elapsed wait time and looped back to
-    recreate it -- caught independently by both self-review spawns on their
-    second pass over #1955: elapsed time cannot distinguish a crashed
-    holder from one that is merely slow (heavy contention, a large
-    manifest, a slow disk -- exactly the multi-agent load this feature
-    exists for), so an impatient waiter could delete a still-alive holder's
-    lock file and enter concurrently with it, reintroducing the very
-    lost-update race this lock exists to close -- and worse, cascading:
-    the stolen lock's real owner then deletes whoever stole it, once its
-    own `finally` runs. Raising `_LockTimeout` instead, and never deleting
-    a lock this call did not itself create, is the only version of
-    self-healing that cannot steal a live lock. The cost, stated rather
-    than hidden: a genuinely crashed writer leaves a lock file that every
-    future write blocks on for the full timeout and then fails against,
-    until an operator deletes it by hand.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     kind_dir = _kind_dir(root, subdir)
     kind_dir.mkdir(parents=True, exist_ok=True)
     lock_path = kind_dir / (MANIFEST_NAME + ".lock")
     deadline = time.monotonic() + _LOCK_TIMEOUT
     fd = None
-    # What the last refusal actually was, so the timeout below reports a cause
-    # it measured rather than one it assumed (#2482).
+
+
     last_refusal = ""
     while fd is None:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except (FileExistsError, PermissionError) as exc:
-            # `FileExistsError` is the POSIX spelling of a contended
-            # `O_CREAT | O_EXCL`. Windows raises `PermissionError` (EACCES)
-            # instead when another process holds the path open, so catching
-            # only the first meant the second writer never waited at all --
-            # it escaped, and its update was dropped, which is the lost update
-            # this lock exists to close. Observed on master de25091,
-            # `pytest (windows-latest, 3.12)`, job #102540129404.
-            #
-            # A genuine permission failure -- a read-only directory, another
-            # user's file -- raises the identical exception and is not
-            # contention. It is not distinguishable here, so it is not
-            # guessed at: both wait, and the timeout below names what it saw.
+
+
+
+
+
+
+
+
+
+
+
+
             last_refusal = f"{type(exc).__name__}: {exc}"
             if time.monotonic() >= deadline:
                 raise _LockTimeout(
@@ -324,39 +324,39 @@ def _manifest_lock(root: str, subdir: str) -> Iterator[None]:
 
 
 def write_issue(root: str, number: str, payload: dict) -> Optional[str]:
-    """Write PAYLOAD (the full, untruncated `gh issue view --json` reply)
-    for issue NUMBER. See `_write` for the shared contract -- everything
-    below about never raising, atomic swap, and manifest locking applies
-    here unchanged; this is a thin wrapper naming the issue-only SUBDIR and
-    payload key, kept for the existing call sites (`gh-issue`, and the
-    tests in `tests/test_gh_mirror_1955.py`) that spell it this way.
-    """
+
+
+
+
+
+
+
     return _write(root, ISSUES_SUBDIR, "issue", number, payload)
 
 
 def write_pr(root: str, number: str, payload: dict) -> Optional[str]:
-    """Same contract as `write_issue`, for `gh-pr`'s full dashboard reply
-    (#2472) -- a separate SUBDIR (`prs/`), so a PR write can never answer a
-    `gh-mirror:issue:N` read for the same NUMBER, or the reverse.
-    """
+
+
+
+
     return _write(root, PRS_SUBDIR, "pr", number, payload)
 
 
 def _write(root: str, subdir: str, key: str, number: str, payload: dict) -> Optional[str]:
-    """Write PAYLOAD (the full, untruncated API reply) under SUBDIR, keyed
-    as KEY (`"issue"` or `"pr"`) in the stored JSON, plus a read timestamp,
-    and update SUBDIR's own manifest. Never raises.
 
-    Returns `None` on success, or an error string on failure -- a caller
-    populating the mirror as a side effect of a read must not let a mirror
-    write failure take the read down with it, so this never raises; the
-    caller decides whether/how loudly to surface a non-`None` return.
 
-    Body and manifest are each written to a `.tmp` sibling and swapped in
-    with `os.replace`, so a crash mid-write leaves the previous version (or
-    nothing) rather than a half-written file a later read would parse as
-    corrupt.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         kind_dir = _kind_dir(root, subdir)
         kind_dir.mkdir(parents=True, exist_ok=True)
@@ -370,9 +370,9 @@ def _write(root: str, subdir: str, key: str, number: str, payload: dict) -> Opti
         )
         os.replace(tmp_body, body_path)
 
-        # The manifest's read-modify-write is the part `os.replace` alone
-        # does not make atomic: it makes the FINAL write atomic, not the
-        # read that decided what to write. Locked for exactly that span.
+
+
+
         with _manifest_lock(root, subdir):
             manifest_path = _manifest_path(root, subdir)
             manifest: dict = {}
@@ -382,10 +382,10 @@ def _write(root: str, subdir: str, key: str, number: str, payload: dict) -> Opti
                     if isinstance(parsed, dict):
                         manifest = parsed
                 except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                    # A corrupted manifest on the way IN is replaced by this
-                    # write rather than propagated -- the write is what repairs
-                    # it. A reader hitting the same corruption before this runs
-                    # gets `mirror-unreadable`, never a silent `not-cached`.
+
+
+
+
                     manifest = {}
             manifest[str(number)] = read_at
             tmp_manifest = manifest_path.with_name(manifest_path.name + ".tmp")
@@ -401,40 +401,40 @@ def _write(root: str, subdir: str, key: str, number: str, payload: dict) -> Opti
 
 
 class MirrorHit(NamedTuple):
-    """One read op's answer for one issue number -- the three-state contract
-    #1955 asks for. `state` is one of `CACHED` / `NOT_CACHED` / `UNREADABLE`,
-    and the third must never render as either of the first two: a
-    permission-denied directory or a corrupted manifest is a finding about
-    the mirror itself, not evidence that the issue was never fetched.
-    """
+
+
+
+
+
+
     state: str
     age: str = ""
     detail: str = ""
 
 
 def read_issue(root: str, number: str) -> MirrorHit:
-    """Look NUMBER up in the issue mirror. See `_read` for the full
-    contract; kept as a thin wrapper for the existing call sites
-    (`gh-mirror`'s `issue` mode, and `tests/test_gh_mirror_1955.py`).
-    """
+
+
+
+
     return _read(root, ISSUES_SUBDIR, number)
 
 
 def read_pr(root: str, number: str) -> MirrorHit:
-    """Same contract as `read_issue`, over the separate PR mirror (#2472)."""
+
     return _read(root, PRS_SUBDIR, number)
 
 
 def _read(root: str, subdir: str, number: str) -> MirrorHit:
-    """Look NUMBER up in SUBDIR's manifest and body file.
 
-    Every OSError distinct from "the manifest/body file does not exist" is
-    `UNREADABLE`, never folded into `NOT_CACHED` -- `Path.is_file()` swallows
-    `PermissionError` and returns `False`, which is exactly the
-    absence-produced-by-the-tool defect this module exists not to repeat, so
-    the manifest and body are read directly (`read_text`) rather than
-    stat-checked first.
-    """
+
+
+
+
+
+
+
+
     manifest_path = _manifest_path(root, subdir)
     try:
         raw_manifest = manifest_path.read_text(encoding="utf-8")
@@ -458,13 +458,13 @@ def _read(root: str, subdir: str, number: str) -> MirrorHit:
     if not isinstance(read_at, str) or not read_at:
         return MirrorHit(UNREADABLE, detail=f"{manifest_path}: entry for #{number} is not a timestamp string")
     if _age(read_at) == "":
-        # `_age` returns "" for both an empty input (already excluded above)
-        # and a non-empty string that does not parse as an ISO timestamp --
-        # a hand-corrupted or truncated manifest value. Self-review finding
-        # (#1955): this used to be checked only for emptiness, so a
-        # corrupted-but-non-blank value passed straight through to CACHED
-        # with a blank age once the body file parsed clean -- the exact
-        # inversion this module exists to prevent.
+
+
+
+
+
+
+
         return MirrorHit(UNREADABLE, detail=f"{manifest_path}: entry for #{number} is not a parseable timestamp ({read_at!r})")
 
     body_path = _body_path(root, subdir, number)

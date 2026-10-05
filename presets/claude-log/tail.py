@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Tail the last N events of a Claude Code session in compact form.
 
-Output one line per content part:
-  [user] TEXT: ...
-  [assistant] TOOL Bash: {"command": "..."}
-  [result] PASS/FAIL/output: ...
-"""
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -13,16 +13,16 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import Redactor, event_content_parts, event_role, read_jsonl, session_path, trunc, wants_raw  # noqa: E402
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
+from _common import Redactor, event_content_parts, event_role, read_jsonl, session_path, trunc, wants_raw  
+from _console import use_utf8_stdout  
 
 
 def format_part(role: str, part: dict, width: int, red: Redactor) -> str | None:
-    """Format one content part as a single compact line.
 
-    Redaction runs before truncation, never after: `trunc` on a raw string can
-    slice a credential in half and emit the first 300 characters of it.
-    """
+
+
+
+
     pt = part.get("type")
     if pt == "text":
         txt = part.get("text", "")
@@ -41,7 +41,7 @@ def format_part(role: str, part: dict, width: int, red: Redactor) -> str | None:
         prefix = "[result/ERR]" if is_error else "[result]"
         return f"{prefix} {trunc(red(c), width)}"
     if pt == "thinking":
-        # Compact thinking — usually long, mostly skip
+
         return None
     return None
 
@@ -65,11 +65,11 @@ def main() -> int:
         print(f"ERROR: session not found: {sp}")
         return 1
 
-    # Build line list, then keep last N
+
     lines: list[str] = []
     for ev in read_jsonl(sp):
         if ev.get("type") == "queue-operation":
-            # Bootstrap content — show first 200 chars of the original prompt
+
             content = ev.get("content", "")
             if content:
                 lines.append(f"[bootstrap] {trunc(red(content), 200)}")

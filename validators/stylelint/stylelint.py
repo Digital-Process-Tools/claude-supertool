@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""stylelint validator adapter — CSS/SCSS lint via stylelint.
 
-Stdlib only. Reference implementation per validators/SCHEMA.md.
-Uses project-local stylelint config (auto-discovered by stylelint).
-Usage:  stylelint.py <file>
 
-**Where the report arrives is not fixed, and empty is never a verdict** (#1601).
-stylelint writes its formatted report to **stderr** — `process.stderr.write(report)`
-in its own `cli.mjs`, with stdout reserved for `--fix` output — and older
-releases wrote it to stdout. This adapter read stdout and treated emptiness as
-`ok: true, count: 0`, so against a current stylelint every CSS file came back
-clean, findings and all. Both streams are offered to the JSON reader now, and a
-run with no report at all is a fault or a decline, never a pass.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
 
 from __future__ import annotations
 
@@ -33,10 +33,10 @@ TOOL = "stylelint"
 INSTALL_HINT = ("stylelint not found, globally or via npx — this file was NOT "
                 "linted (`npm install -g stylelint`)")
 
-# How stylelint says "every input was excluded". It has no `--file-info`-style
-# probe, and none has to be invented: an ignored path is the one case it names
-# itself, on stderr, with a class name. `AllFilesIgnoredError` is the current
-# spelling and the sentence is the older one, so both are matched.
+
+
+
+
 IGNORED_MARKERS = ("allfilesignorederror", "input files were ignored")
 IGNORED_REASON = ("stylelint declined to lint this file — every input it "
                   "resolved was excluded by an ignore pattern "
@@ -49,25 +49,25 @@ def emit(d: dict) -> None:
 
 
 def contained_target(file: str) -> str:
-    """`file`, spelled so stylelint cannot read it as an option (#2412).
 
-    stylelint's own CLI parsing was not measured against a real binary in
-    this pass (none was installed to test against) -- so rather than
-    assume `--` is honoured, this uses the same containment
-    `validators/pyright/pyright.py` (#2379) and
-    `validators/tsc-check/tsc-check.py` (#1519) already use for the
-    identical problem: a relative target starting with `-` is prefixed
-    with `os.curdir`, so stylelint's argv parser sees a string that
-    cannot start with `-` regardless of what its own option grammar does
-    with `--`. An absolute path is already unambiguous and is left alone.
-    """
+
+
+
+
+
+
+
+
+
+
+
     if not file or os.path.isabs(file) or not file.startswith("-"):
         return file
     return os.path.join(os.curdir, file)
 
 
 def _resolve_cmd() -> list:
-    """Return argv prefix for stylelint. Tries global, falls back to npx."""
+
     if spawnable("stylelint"):
         return [argv0("stylelint")]
     if spawnable("npx"):
@@ -76,11 +76,11 @@ def _resolve_cmd() -> list:
 
 
 def _report(streams) -> "list | None":
-    """The `--formatter json` report, from whichever stream carries it.
 
-    `None` means no report was found — which is not an empty report, and is
-    never a clean file. The caller decides between a decline and a fault.
-    """
+
+
+
+
     for text in streams:
         text = (text or "").strip()
         if not text:
@@ -106,9 +106,9 @@ def main() -> None:
     base = _resolve_cmd()
     via_npx = bool(base) and base[0] != "stylelint"
     if not base:
-        # The third state, and escalatable: an uninstalled optional linter must
-        # not fail every unrelated CSS edit, and must not be silent where an
-        # operator named it in `$SUPERTOOL_REQUIRE_VALIDATORS` (#1202).
+
+
+
         emit(absent(TOOL, file, INSTALL_HINT,
                     int((time.time() - start) * 1000)))
         return
@@ -116,8 +116,8 @@ def main() -> None:
         r = subprocess.run(base + ["--formatter", "json", contained_target(file)],
                            capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        # `which` said yes and exec said no — a PATH entry that vanished
-        # between the two. Still an absent tool, so still the third state.
+
+
         emit(absent(TOOL, file, "stylelint was found on PATH but could not be "
                                 "executed — this file was NOT linted",
                     int((time.time() - start) * 1000)))
@@ -134,19 +134,19 @@ def main() -> None:
         noise = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
         lowered = noise.lower()
         if via_npx and is_npx_absent(lowered, TOOL):
-            # npx refused to fetch stylelint under `--no-install` (#1949) —
-            # the same third state as `not base` above, reached one layer
-            # further out, with the same install hint. Checked ahead of the
-            # ignore-marker branch below: this is "the tool is not there",
-            # not "the tool ran and excluded the input".
+
+
+
+
+
             emit(absent(TOOL, file, INSTALL_HINT, dur))
             return
         if any(m in lowered for m in IGNORED_MARKERS):
             emit(skipped(TOOL, file, IGNORED_REASON, dur))
             return
-        # No report on either stream: a config error, a broken install, a flag
-        # this stylelint does not have. The tool ran and said nothing about the
-        # file, which is a fault someone has to fix — loud, never a pass.
+
+
+
         emit({"tool": "stylelint", "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",
                           "code": "adapter",

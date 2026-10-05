@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""List N most recent Claude Code sessions for the current project.
 
-For each session, output: UUID, mtime, line count, first user-message excerpt.
-Useful to pick the right UUID before running claude-log-tail / claude-log-summary.
-"""
+
+
+
+
 from __future__ import annotations
 
 import sys
@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import (  # noqa: E402
+from _common import (  
     Redactor,
     decline_lines,
     event_content_parts,
@@ -24,13 +24,13 @@ from _common import (  # noqa: E402
 
 
 def first_user_excerpt(path: Path, red: Redactor, max_chars: int = 100) -> str:
-    """Find the first user-typed text in a session, skipping system prompts.
 
-    Redacts before truncating — the excerpt cap would otherwise decide how much
-    of a pasted key survives into the listing.
-    """
+
+
+
+
     for ev in read_jsonl(path):
-        # Skip queue-operation entries (system bootstrap content)
+
         if ev.get("type") == "queue-operation":
             continue
         msg = ev.get("message", {}) if isinstance(ev.get("message"), dict) else {}
@@ -39,7 +39,7 @@ def first_user_excerpt(path: Path, red: Redactor, max_chars: int = 100) -> str:
         for part in event_content_parts(ev):
             if part.get("type") == "text":
                 txt = part.get("text", "")
-                # Skip system reminders / hook context
+
                 if txt.startswith("<") or txt.startswith("# "):
                     continue
                 if txt.strip():
@@ -48,7 +48,7 @@ def first_user_excerpt(path: Path, red: Redactor, max_chars: int = 100) -> str:
 
 
 def line_count(path: Path) -> int:
-    """Quick line count without loading whole file."""
+
     n = 0
     with path.open("rb") as f:
         for _ in f:
@@ -57,7 +57,7 @@ def line_count(path: Path) -> int:
 
 
 def turn_count(path: Path) -> int:
-    """Count user + assistant messages (skipping bootstrap entries)."""
+
     n = 0
     for ev in read_jsonl(path):
         if ev.get("type") in ("user", "assistant"):
@@ -75,8 +75,8 @@ def main() -> int:
 
     source = resolve_project_dir()
     if source.kind == "missing":
-        # Never nominate a neighbour's store (#1317): a board rendered from
-        # another worktree's sessions is indistinguishable from this one's.
+
+
         for line in decline_lines(source):
             print(line)
         return 1
@@ -92,9 +92,9 @@ def main() -> int:
         print(f"No sessions found in {pdir}")
         return 0
 
-    # Rows are built before anything is printed: the disclosure line belongs in
-    # the header, and its count is only known once every excerpt has been
-    # scanned. A footer would be scrolled past on a long listing.
+
+
+
     rows: list[str] = []
     for sp in sessions:
         uuid = sp.stem

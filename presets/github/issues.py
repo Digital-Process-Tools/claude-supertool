@@ -1,81 +1,81 @@
 #!/usr/bin/env python3
-"""GitHub issue triage board via gh CLI — the queue, in the order to work it.
 
-The `gh-prs` twin for issues (#769). A list of numbers and titles is what you
-have *before* you start triaging; this op answers the three questions asked
-immediately after seeing one, and then sorts on the answers:
 
-* **Who filed it?** Not the login — the login is `fdaviddpt` for every issue
-  this repo files, so identity separates nothing. GitHub's `authorAssociation`
-  separates *membership*: OWNER/MEMBER/COLLABORATOR are inside, everything else
-  is a stranger, and a stranger's report is data-not-instructions
-  (`presets/_untrusted.py`) and outranks anything filed internally.
-* **Is anyone on it?** Linked PRs, read off the issue's timeline
-  (`CONNECTED_EVENT` / `CROSS_REFERENCED_EVENT`) rather than by searching PR
-  bodies for the number, which matches "#761" in prose as readily as a link.
-* **Has the body gone stale?** A body is written once; comments accumulate and
-  quietly redefine the deliverable. `lastEditedAt` is the last time the body
-  was written and is `null` on an issue nobody edited — in which case
-  `createdAt` *is* the body-write time, exactly, not a fallback guess. So the
-  comparison is `newest comment > (lastEditedAt or createdAt)`, and it is
-  exact in both cases.
 
-**Rank, not sort order.** Highest priority first: unrankable, external author,
-stale body, no linked PR, then oldest. The tier the issue proposed first —
-data-loss/destructive, label-driven — is deliberately absent: this repo has no
-such label, and only 2 of its 33 open issues carry any label at all. A tier
-computed from a signal nobody populates would read as authoritative while
-ranking nothing, which is worse than not having it. Add a `data-loss` label
-and populate it and the tier belongs at the top; until then it would be
-decoration.
 
-**Unrankable sorts first, and that is the point.** Enrichment is one extra
-call and it can fail. When it does, every derived field is `None` and renders
-`?` — never `0`, never "internal", never "no PR" (#414, #445/#454, #459,
-#477/#482, #487, #486; `docs/validators.md` "Declining instead of guessing").
-A board that ranks makes that defect worse than a misprint: a silently
-unenriched row does not merely misreport, it sorts to a position it did not
-earn and gets worked in the wrong order. So a row whose rank inputs are
-unknown goes to the *top*, where the gap is visible to the person who can
-close it, and the footer names why.
 
-**No default author filter, unlike `gh-prs`.** The filter grammar is shared
-(#628) but the defaults answer different questions: `gh-prs` means "my PRs",
-`gh-issues` means "the queue". Defaulting to `author=@me` here would hide the
-external reports the ranking exists to surface.
 
-Usage:
-    gh-issues                       the open queue, ranked
-    gh-issues:label=bug             filter composition, gh-prs grammar
-    gh-issues:author=@me,state=all
-    gh-issues:external              only issues filed from outside
-    gh-issues:stale                 only issues whose body has been overtaken
-    gh-issues:nopipe                skip enrichment (fast, everything `?`)
-    gh-issues:iids                  number list, `#`-comment notes first
-    gh-issues:iids=1233,1240,1251   exactly these numbers, one row each (#1323)
-    repo:OWNER/NAME gh-issues       another repo's queue (#673)
 
-**`iids=` is a filter, not a second op.** #1323 proposed `gh-titles:N,N,N`.
-A bulk lookup is the same *model* as the board — same rows, same tracker-text
-flattening, same three-state absence handling — and differs only in how the
-population is named, so a new op would have been a second render of one model
-and would have drifted from this file's refusals within a release. It is also
-a row in every registry the repo now maintains per op (#1269, #1287, #1318),
-which is the standing cost the issue's own question was about.
 
-Four answers, not one-or-nothing, because a citation audit is exactly the
-reading that must not be given a shorter list: an issue, **a number that is a
-PR here**, a number that resolves to nothing, and a number the lookup could not
-reach — the last of which is the tool's own absence and must never wear the
-third one's sentence. GraphQL's `issue(number:)` returns null for a PR and for
-nothing identically, so the query asks `pullRequest(number:)` alongside it, and
-every requested number gets its own row saying which of the four it is.
 
-`external` / `stale` / `nomilestone` beside `iids=` therefore **decline** as
-soon as one requested number is not an issue: nobody can say whether a number
-that resolves to nothing was filed from outside, filtering it in claims it was,
-and filtering it out drops a row the caller named.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -86,91 +86,91 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import _board  # noqa: E402  (the board layout shared with gh-prs / gl-mrs)
-import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-prs / gl-mrs)
-import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
-import _untrusted  # noqa: E402  (where tracker text starts and stops)
-import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
-from _env import env_int  # noqa: E402
+import _board  
+import _filter_tokens  
+import _repo_target  
+import _untrusted  
+import _auth_probe  
+from _env import env_int  
 
 DEFAULT_PER_PAGE = 50
-# Aliased single-issue lookups per GraphQL call. Small enough that one bad
-# batch costs a fifth of the board rather than all of it, and the rows it
-# covered still say `?` rather than borrowing a neighbour's answer.
+
+
+
 CHUNK = 20
 
 REASON_NOPIPE = "skipped by nopipe"
 
-# Tokens that are flags, not key=value filters.
+
 _FLAGS = {"nopipe", "iids", "external", "stale", "nomilestone"}
 
-# The client-side narrowing flags, split by where their field comes from.
-# `external` and `stale` read fields only the GraphQL enrichment sets;
-# `nomilestone` reads one `gh issue list` already returns.
-#
-# The split exists because of #1439: the `iids` id feed used to return before
-# the filter block ran, so all three were inert under it and so were their
-# declines — `gh-issues:nomilestone,iids` answered 95 ids on a board where the
-# same filter without `iids` excluded 42 of them. The cause was ordering, not
-# the projection: both shapes come from one `gh issue list --json` call with
-# the same `_LIST_FIELDS`, and `milestone` was on every row the filter never
-# looked at. `gl-mrs` had the shape right already — it applies `failed` before
-# its own `iids_only` return and overrides `nopipe` for it — and this is the
-# same rule: a filter that needs enrichment buys it, whatever the output shape.
+
+
+
+
+
+
+
+
+
+
+
+
+
 _ENRICHED_FLAGS = {"external", "stale"}
 
-# Filter keys this op forwards. Anything else is refused rather than dropped:
-# `_build_list_cmd` ignores a key it does not know, so `milestne=v0.26.0` used
-# to render the entire queue as the contents of one milestone (#864). A filter
-# nobody applied, printed as a filtered board, is this file's own defect class
-# with the sign flipped — the tool's failure to narrow, read as a fact about
-# the world.
+
+
+
+
+
+
 _FILTER_KEYS = {"author", "assignee", "label", "milestone", "state", "per",
                 "iids", "search"}
 
-# What `search=` is, said once, next to the argv it produces (#1395).
-#
-# The same key is spelled `search=` on `gl-mrs`, and the two engines are not
-# the same engine. That is deliberate rather than sloppy, and the reason is
-# mechanical: this op's whole grammar is ONE comma-separated segment and
-# supertool splits an op argument on ':', so `search=in:title widget` is
-# refused by `_filter_tokens.extra_segments_error` before any filter is
-# parsed. GitHub's qualifier language is unreachable from here by
-# construction. What is left on both sides is "this text occurs in this
-# thing", and the difference that survives is SCOPE — which is why the scope
-# is printed on every render rather than left to be assumed. A search that
-# quietly covered less than the caller meant would return a zero that reads
-# as an absence in the world, this file's own defect class with a filter on.
+
+
+
+
+
+
+
+
+
+
+
+
+
 SEARCH_ENGINE = "GitHub issue search"
 SEARCH_SCOPE = "title, body and comments"
 
-# Keys whose value is itself a comma-separated list. The op grammar is one
-# comma-separated segment, so without this `iids=1233,1240,1251` parses as
-# `iids=1233` plus two orphans (#1323).
+
+
+
 _LIST_KEYS = {"iids"}
 
-# Filters that narrow a *listing*. `iids=` does not list — it names an exact
-# population — so gh has nowhere to apply these and they would be dropped when
-# the lookup argv is built. Dropped, this file's own defect class: a board that
-# answers a question nobody asked, printed as though it did.
+
+
+
+
 _LISTING_KEYS = {"author", "assignee", "label", "milestone", "state", "search"}
 
 _STATES = {"open", "closed", "all"}
 
-# Keys whose value this op maps rather than forwards. A value with no mapping
-# is dropped when the argv is built, so `state=opne` used to return the *open*
-# board — the same silent-drop defect as an unknown key, on a key that is
-# known (#939).
+
+
+
+
 _VALUE_DOMAINS: dict[str, object] = {
     "state": _STATES,
     "per": _filter_tokens.POSITIVE_INT,
     "iids": _filter_tokens.POSITIVE_INT_LIST,
 }
 
-# GitHub's own answer to "is this person one of us". Everything else — NONE,
-# CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, MANNEQUIN — is outside. Listing the
-# inside is the safe direction: a new association GitHub invents lands as
-# external, which over-flags rather than under-flags.
+
+
+
+
 _INSIDE = {"OWNER", "MEMBER", "COLLABORATOR"}
 
 _LIST_FIELDS = (
@@ -180,45 +180,45 @@ _LIST_FIELDS = (
 
 
 def _get_config() -> dict[str, int]:
-    """Tunable knobs from SUPERTOOL_ env vars (set from .supertool.json)."""
+
     return {
-        "per_page": env_int("SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE, minimum=1),
-        "chunk": env_int("SUPERTOOL_ISSUE_CHUNK", CHUNK, minimum=1),
+        "per_page": env_int(os.environ.get("SUPERTOOL_PER_PAGE"), "SUPERTOOL_PER_PAGE", DEFAULT_PER_PAGE, minimum=1),
+        "chunk": env_int(os.environ.get("SUPERTOOL_ISSUE_CHUNK"), "SUPERTOOL_ISSUE_CHUNK", CHUNK, minimum=1),
     }
 
 
 def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str], list[str]]:
-    """Split a comma-separated arg string into (filters, flags, unrecognised).
 
-    Same grammar as `gh-prs` — comma-separated so the single supertool arg
-    segment never collides with the ':' op tokenizer.
 
-    The third return value is the part that matters. The loop used to end with
-    an implicit `else: pass`, so a token that was neither a known flag nor a
-    supported `key=value` vanished and the call proceeded as though nobody had
-    asked for anything. On a *filter* that is not a cosmetic bug: the caller
-    asked a narrowing question and got the unnarrowed board back, with no
-    marker anywhere in the render saying the narrowing never happened.
-    """
+
+
+
+
+
+
+
+
+
+
     return _filter_tokens.parse(arg_str, _FILTER_KEYS, _FLAGS, _LIST_KEYS)
 
 
 def _unknown_error(unknown: list[str]) -> str:
-    """Name every token that was not applied, and what would have been."""
+
     return _filter_tokens.unknown_error(unknown, _FILTER_KEYS, _FLAGS)
 
 
 def _bad_values(filters: dict[str, str]) -> list[tuple[str, str, str]]:
-    """Known keys carrying a value this op has no mapping for."""
+
     return _filter_tokens.bad_values(filters, _VALUE_DOMAINS)
 
 
 def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
-    """Build the `gh issue list ... --json` argv from parsed filters.
 
-    No default role filter: see the module docstring. `state=open` is gh's
-    default, so it emits no flag.
-    """
+
+
+
+
     cmd = (["gh", "issue", "list", "--json", _LIST_FIELDS, "--limit", str(per_page)]
            + _repo_target.gh_args())
     for key, val in filters.items():
@@ -228,31 +228,31 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
             if val in _STATES and val != "open":
                 cmd += ["--state", val]
         elif key in {"author", "assignee", "label", "milestone", "search"}:
-            # `search` goes to `gh issue list --search`, which pushes the query
-            # to GitHub. A client-side filter over one `--limit` page would
-            # answer a different question — "which of the first 50 mention X"
-            # — and would say `capped at --limit` about the fetch while the
-            # caller read it as being about the matches (#1395).
+
+
+
+
+
             cmd += [f"--{key}", val]
     return cmd
 
 
 def _search_note(query: str) -> str:
-    """Which engine answered, and what it looked at. One sentence, everywhere."""
+
     return f"search {query!r} — {SEARCH_ENGINE} over {SEARCH_SCOPE}"
 
 
-# ---------------------------------------------------------------------------
-# the three derived signals — each of them three-valued
-# ---------------------------------------------------------------------------
+
+
+
 
 def _external(assoc: object) -> bool | None:
-    """Is the filer outside the repo? None when GitHub did not say.
 
-    Returning False for a missing association would assert the reporter is one
-    of us — the single wrong claim that drops an external report to the bottom
-    of the queue and takes the data-not-instructions boundary with it.
-    """
+
+
+
+
+
     value = str(assoc or "").strip().upper()
     if not value:
         return None
@@ -261,18 +261,18 @@ def _external(assoc: object) -> bool | None:
 
 def _is_stale(newest_comment: object, created_at: object,
               last_edited_at: object) -> bool | None:
-    """Has discussion overtaken the body? None when the comparison can't be made.
 
-    Zero comments settles it as False without asking GitHub anything: nothing
-    was said after the body, whatever `lastEditedAt` turns out to be. That is
-    most of this repo's queue, so declining there would decline a question
-    already answered.
 
-    Otherwise the body-write time is `lastEditedAt` when the body was edited
-    and `createdAt` when it was not — both exact. If neither is known the
-    answer is unknown; comparing against nothing and reporting False would
-    mark every discussed issue as fresh.
-    """
+
+
+
+
+
+
+
+
+
+
     if not newest_comment:
         return False
     body_written = last_edited_at or created_at
@@ -282,15 +282,15 @@ def _is_stale(newest_comment: object, created_at: object,
 
 
 def _milestone_of(row: dict) -> str | None:
-    """The row's milestone title, `''` for none, `None` for nobody could say.
 
-    Three states, on a list field rather than an enriched one, so it is never
-    unknown by choice. `gh issue list --json milestone` returns `null` for an
-    unmilestoned issue and the key is always present — so an absent key means
-    the field did not come back, and a dict with no usable title means gh
-    answered with something this op cannot read. Both of those are unknown;
-    only an explicit null is "this issue has no milestone".
-    """
+
+
+
+
+
+
+
+
     if "milestone" not in row:
         return None
     value = row["milestone"]
@@ -304,36 +304,36 @@ def _milestone_of(row: dict) -> str | None:
 
 
 def _is_unknown(row: dict) -> bool:
-    """True when any rank input is missing, so the row cannot be placed."""
+
     return any(row.get(key) is None for key in ("_external", "_stale", "_linked"))
 
 
-# ---------------------------------------------------------------------------
-# enrichment — one GraphQL call per chunk, for what `gh issue list` omits
-# ---------------------------------------------------------------------------
+
+
+
 
 def _owner_repo(rows: list[dict]) -> tuple[tuple[str, str] | None, str | None]:
-    """The repo this board is about, for the GraphQL root — and why, when there is none.
 
-    A repo target wins outright. Otherwise the answer is already in the rows:
-    every issue carries its own `url`, so the owner/name costs no extra call
-    and cannot disagree with the list the board is rendering. What decides
-    which repo every subsequent GraphQL call is made against is therefore row
-    content rather than configuration, which is why the host test is
-    `_repo_target.is_github_host` and not a suffix match (#1180): the moment
-    rows arrive from a fixture, a cached board or a merged tier, a lookalike
-    host picks the target.
 
-    A row whose url is not on GitHub is skipped rather than ending the search:
-    one unusable row must not decide that the whole board has no repo.
 
-    **Three states, not two** (#907). A bare `None` was the answer to four
-    different situations — an empty listing, rows carrying no url at all, rows
-    whose urls are on some other host, and a github.com url too short to hold
-    an owner and a name — and the caller renders it into a decline the reader
-    is meant to act on. The reason counts rows; it never quotes a url, because
-    a url is tracker content and an error line is ours.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     target = _repo_target.owner_repo()
     if target is not None:
         return target, None
@@ -364,15 +364,15 @@ def _owner_repo(rows: list[dict]) -> tuple[tuple[str, str] | None, str | None]:
     )
 
 
-# The three derived signals, as GraphQL. Named once because the `iids=` lookup
-# (#1323) asks for them in the same query as the list fields — two spellings of
-# one enrichment is how the board and the lookup start disagreeing about what
-# `_external` means.
+
+
+
+
 _ENRICH_FIELDS = (
     "lastEditedAt authorAssociation "
-    # Ranks on *will this close the issue*, not on *has anyone referenced
-    # it*. includeClosedPrs is load-bearing: without it a merged closer
-    # vanishes and a shipped fix renders as unclaimed (#782).
+
+
+
     "closedByPullRequestsReferences(first: 5, includeClosedPrs: true) "
     "{ nodes { number state } } "
     "timelineItems(last: 20, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) "
@@ -384,7 +384,7 @@ _ENRICH_FIELDS = (
 
 
 def _graphql_query(owner: str, name: str, numbers: list[int]) -> str:
-    """Aliased single-issue lookups — one call for a whole chunk of the board."""
+
     fields = "number " + _ENRICH_FIELDS
     parts = " ".join(f"i{n}: issue(number: {n}) {{ {fields} }}" for n in numbers)
     return f'query {{ repository(owner: "{owner}", name: "{name}") {{ {parts} }} }}'
@@ -392,13 +392,13 @@ def _graphql_query(owner: str, name: str, numbers: list[int]) -> str:
 
 def _fetch_enrichment(owner: str, name: str, numbers: list[int],
                       chunk: int = CHUNK) -> tuple[dict[int, dict], str | None]:
-    """Per-issue association / body-edit / timeline data, keyed by number.
 
-    Returns only what came back. A chunk that fails contributes nothing rather
-    than a default, and its reason is returned so the footer can name it — an
-    absence with a stated cause is actionable, an absence rendered as `0` is
-    not.
-    """
+
+
+
+
+
+
     enriched: dict[int, dict] = {}
     reason: str | None = None
     for start in range(0, len(numbers), chunk):
@@ -434,19 +434,19 @@ def _fetch_enrichment(owner: str, name: str, numbers: list[int],
     return enriched, reason
 
 
-# ---------------------------------------------------------------------------
-# iids= — the population the caller named, rather than a listing (#1323)
-# ---------------------------------------------------------------------------
+
+
+
 
 def _parse_iids(spec: str) -> tuple[list[int], int]:
-    """`"1240,1233,1240"` -> `([1240, 1233], 1)`.
 
-    Order is the caller's, because an audit is read against the list it was
-    written from. Duplicates collapse and are counted rather than dropped in
-    silence: a board of two rows under a request for three numbers is the
-    shorter-list reading this whole filter exists to refuse, and the caller
-    cannot tell a collapse from a number that vanished.
-    """
+
+
+
+
+
+
+
     numbers: list[int] = []
     seen: set[int] = set()
     dupes = 0
@@ -464,7 +464,7 @@ def _parse_iids(spec: str) -> tuple[list[int], int]:
 
 
 def _iids_composition_error(listing: list[str]) -> str:
-    """`iids=` names a population; a listing filter has nothing to narrow."""
+
     return (
         "ERROR: " + ", ".join(f"{k}=" for k in listing)
         + " cannot be combined with iids= — iids names an exact population by "
@@ -476,21 +476,21 @@ def _iids_composition_error(listing: list[str]) -> str:
 
 
 def _lookup_repo() -> tuple[tuple[str, str] | None, str | None]:
-    """`((owner, name), None)` or `(None, why not)` — never a bare absence.
 
-    `_owner_repo` derives the target from the board's own rows, which is the
-    right answer when a listing produced them. `iids=` has no listing, so the
-    repo has to be established before the first call rather than after it —
-    a repo target when one was given, otherwise gh's own answer for the cwd.
 
-    **The reason is returned rather than flattened.** Every way this call can
-    fail used to collapse into `no_repo_error`, which blames the working
-    directory — so an uninstalled `gh` (`FileNotFoundError`, and `[WinError 2]`
-    on the platform CI runs that nobody writes on) or an expired token sent the
-    reader to `cd` somewhere while the real fault went unnamed. The listing
-    path has told these three apart since it shipped; this one is new and had
-    one sentence for all of them.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
     pair = _repo_target.owner_repo()
     if pair is not None:
         return pair, None
@@ -503,11 +503,11 @@ def _lookup_repo() -> tuple[tuple[str, str] | None, str | None]:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         return None, f"ERROR: gh repo view failed: {exc}"
     if result.returncode != 0:
-        # Flattened before either use: the writer is the GitHub API (#1606).
+
         err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
         low = err.lower()
-        # A status, never a number (#1846): a throttle carries `401` inside its
-        # user id, and must reach the arm below that quotes what actually failed.
+
+
         if _auth_probe.says_not_authenticated(err):
             return None, "ERROR: gh not authenticated. Run: gh auth login"
         if ("github host" in low or "not a git repository" in low
@@ -527,9 +527,9 @@ def _lookup_repo() -> tuple[tuple[str, str] | None, str | None]:
     return (owner, name), None
 
 
-# The list-shaped fields `gh issue list --json` would have returned, asked for
-# per number instead. Same names, so the row this builds goes through
-# `_annotate`, `_apply_enrichment` and `_row` unchanged.
+
+
+
 _LOOKUP_CORE = (
     "number title state createdAt updatedAt url "
     "author { login } milestone { title } "
@@ -540,13 +540,13 @@ _LOOKUP_CORE = (
 
 
 def _lookup_query(owner: str, name: str, numbers: list[int], enrich: bool) -> str:
-    """One call for a chunk of numbers, asking both questions per number.
 
-    `issue(number: N)` returns null for a number that is a PR and for a number
-    that does not exist at all, so on its own it cannot tell "you cited the
-    wrong kind of thing" from "you cited nothing". `pullRequest(number: N)`
-    beside it separates them, at no extra round-trip.
-    """
+
+
+
+
+
+
     fields = _LOOKUP_CORE + ((" " + _ENRICH_FIELDS) if enrich else "")
     parts = " ".join(
         f"i{n}: issue(number: {n}) {{ {fields} }} "
@@ -557,25 +557,25 @@ def _lookup_query(owner: str, name: str, numbers: list[int], enrich: bool) -> st
 
 
 def _graphql_payload(result: object) -> tuple[dict, str | None, set[str]]:
-    """`(repository, reason, faulted aliases)` from a `gh api graphql` result.
 
-    **A NOT_FOUND alias makes `gh` exit 1 while returning every alias that did
-    resolve.** Measured against this repo on 2026-08-11: one missing number in
-    a three-alias query exits 1, prints the full `data` block, and lists the
-    misses under `errors`. Reading the exit code alone therefore discards a
-    whole chunk of good rows because one citation was wrong — which is the
-    exact input this filter exists to serve. So the body is parsed first and
-    the exit code only decides what to say when there is no body.
 
-    NOT_FOUND is expected here and is an *answer*; anything else — rate limit,
-    auth, a field GitHub renamed — is a failed read and is named.
 
-    The third return value is **the aliases a non-NOT_FOUND error nulled**,
-    read off each error's `path`. A partial failure nulls the alias exactly as
-    a missing number does, so without this a number the call failed on renders
-    as `does not resolve to an issue` — the tool's own absence wearing the
-    world's sentence, on the one op whose whole job is telling those apart.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     stdout = getattr(result, "stdout", "") or ""
     try:
         payload = json.loads(stdout)
@@ -604,14 +604,14 @@ def _graphql_payload(result: object) -> tuple[dict, str | None, set[str]]:
 
 def _fetch_lookup(owner: str, name: str, numbers: list[int], chunk: int,
                   enrich: bool) -> tuple[dict[int, tuple[str, object]], str | None]:
-    """Per number: `("issue"|"pr"|"absent"|"failed", payload)`.
 
-    Four kinds, not two, and the fourth is the one this repo keeps getting
-    wrong. A chunk whose call failed is `failed`, never `absent`: rendering a
-    number the tool could not look up as a number that does not exist is an
-    absence produced by the tool read as an absence in the world, and on a
-    citation audit it invites deleting a reference that was correct.
-    """
+
+
+
+
+
+
+
     results: dict[int, tuple[str, object]] = {}
     reason: str | None = None
     for start in range(0, len(numbers), chunk):
@@ -632,10 +632,10 @@ def _fetch_lookup(owner: str, name: str, numbers: list[int], chunk: int,
         repo, chunk_reason, faulted = _graphql_payload(result)
         reason = reason or chunk_reason
         if not repo:
-            # Each row carries ITS chunk's cause, not the call's first one. A
-            # stated reason that belongs to a different call sends the reader
-            # to fix something that is not broken, which is worse than saying
-            # nothing.
+
+
+
+
             for number in batch:
                 results[number] = ("failed", chunk_reason)
             continue
@@ -649,23 +649,23 @@ def _fetch_lookup(owner: str, name: str, numbers: list[int], chunk: int,
                 results[number] = ("pr", pr)
                 continue
             if faulted & {f"i{number}", f"p{number}"}:
-                # A fault nulled this alias. It looks exactly like a number
-                # that does not exist, and it is the opposite claim.
+
+
                 results[number] = ("failed", chunk_reason)
                 continue
-            # The alias came back null and no error named it: GitHub answered,
-            # and the answer is that the number is neither.
+
+
             results[number] = ("absent", None)
     return results, reason
 
 
 def _row_from_node(node: dict) -> dict:
-    """A GraphQL issue node in the shape `gh issue list --json` returns.
 
-    Converting here rather than teaching the renderers a second vocabulary is
-    what keeps `iids=` a filter: every cell, rank tier and refusal below this
-    point sees exactly the row it has always seen.
-    """
+
+
+
+
+
     labels = [n for n in ((node.get("labels") or {}).get("nodes") or [])
               if isinstance(n, dict)]
     assignees = [n for n in ((node.get("assignees") or {}).get("nodes") or [])
@@ -691,13 +691,13 @@ def _row_from_node(node: dict) -> dict:
 
 
 def _apply_comment_totals(rows: list[dict]) -> None:
-    """Prefer GitHub's own count over the length of the page we asked for.
 
-    `comments(last: 100)` is a window. `len(nodes)` under it reports 100 for an
-    issue with 300 comments — a number the tool produced, read as a fact about
-    the issue. `totalCount` is the fact; the window still gives the newest
-    timestamp, which is all `_is_stale` needs.
-    """
+
+
+
+
+
+
     for row in rows:
         total = row.pop("_comments_total", None)
         if isinstance(total, int):
@@ -706,13 +706,13 @@ def _apply_comment_totals(rows: list[dict]) -> None:
 
 def _unresolved_row(number: int, kind: str, payload: object,
                     reason: str | None) -> dict:
-    """A row for a requested number that is not an issue in this repo.
 
-    It is a row, not an omission. An audit reading a list shorter than the one
-    it asked about reads it as "all of these check out" — which is how #1233's
-    audit would have missed that 12 of its 124 numbers belonged to a different
-    repo.
-    """
+
+
+
+
+
+
     scope = _repo_target.not_found_scope()
     if kind == "pr":
         title = str((payload or {}).get("title") or "") if isinstance(payload, dict) else ""
@@ -743,18 +743,18 @@ def _unresolved_row(number: int, kind: str, payload: object,
 
 
 def _closing_prs(node: dict) -> list[dict] | None:
-    """PRs that will close this issue — the answer to "is anyone on it".
 
-    Not the timeline. A `Closes #N` line in a PR body produces a
-    `CrossReferencedEvent` indistinguishable from a prose mention, so the
-    timeline conflates "someone is fixing this" with "someone typed this
-    number". Measured on this repo: #736 mentions #735 while closing #720, and
-    #781 closes #778 — both render as `CrossReferencedEvent` (#782).
 
-    `None` when the field is absent or null, because `_linked` is a rank tier:
-    an unknown that renders as "no PR" does not merely misreport, it sorts the
-    row to the top of the work queue and gets it worked twice.
-    """
+
+
+
+
+
+
+
+
+
+
     if "closedByPullRequestsReferences" not in node:
         return None
     refs = node["closedByPullRequestsReferences"]
@@ -777,7 +777,7 @@ def _closing_prs(node: dict) -> list[dict] | None:
 
 
 def _mentioning_prs(node: dict) -> list[dict]:
-    """PRs that reference this issue without closing it — context, not a claim."""
+
     out: list[dict] = []
     seen: set[object] = set()
     for item in ((node.get("timelineItems") or {}).get("nodes") or []):
@@ -795,12 +795,12 @@ def _mentioning_prs(node: dict) -> list[dict]:
 
 
 def _annotate(rows: list[dict]) -> None:
-    """Derive from the list data alone — no extra call, so never unknown by choice.
 
-    Comment count and the newest comment timestamp ship in `gh issue list
-    --json comments`. An absent `comments` key is the one case where the count
-    is unknown, and it stays `None` rather than becoming a confident 0.
-    """
+
+
+
+
+
     for row in rows:
         comments = row.get("comments")
         if isinstance(comments, list):
@@ -819,12 +819,12 @@ def _annotate(rows: list[dict]) -> None:
 
 
 def _apply_enrichment(rows: list[dict], data: dict) -> None:
-    """Fill the derived fields for the rows the fetch actually covered.
 
-    A row absent from `data` is left exactly as `_annotate` left it. Applying
-    the shape of a successful response to a row nobody asked about is how an
-    unenriched issue acquires a confident `False`.
-    """
+
+
+
+
+
     for row in rows:
         node = data.get(row.get("number"))
         if not isinstance(node, dict):
@@ -837,25 +837,25 @@ def _apply_enrichment(rows: list[dict], data: dict) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# cells
-# ---------------------------------------------------------------------------
+
+
+
 
 def _linked_cell(linked: list[dict] | None,
                  mentions: list[dict] | None = None) -> str:
-    """Linked-PR cell. `?` and `no PR` are different answers and look different.
 
-    A *mention* is shown only when there is no closer, and never as a link:
-    a PR that references the number without closing it means nobody is on this
-    issue, and saying otherwise is what #782 fixed. It is still worth seeing —
-    it is usually where the adjacent work happened — so it renders as `~`.
 
-    Neither reference is spelled `#N` (#842). `#` is this board's sigil for
-    "the row's subject" — `_row()` spells it once, on `ident`, the issue's own
-    number — and a foreign PR number in that same shape, sitting earlier on
-    the line, reads as the row's id to anyone taking the first `#N` they see.
-    `PR N` says the same thing without borrowing the sigil.
-    """
+
+
+
+
+
+
+
+
+
+
+
     if linked is None:
         return "? unknown"
     if not linked:
@@ -870,7 +870,7 @@ def _linked_cell(linked: list[dict] | None,
 
 
 def _ext_cell(external: bool | None) -> str:
-    """One character: `!` outside, blank inside, `?` nobody could say."""
+
     if external is True:
         return "!"
     if external is False:
@@ -889,26 +889,26 @@ def _labels_cell(row: dict) -> str:
 
 
 def _flags(row: dict) -> str:
-    """`[stale]` when the body was overtaken, `[stale?]` when nobody could say.
 
-    The milestone rides here rather than in a column of its own. A column costs
-    its width on every row of every board, and most issues on most repos carry
-    no milestone — so the honest split is: nothing at all when there is none,
-    `[m:TITLE]` when there is, and `[m:?]` when gh did not answer. A blank cell
-    would have made the third case indistinguishable from the second.
-    """
+
+
+
+
+
+
+
     out = ""
     stale = row.get("_stale")
     if stale is True:
         out += " [stale]"
     elif stale is None:
         out += " [stale?]"
-    # State, three-valued. A bare board is `state=open` and every row is open,
-    # so this printed nothing for a long time and cost nothing — but `state=all`
-    # and `iids=` (#1323) both render closed issues, and a closed issue that
-    # looks exactly like an open one is the whole answer to "is this citation
-    # still live" given wrongly. `[state:?]` when the field did not come back,
-    # for the same reason `[m:?]` exists: no field is unknown by choice here.
+
+
+
+
+
+
     state = str(row.get("state") or "").strip().upper() if "state" in row else ""
     if not state:
         out += " [state:?]"
@@ -923,7 +923,7 @@ def _flags(row: dict) -> str:
 
 
 def _age(iso: str) -> str:
-    """ISO timestamp → 'Nd'/'Nh'/'Nm'. '' on parse failure, 'now' on skew."""
+
     if not iso:
         return ""
     try:
@@ -940,19 +940,19 @@ def _age(iso: str) -> str:
     return f"{secs // 86400}d"
 
 
-# ---------------------------------------------------------------------------
-# rank
-# ---------------------------------------------------------------------------
+
+
+
 
 def _rank_key(row: dict) -> tuple[int, int, int, int, str]:
-    """Triage order. 0 sorts first at every position.
 
-    Unrankable first (its position would otherwise be invented), then external
-    author, then stale body, then no linked PR, then oldest by `createdAt`.
-    Age is the last tiebreak rather than the first because "oldest" is the
-    ordering a plain list already gives and it is the one that keeps putting
-    destructive reports behind cosmetic ones.
-    """
+
+
+
+
+
+
+
     return (
         0 if _is_unknown(row) else 1,
         0 if row.get("_external") is True else 1,
@@ -966,22 +966,22 @@ def _sorted(rows: list[dict]) -> list[dict]:
     return sorted(rows, key=_rank_key)
 
 
-# ---------------------------------------------------------------------------
-# render
-# ---------------------------------------------------------------------------
+
+
+
 
 def _row(row: dict) -> str:
-    """One triage row through the shared board layout (`presets/_board.py`).
 
-    `watched=False` rather than `None`: there is no `github-issue` watch source
-    (#525 proposes one), so no issue can have a live poller. That is a known
-    absence, not an unmeasured one, and `?` is reserved for the latter.
-    """
+
+
+
+
+
     unresolved = row.get("_unresolved")
     if unresolved:
-        # Not an issue row with blanks in it. Every cell whose value would be a
-        # claim about an issue is `?`, and the title line says which of the
-        # three non-answers this number is.
+
+
+
         return _board.render_row(
             sigil="#",
             ident=str(row.get("number", "?")),
@@ -1009,15 +1009,15 @@ def _row(row: dict) -> str:
 
 
 def _render_table(rows: list[dict], search: str | None = None) -> str:
-    """The board, or the named absence that is not a failure.
 
-    `No issues match.` under a `search=` is three claims at once: the search
-    ran, it covered what you think it covered, and the tracker holds nothing.
-    Only the third is what the caller wants to read, and the first two are
-    exactly what goes wrong. A search that could not run never reaches here —
-    it keeps its non-zero exit above — so this sentence is free to say the
-    search RAN, which is the fact that distinguishes the two (#1395).
-    """
+
+
+
+
+
+
+
+
     if not rows:
         if search is not None:
             return (f"No issues match {_search_note(search)}. "
@@ -1028,12 +1028,12 @@ def _render_table(rows: list[dict], search: str | None = None) -> str:
 
 
 def _cap_note(per_page: int | None, fetched: int | None) -> str | None:
-    """The page boundary, as one sentence, for every shape that can print it.
 
-    Extracted from `_footer` because the footer is not the only render: `iids`
-    returns before one is built, and it is the shape whose output becomes
-    another tool's input (#1067).
-    """
+
+
+
+
+
     if per_page is None or fetched is None or fetched < per_page:
         return None
     return f"capped at --limit {per_page} — more may exist, raise with per=N"
@@ -1041,43 +1041,43 @@ def _cap_note(per_page: int | None, fetched: int | None) -> str | None:
 
 def _footer(rows: list[dict], reason: str | None, per_page: int | None = None,
             fetched: int | None = None, notes: list[str] | None = None) -> str:
-    """Counts when they are earned; a named absence when they are not.
 
-    Counting `_external is True` across rows that were never enriched yields
-    `0 external`, a sentence that reads as "nobody outside has filed anything".
-    So unknown rows suppress the counts they would falsify and say how many
-    they are and why.
 
-    A board that came back exactly `--limit` rows long says so. `50 issue(s)`
-    under a limit of 50 reads as "the queue is 50 long" when it means "the
-    first 50 of an unknown number" — and on a *ranked* board the rows that
-    fell off the end were not the least important, they were the ones gh's
-    own default ordering happened to put last. Same defect class as the rest
-    of this file: a bound produced by the tool, read as a fact about the
-    world.
-    """
-    # A requested number that is not an issue here is unrankable for a reason
-    # the caller can act on, and it is NOT a row whose enrichment failed. Two
-    # clauses, because "12 of your citations point at nothing" and "12 rows
-    # could not be enriched" send the reader to different places (#1323).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     unresolved = [r for r in rows if r.get("_unresolved")]
     rankable = [r for r in rows if not r.get("_unresolved")]
     unknown = [r for r in rankable if _is_unknown(r)]
     known = [r for r in rankable if not _is_unknown(r)]
     parts = [f"{len(rows)} issue(s)"]
-    # The cap is a fact about the *fetch*, so it is measured against what came
-    # back, not against what survived. Measured post-filter, three rows dropped
-    # by `external`/`stale`/`nomilestone` take the count under the limit and
-    # the "more may exist" line disappears — from exactly the queries that are
-    # asking for completeness (#864).
+
+
+
+
+
     against = len(rows) if fetched is None else fetched
     cap = _cap_note(per_page, against)
     if cap:
         parts.append(cap)
-    # Client-side narrowing, named with its count. `gh-issues:external` over an
-    # all-internal board prints `No issues match.` and `0 issue(s)` — true
-    # about the filter and read as a statement about the queue (#1071's shape,
-    # in the sibling op).
+
+
+
+
     parts.extend(notes or [])
     if unresolved:
         prs = sum(1 for r in unresolved if r.get("_unresolved") == "pr")
@@ -1110,12 +1110,12 @@ def _footer(rows: list[dict], reason: str | None, per_page: int | None = None,
 
 
 def _decline(flag: str, field: str, reason: str | None) -> str:
-    """The message for a filter whose field nobody could establish.
 
-    `gh-issues:external` over unenriched rows could print `No issues match.`,
-    and that sentence is a claim there are no external reports — the one thing
-    a triage caller must not be told wrongly.
-    """
+
+
+
+
+
     return (
         f"ERROR: cannot filter by {flag} — {field} is unknown for one or more "
         f"issues (enrichment {reason or 'incomplete'}). Re-run without "
@@ -1127,14 +1127,14 @@ def _lookup_iids(
     spec: str, filters: dict[str, str], flags: set[str], per_given: bool,
     per_page: int, cfg: dict[str, int], numbers_only: bool,
 ) -> int | tuple[list[dict], list[dict], list[str], str | None, int]:
-    """The `iids=` population: `(rows, unresolved, notes, reason, fetched)`.
 
-    Returns an exit code instead when the request cannot be answered at all —
-    a listing filter that has nothing to narrow, a repo that could not be
-    established, or a call that failed with nothing to show for it. None of
-    those may render as rows: an empty or short board under a request for N
-    numbers is read as "these all check out".
-    """
+
+
+
+
+
+
+
     listing = sorted(k for k in filters if k in _LISTING_KEYS)
     if listing:
         print(_iids_composition_error(listing), file=sys.stderr)
@@ -1145,10 +1145,10 @@ def _lookup_iids(
     if dupes:
         notes.append(f"iids: {dupes} duplicate number(s) collapsed")
     requested = len(numbers)
-    # `per=` on a listing bounds an unknown population; here it bounds one the
-    # caller enumerated, so it only applies when they asked for it — and when
-    # it does, it names the numbers it did not look up rather than returning a
-    # shorter board.
+
+
+
+
     if per_given and requested > per_page:
         notes.append(
             f"iids capped at per={per_page} — {requested - per_page} of "
@@ -1161,14 +1161,14 @@ def _lookup_iids(
               file=sys.stderr)
         return 1
 
-    # Under the numbers-only render nothing derived is printed, so the
-    # enrichment half of the query is not paid for — unless a client-side
-    # filter reads one of those fields, which is the same rule the listing
-    # route applies (#1439). Without the second clause this route skipped the
-    # fetch and then declined for want of the field it had chosen not to get,
-    # so `iids=1,2,iids,external` refused what `external,iids` answered: two
-    # spellings of one request disagreeing, which is the asymmetry #1439 asks
-    # to be closed where the projection and the filter set are reconciled.
+
+
+
+
+
+
+
+
     enrich = "nopipe" not in flags and (
         not numbers_only or bool(flags & _ENRICHED_FLAGS))
     results, reason = _fetch_lookup(pair[0], pair[1], numbers, cfg["chunk"], enrich)
@@ -1185,9 +1185,9 @@ def _lookup_iids(
             unresolved.append(_unresolved_row(number, kind, payload, reason))
 
     if numbers and not rows and reason is not None:
-        # Nothing resolved AND the call reported a fault. Rendering N rows of
-        # "does not resolve" there would report a failed read as a tracker full
-        # of dead citations — the absence this repo keeps mistaking for a fact.
+
+
+
         print(f"ERROR: gh api graphql: {reason}", file=sys.stderr)
         return 1
 
@@ -1216,8 +1216,8 @@ def main_with_args(arg_str: str) -> int:
         per_page = int(filters.pop("per"))
     iids_spec = filters.pop("iids", None)
     numbers_only = "iids" in flags
-    # NOT popped — `_build_list_cmd` forwards it to `gh issue list --search`.
-    # Read here so every render below can name the query and the scope.
+
+
     search = filters.get("search")
 
     rows: list[dict]
@@ -1231,9 +1231,9 @@ def main_with_args(arg_str: str) -> int:
         if isinstance(rc, int):
             return rc
         rows, unresolved, lookup_notes, reason, fetched = rc
-        # A named population is finite and complete by construction, so the
-        # `--limit N — more may exist` sentence would be false here. `per=`
-        # still caps, and says so in `lookup_notes` when it does.
+
+
+
         per_page = None
     else:
         try:
@@ -1246,11 +1246,11 @@ def main_with_args(arg_str: str) -> int:
             print(f"ERROR: gh issue list failed: {exc}", file=sys.stderr)
             return 1
         if result.returncode != 0:
-            # Flattened before either use: the writer is the GitHub API (#1606).
+
             err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
             low = err.lower()
-            # A status, never a number (#1846): a throttle carries `401` inside its
-            # user id, and must reach the arm below that quotes what actually failed.
+
+
             if _auth_probe.says_not_authenticated(err):
                 print("ERROR: gh not authenticated. Run: gh auth login", file=sys.stderr)
             elif ("github host" in low or "not a git repository" in low
@@ -1269,34 +1269,34 @@ def main_with_args(arg_str: str) -> int:
             rows = []
 
         _annotate(rows)
-        # What the fetch returned, kept before any client-side filter narrows it —
-        # the --limit disclosure is a statement about this number.
+
+
         fetched = len(rows)
 
-    # **The listing route's enrichment only** — `iids=` has already done its own,
-    # in the same GraphQL call that fetched the rows, and `_lookup_iids` has
-    # already set `reason` to None, REASON_NOPIPE or the fault it hit. Running
-    # this block over those rows would be a second round-trip for data already
-    # in hand, and `_owner_repo` reads the repo off row urls, which the
-    # unresolved rows do not carry. The decline it can produce — `repo could not
-    # be identified from the listing` — is also a sentence that cannot be true
-    # where there was no listing (#1323).
-    #
-    # `reason` is NOT re-declared here. It is initialised once above, because
-    # the two routes now both set it and a fresh `= None` at this point would
-    # silently discard whatever the lookup route established.
-    # A bare `iids` feed pays for no enrichment — that is what makes it the
-    # cheap shape — *unless* a filter that reads an enriched field was asked
-    # for. Then the call is what the caller bought, and skipping it would leave
-    # the filter with a field nobody read, which is a decline at best and the
-    # #1439 answer at worst.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if iids_spec is None and (
             not numbers_only or (flags & _ENRICHED_FLAGS)):
         if "nopipe" in flags:
             reason = REASON_NOPIPE
         elif rows:
-            # Only under `rows`: an empty listing has nothing to enrich, so its
-            # absence of a repo is not a degradation and must not print as one.
+
+
             pair, why = _owner_repo(rows)
             if pair is None:
                 reason = f"repo could not be identified from the listing — {why}"
@@ -1309,17 +1309,17 @@ def main_with_args(arg_str: str) -> int:
     notes: list[str] = list(lookup_notes)
 
     def _narrow(flag: str, before: list[dict], keep: list[dict]) -> list[dict]:
-        """Apply a client-side filter and record what it removed.
 
-        `before` is passed rather than read from the enclosing scope, and the
-        denominator is `fetched` rather than either list. Every call site
-        rebinds `rows`, so the closure version reported the second flag of
-        `external,stale` against the first flag's survivor count — a number no
-        fetch ever returned. Same invariant `_cap_note` states for the page
-        boundary: measured against the fetch, not against what survived a
-        filter (#864). Each note's numerator stays what *that* flag removed,
-        so the notes sum to the rows lost rather than double-counting them.
-        """
+
+
+
+
+
+
+
+
+
+
         dropped = len(before) - len(keep)
         if dropped:
             notes.append(f"{flag} excluded {dropped} of {fetched} fetched")
@@ -1336,44 +1336,44 @@ def main_with_args(arg_str: str) -> int:
             return 1
         rows = _narrow("stale", rows, [r for r in rows if r.get("_stale")])
     if "nomilestone" in flags:
-        # `gh issue list` can name a milestone; it cannot ask for the absence
-        # of one, so this filter is client-side. Which means a row whose
-        # milestone did not come back cannot be placed: filtering it in reports
-        # a scheduled issue as unscheduled, filtering it out drops the exact
-        # kind of gap the query exists to find. Neither is reportable, so the
-        # op declines.
+
+
+
+
+
+
         if any(_milestone_of(r) is None for r in rows):
             print(_decline("nomilestone", "milestone", reason), file=sys.stderr)
             return 1
         rows = _narrow("nomilestone", rows,
                        [r for r in rows if not _milestone_of(r)])
 
-    # Bare number list, rendered AFTER the client-side filters rather than
-    # instead of them (#1439). Placed here and not thirty lines up because the
-    # id feed is the shape most likely to be consumed by a script rather than
-    # read by a person, so it is the shape least able to carry a filter that
-    # silently did not run — and every decline above it now reaches it too.
-    #
-    # The disclosures ride along as `#` comments rather than being dropped: a
-    # truncated list stops being the same bytes as a complete one. That is why
-    # `iids` was the one shape that said nothing about the page boundary
-    # (#1067) — and under `iids=` a requested number that resolved to nothing
-    # is named here too, because the consumer of this shape is another tool and
-    # a shorter list is indistinguishable from a clean one.
-    #
-    # `notes` rather than `lookup_notes`: it is the same list plus what each
-    # client-side filter removed, and the missing half of #1439 was that the
-    # board said `nomilestone excluded 42 of 95 fetched` and the id feed said
-    # nothing, so there was no line to disagree with.
-    #
-    # Not stderr — `_run_custom_op` returns a successful op's stdout and drops
-    # its stderr, so a note there is a note nobody receives (#654).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if numbers_only:
-        # The search disclosure rides the piped shape too. This stream becomes
-        # another tool's input, and a list of numbers produced by a search that
-        # covered title/body/comments is not the same population as one from a
-        # search over titles — a consumer that cannot see which it got will
-        # read the shorter one as the tracker being emptier (#1067's shape).
+
+
+
+
+
         if search is not None:
             print(f"# {_search_note(search)}")
         for note in notes:
@@ -1381,9 +1381,9 @@ def main_with_args(arg_str: str) -> int:
         cap = _cap_note(per_page, fetched)
         if cap:
             print(f"# {cap}")
-        # `rows` now carries the unresolved rows too — they were appended
-        # before the filters so a decline could see them — so the two groups
-        # are told apart by the marker rather than by which list they are in.
+
+
+
         for row in rows:
             if row.get("_unresolved_note"):
                 print(f"# {row['number']} {row['_unresolved_note']}")
@@ -1395,26 +1395,26 @@ def main_with_args(arg_str: str) -> int:
                 print(number)
         return 0
 
-    # `flat_note` rather than `banner()` (#819). This render fences nothing —
-    # titles and labels are one-line fields and are flattened — so the banner
-    # was announcing `⟨remote NONCE⟩` markers no reader would ever find. A
-    # disclosure naming a mechanism it does not use teaches the reader to skim
-    # the next one.
+
+
+
+
+
     if rows:
-        # Header as well as footer. A footer is lost by exactly the consumer
-        # that truncates (#633, #635, #657), and the cap note fires precisely
-        # when the board is at its longest — the case it exists for is the
-        # case the footer does not survive. Nothing prints when nothing was
-        # cut, so the silence stays a positive claim that the board is whole.
-        #
-        # Only the cap: the client-side flag notes describe rows the caller
-        # asked to lose, which is the same line `iids` draws.
+
+
+
+
+
+
+
+
         cap = _cap_note(per_page, fetched)
         if cap:
             print(f"({cap})")
-        # Above the board as well as in the footer, for the same reason the cap
-        # note is: the consumer that truncates loses the footer, and a board
-        # read without knowing what was searched is a board read wrong.
+
+
+
         if search is not None:
             print(f"({_search_note(search)})")
         print(_untrusted.flat_note("issue titles and labels"))

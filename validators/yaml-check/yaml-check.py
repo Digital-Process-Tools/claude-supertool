@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""yaml-check validator adapter — YAML syntax check via PyYAML yaml.safe_load().
 
-Requires PyYAML (pip install pyyaml). Absent, this reports the third state —
-`skipped` with the reason — rather than the `ok: true` it emitted until #1202,
-which was a clean verdict about a file nothing parsed. Name this validator in
-`$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a loud error instead.
 
-The absence here is an import rather than a `shutil.which`, which is why it went
-unnoticed for so long. It is the same absence.
 
-Usage:  yaml-check.py <file>
-"""
+
+
+
+
+
+
+
+
+
 
 from __future__ import annotations
 

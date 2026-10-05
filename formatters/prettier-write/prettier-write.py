@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""prettier --write formatter adapter. Emits SCHEMA.md JSON.
 
-Runs prettier --write on the target file and computes before/after line diff
-to populate metrics.lines_added / lines_removed.
 
-Usage: prettier-write.py <file>
 
-Env vars:
-  PRETTIER_BIN          prettier binary (default: prettier)
-  PRETTIER_CONFIG       --config path (optional)
-  PRETTIER_IGNORE_PATH  --ignore-path (optional)
-"""
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -22,10 +22,10 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "validators" / "common"))
-from refusal import guard_main  # noqa: E402
-from bin_resolve import describe_unresolved, resolve_bin_cmd  # noqa: E402
-from spawnable import already_a_path, spawnable  # noqa: E402
-from line_diff import line_diff as _line_diff  # noqa: E402
+from refusal import guard_main  
+from bin_resolve import describe_unresolved, resolve_bin_cmd  
+from spawnable import already_a_path, spawnable  
+from line_diff import line_diff as _line_diff  
 
 
 def emit(obj: dict) -> None:
@@ -47,14 +47,14 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
     prettier_bin_cmd_str = os.environ.get("PRETTIER_BIN", "prettier")
-    # Accept either a single binary path (may contain a space, e.g.
-    # the default Windows install location under "C:\\Program Files")
-    # or a shlex-quoted command line. Cross-platform test stubs pass
-    # e.g. "python /path/stub.py" (each token shlex.quote'd) so the
-    # stub runs on Windows too (no #!/usr/bin/env bash dependency).
-    # resolve_bin_cmd() tries the whole string as one path first, and
-    # only falls back to shlex.split when that does not resolve to a
-    # real executable (#2176, #2191).
+
+
+
+
+
+
+
+
     bin_cmd = resolve_bin_cmd(prettier_bin_cmd_str, "prettier")
     prettier_bin = bin_cmd[0]
     prettier_config = os.environ.get("PRETTIER_CONFIG", "")
@@ -134,11 +134,11 @@ def main() -> None:
     try:
         after = open(file, encoding="utf-8", errors="replace").read()
     except OSError as e:
-        # prettier ran and exited 0, but the file could not be re-read to
-        # compute what changed. `after = before` would report
-        # `lines_added: 0, lines_removed: 0`: identical to a genuine no-op
-        # (#2162). `verify_failed` says the 0/0 is "could not measure",
-        # never "nothing changed".
+
+
+
+
+
         after = before
         verify_failed = f"could not re-read file to verify changes: {e}"
 

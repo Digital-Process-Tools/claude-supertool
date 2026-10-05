@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a GitLab issue from a JSON/TOML payload file."""
+
 from __future__ import annotations
 
 import json
@@ -13,31 +13,31 @@ try:
     import tomllib
 except ModuleNotFoundError:
     try:
-        import tomli as tomllib  # type: ignore[no-redef]
+        import tomli as tomllib  
     except ModuleNotFoundError:
-        tomllib = None  # type: ignore[assignment]
+        tomllib = None  
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
-import _remote_default as _rd  # noqa: E402
-import _repo_target  # noqa: E402  (repo: op precedence over payload's own field -- #1909)
-import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
-import _untrusted  # noqa: E402  (glab relays the API's own error body — #1485)
-import _publish_safety  # noqa: E402  (#2100 -- the forge-write disclosure marker)
+from _console import use_utf8_stdout  
+import _remote_default as _rd  
+import _repo_target  
+import _payload_keys  
+import _untrusted  
+import _publish_safety  
 
-# Every key this op reads from a payload. Checked against the payload before
-# anything is created (#2123) -- a key outside this set is refused rather
-# than silently dropped.
+
+
+
 ACCEPTED_KEYS = {
     "project", "title", "description", "description_file", "milestone_id",
     "labels", "assignee_ids", "estimate", "links",
 }
 
-# `body`/`body_file` -- what `gh-issue-create` and the GitHub API itself
-# call the field -- silently created an issue with no description here on
-# 2026-09-01 (#2123): this op wants `description`/`description_file`.
-# Accepted as an alias rather than only documented, since a misfiled issue
-# from that slip is expensive to unpick on a live tracker.
+
+
+
+
+
 ALIASES = {
     "body": "description",
     "body_file": "description_file",
@@ -75,15 +75,15 @@ def _load_payload(path: str) -> dict:
 
 
 def _validate_labels(payload: dict) -> str | None:
-    """`labels`, if present, must be a list of non-empty strings.
 
-    A comma-separated string (`labels = "A,B,C"`) is iterated character by
-    character by `for label in labels: cmd += ["--label", label]`, sending
-    one `--label` flag per *character* to the CLI -- which silently created
-    30 junk labels on a sibling tracker before anyone noticed (#2173). This
-    refuses before any glab/gh call rather than after, since a wrong label
-    write is expensive to unpick.
-    """
+
+
+
+
+
+
+
+
     if "labels" not in payload:
         return None
     labels = payload["labels"]
@@ -116,10 +116,10 @@ def main() -> int:
     raw_arg = sys.argv[1] if len(sys.argv) > 1 else ""
     path = raw_arg[1:] if raw_arg.startswith("@") else raw_arg
     if not path:
-        # supertool's {arg} substitution never omits the placeholder — a
-        # missing @FILE arrives here as an empty string, not a missing
-        # argv slot, so this must be checked explicitly rather than relying
-        # on len(sys.argv). See #620.
+
+
+
+
         print(
             "ERROR: gl-issue-create needs a payload — "
             "gl-issue-create:@FILE, or gl-issue-create:@- to read it from "
@@ -127,13 +127,13 @@ def main() -> int:
         )
         return 1
 
-    # Decide *before* reading rather than catching whatever the OS raises:
-    # opening a directory for read raises IsADirectoryError on POSIX but
-    # PermissionError on Windows (CreateFileW succeeds, the subsequent read
-    # fails with ERROR_ACCESS_DENIED). Catching only IsADirectoryError left
-    # #620's traceback alive on Windows — an is_dir() check gives the same
-    # message on every platform without depending on which errno the OS
-    # happens to pick. See #627.
+
+
+
+
+
+
+
     if path != "-" and Path(path).is_dir():
         print(f"ERROR: payload path is a directory, not a file: {path}")
         return 1
@@ -144,16 +144,16 @@ def main() -> int:
         print(f"ERROR: payload file not found: {path}")
         return 1
     except IsADirectoryError:
-        # Belt-and-suspenders for the TOCTOU window between the is_dir()
-        # check above and this read (path became a directory in between).
+
+
         print(f"ERROR: payload path is a directory, not a file: {path}")
         return 1
     except PermissionError as e:
-        # Deliberately a distinct message from "is a directory": a locked
-        # or wrong-ownership file also raises PermissionError, and on
-        # Windows it's the *only* thing a directory read raises. Reporting
-        # it as "is a directory" would be a confidently wrong disclosure,
-        # not just an unhelpful one.
+
+
+
+
+
         print(f"ERROR: permission denied reading payload: {path} — {e}")
         return 1
     except (json.JSONDecodeError, ValueError) as e:
@@ -200,11 +200,11 @@ def main() -> int:
     links: list[dict] = payload.get("links") or []
 
     if description_file:
-        # Same is_dir()-before-read shape as the payload guard above: a
-        # directory read raises IsADirectoryError on POSIX but
-        # PermissionError on Windows, so the directory verdict must come
-        # from is_dir(), not from catching whichever OSError subtype the
-        # platform happens to raise. See #620/#627/#630.
+
+
+
+
+
         if Path(description_file).is_dir():
             print(f"ERROR: description_file is a directory, not a file: {description_file}")
             return 1
@@ -214,26 +214,26 @@ def main() -> int:
             print(f"ERROR: description_file not found: {description_file}")
             return 1
         except IsADirectoryError:
-            # Belt-and-suspenders for the TOCTOU window between the
-            # is_dir() check above and this read.
+
+
             print(f"ERROR: description_file is a directory, not a file: {description_file}")
             return 1
         except PermissionError as e:
-            # Deliberately distinct from "is a directory": a locked or
-            # wrong-ownership file also raises PermissionError, and it's
-            # the only thing a directory read raises on Windows.
+
+
+
             print(f"ERROR: permission denied reading description_file: {description_file} — {e}")
             return 1
     else:
         body = description
 
-    # #2100: applied before the `/estimate` quick action below, not after --
-    # a GitLab quick action needs to be its own trailing paragraph, and
-    # appending prose past it risks the API no longer recognising it.
+
+
+
     body, disclosure_state = _publish_safety.apply_forge_disclosure(body)
 
     if estimate:
-        if not re.match(r"^\d+(\.\d+)?[mhdw]\Z", estimate):  # \Z, not $ — #1188
+        if not re.match(r"^\d+(\.\d+)?[mhdw]\Z", estimate):  
             print(f"ERROR: invalid estimate format: {estimate!r} (expected e.g. '4h', '30m', '2d')")
             return 1
         body = body.rstrip() + f"\n\n/estimate {estimate}"
@@ -254,7 +254,7 @@ def main() -> int:
     try:
         result = _glab(cmd, timeout=30)
     except FileNotFoundError:
-        print("ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli")
+        print("ERROR: glab not found — install the GitLab CLI")
         return 1
     except subprocess.TimeoutExpired:
         print("ERROR: glab timed out")
@@ -262,29 +262,29 @@ def main() -> int:
 
     if result.returncode != 0:
         print(f"ERROR: glab issue create failed (exit {result.returncode})")
-        # Whatever glab echoed here was written by the GitLab API, and it prints
-        # at column 0 with nothing in front of it — flatten, never relay (#1485).
+
+
         print(_untrusted.flat(result.stderr.strip() or result.stdout.strip()))
         return 1
 
     output = result.stdout.strip()
     url = ""
     iid = ""
-    # The direct twin of `github/issue_create.py`, narrowed by #1648 and left
-    # here until #1654. Both arms put their value into the `gl-issue-create OK
-    # iid=... url=...` receipt at column 0, so both need the same two calls.
-    #
-    # `split_lines` decides the boundary: the fallback takes `[-1]`, and
-    # `str.splitlines()` cut on U+2028, so whoever wrote glab's stdout chose
-    # which segment became the whole `url=` and everything before it was
-    # dropped out of the receipt rather than disclosed.
-    #
-    # `flat` is not optional once that split is narrowed. Unlike the GitHub
-    # twin, whose matched arm is a regex whose character classes reject U+2028,
-    # this arm is a substring test and assigns the whole line - so narrowing
-    # alone would put a live separator into a line this tool owns. `iid` is
-    # derived from the flattened value on purpose: a forged tail then fails
-    # `isdigit()` and the links block declines, saying so.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     for line in _untrusted.split_lines(output):
         line = _untrusted.flat(line.strip())
         if "/-/issues/" in line or "/issues/" in line:
@@ -303,12 +303,12 @@ def main() -> int:
     if links and iid and iid != "?" and not iid.isdigit():
         print(f"gl-issue-create OK iid={iid} url={url}  (links skipped — could not extract numeric iid)", file=sys.stderr)
     elif links and iid and iid != "?":
-        # #1993: a project carrying `?`, `#` or `%` reached this path with
-        # only its slashes escaped, so it spliced into the URL rather than
-        # naming a project. quote(..., safe="") is the same path-segment
-        # encoding `_repo_target.gl_project()` already uses for the primary
-        # `projects/:id` substitution -- one project string, one encoding,
-        # not two.
+
+
+
+
+
+
         encoded_project = urllib.parse.quote(project, safe="")
         for link in links:
             target_iid = link.get("target_iid")

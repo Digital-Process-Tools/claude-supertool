@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
-"""Git trail — trace a symbol/pattern through history via pickaxe search.
 
-Answers: "When was this added? When was it changed? When was it removed?"
-Combines git log -S (pickaxe) with contextual diffs for each hit.
-"""
+
+
+
+
 from __future__ import annotations
 
 import os
 import re
 import sys
 
-# Sibling import: runtime puts this dir on sys.path[0]; the test harness
-# loads scripts via importlib (no dir on path), so add it explicitly.
+
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
+sys.path.insert(0, os.path.dirname(_HERE))  
 
-from _git_common import _git, use_utf8_stdout  # noqa: E402
-from _env import env_int  # noqa: E402  (the one numeric-knob reader)
-import _untrusted  # noqa: E402  (a commit subject is not this tool's text — #1681)
+from _git_common import _git, use_utf8_stdout  
+from _env import env_int  
+import _untrusted  
 
 DEFAULT_MAX_COMMITS = 20
 DEFAULT_CONTEXT = 3
-# The detail section renders one `git show` per commit, so it is capped
-# independently of how many commits the pickaxe found. A *count* cut it, not a
-# size budget — the disclosure below must name the knob that actually governs
-# it, because pointing at SUPERTOOL_MAX_COMMITS would be a confident lie (#635).
+
+
+
+
 DEFAULT_DETAIL_CAP = 10
 
 
 def _format_error(stderr: str, pattern: str) -> str:
-    """Classify git errors into actionable messages."""
+
     s = stderr.lower()
     if "not a git repository" in s:
         return "ERROR: not inside a git repository."
     if "bad revision" in s:
         return f"ERROR: invalid revision range while searching for {pattern!r}."
-    # git's stderr at column 0 of a line this tool owns (#1638's shape, found
-    # here by #1681's test).
+
+
     return (f"ERROR: git failed searching for {pattern!r}: "
             f"{_untrusted.flat(stderr.strip())}")
 
@@ -52,16 +52,16 @@ def main() -> int:
 
     pattern = sys.argv[1]
     path = sys.argv[2] if len(sys.argv) > 2 else ""
-    max_commits = env_int("SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
-    context = env_int("SUPERTOOL_CONTEXT", DEFAULT_CONTEXT, minimum=0)
-    detail_cap = env_int("SUPERTOOL_TRAIL_DETAIL_CAP", DEFAULT_DETAIL_CAP, minimum=0)
+    max_commits = env_int(os.environ.get("SUPERTOOL_MAX_COMMITS"), "SUPERTOOL_MAX_COMMITS", DEFAULT_MAX_COMMITS, minimum=1)
+    context = env_int(os.environ.get("SUPERTOOL_CONTEXT"), "SUPERTOOL_CONTEXT", DEFAULT_CONTEXT, minimum=0)
+    detail_cap = env_int(os.environ.get("SUPERTOOL_TRAIL_DETAIL_CAP"), "SUPERTOOL_TRAIL_DETAIL_CAP", DEFAULT_DETAIL_CAP, minimum=0)
 
     print(f"# git-trail: {pattern!r}" + (f" in {path}" if path else ""))
 
-    # 1. Pickaxe search — find commits where pattern was added or removed
-    # Ask for one more than we will show. `git log -N` returning exactly N is
-    # indistinguishable from "there are exactly N" — the overshoot is what turns
-    # a silent ceiling into a statable one, and it costs a single extra row.
+
+
+
+
     log_args = [
         "log", f"-{max_commits + 1}", f"-S{pattern}",
         "--format=%h %ad %an | %s", "--date=short"
@@ -74,20 +74,20 @@ def main() -> int:
         print(_format_error(log_result.stderr, pattern))
         return 1
 
-    # Both halves, and here the split is more than a render (#1681). `%an` and
-    # `%s` are not pathnames, so a U+2028 in either reaches this raw: with
-    # `str.splitlines()` the tail of a subject became a LINE, the Timeline
-    # count grew by one, and — the part that is not `forges` at all —
-    # `c.split()[0]` below hands that line's first token to `git show` as
-    # argv. `git show --output=<file>` writes that file (measured, git 2.46.2),
-    # so a commit message chose a path on the reader's disk. `split_lines` is
-    # what closes it; `visible` keeps the separator out of the rendered row.
+
+
+
+
+
+
+
+
     commits = [_untrusted.visible(l.strip())
                for l in _untrusted.split_lines(log_result.stdout.strip())
                if l.strip()]
 
     if not commits:
-        # Try regex search as fallback
+
         log_args_regex = [
             "log", f"-{max_commits + 1}", f"-G{pattern}",
             "--format=%h %ad %an | %s", "--date=short"
@@ -96,7 +96,7 @@ def main() -> int:
             log_args_regex.extend(["--", path])
         regex_result = _git(log_args_regex, timeout=15)
         if regex_result.returncode == 0:
-            # Same stream, same shape, same repair as the pickaxe read above.
+
             commits = [_untrusted.visible(l.strip())
                        for l in _untrusted.split_lines(regex_result.stdout.strip())
                        if l.strip()]
@@ -116,25 +116,25 @@ def main() -> int:
 
     timeline_header = f"\n## Timeline ({len(commits)} commits)"
     if timeline_cut:
-        # No total is claimed, because none was measured: the overshoot proves
-        # only that more exist. Printing a number here would be the invented
-        # kind of disclosure this whole change exists to remove.
+
+
+
         timeline_header += (" [CAPPED: newest {} by count, more exist — raise "
                             "SUPERTOOL_MAX_COMMITS=N]").format(max_commits)
     print(timeline_header)
     for line in commits:
         print(f"  {line}")
 
-    # 2. Show contextual diff for each commit (what changed around the pattern)
-    # Plan first, print second. The marker has to go in the HEADER as well as
-    # the footer: the reader who is being cut off is cut off before reaching a
-    # footer, which is exactly the reader it exists for (#633).
+
+
+
+
     commit_hashes = [c.split()[0] for c in commits]
     detailed = commit_hashes[:detail_cap]
     detail_cut = len(commit_hashes) > len(detailed)
 
-    # The pool the detail section draws from may itself have been capped, so the
-    # denominator carries a `+` rather than pretending to be a measured total.
+
+
     pool = f"{len(commit_hashes)}+" if timeline_cut else str(len(commit_hashes))
 
     header = "\n## Details"
@@ -144,16 +144,16 @@ def main() -> int:
     print(header)
 
     for sha in detailed:
-        # Get the commit one-liner
+
         msg_result = _git(["log", "-1", "--format=%h %ad %an | %s", "--date=short", sha])
-        # One commit, so this is a SELECTION and `flat` is the whole answer
-        # (#1681) — unlike the every-line renders above, there is no other
-        # segment for a separator to hide. It is interpolated into a `###`
-        # heading this tool owns.
+
+
+
+
         msg = (_untrusted.flat(msg_result.stdout.strip())
                if msg_result.returncode == 0 else sha)
 
-        # Get the diff for this commit, filtered to lines containing the pattern
+
         diff_args = ["show", sha, f"--diff-filter=ACDMR", f"-U{context}"]
         if path:
             diff_args.extend(["--", path])
@@ -164,16 +164,16 @@ def main() -> int:
             print("  (diff unavailable)")
             continue
 
-        # Extract only hunks containing the pattern
-        # Both halves, disclosed BEFORE the parse rather than at the print
-        # (#1681). This loop keys on `diff --git` and `@@` at column 0 over
-        # file CONTENT, which git never quotes: with `str.splitlines()` a
-        # U+2028 inside an added line put a forged `@@` at the start of a line,
-        # which flushed the real hunk early and dropped the context after it
-        # from a render that claims to have cut nothing. Disclosing first makes
-        # the forged header a substring rather than a line, so the parse and
-        # the render agree. `keep` is the TAB: this is indented source, not a
-        # column-aligned cell.
+
+
+
+
+
+
+
+
+
+
         diff_lines = [_untrusted.visible(l, keep="\t")
                       for l in _untrusted.split_lines(diff_result.stdout)]
         relevant_hunks: list[str] = []
@@ -183,7 +183,7 @@ def main() -> int:
 
         for line in diff_lines:
             if line.startswith("diff --git"):
-                # Save previous hunk if relevant
+
                 if hunk_has_pattern and current_hunk:
                     if current_file:
                         relevant_hunks.append(current_file)
@@ -203,7 +203,7 @@ def main() -> int:
                 if pattern in line:
                     hunk_has_pattern = True
 
-        # Don't forget the last hunk
+
         if hunk_has_pattern and current_hunk:
             if current_file and current_file not in relevant_hunks:
                 relevant_hunks.append(current_file)
@@ -211,7 +211,7 @@ def main() -> int:
 
         print(f"\n### {msg}")
         if relevant_hunks:
-            for line in relevant_hunks[:40]:  # cap per commit
+            for line in relevant_hunks[:40]:  
                 print(f"  {line}")
             if len(relevant_hunks) > 40:
                 print(f"  ... ({len(relevant_hunks) - 40} more lines)")

@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
-"""Open a pull request from a payload, and hand back what you need next (#950).
 
-The payload route, not the colon CLI, for the same reason `gh-issue-create` has
-one: a PR body is long markdown with colons, code fences and quotes, and none of
-that survives `:`-tokenisation.
 
-**The base branch is never defaulted.** `head` comes from the current branch and
-`repo` from the origin remote, because both are unambiguous facts about where
-you are standing. A base is not: `master` and a release branch are equally
-plausible from the same cwd, and a wrong base silently retargets the merge into
-a branch nobody was reviewing against. An unresolvable base is a refusal.
 
-The receipt answers what the second call always was:
 
-* **base and head as resolved**, and where each came from, so a wrong default is
-  visible now rather than after the merge;
-* **whether any checks actually started.** Zero checks renders exactly like "not
-  yet pending" and is a completely different fact — a workflow that never fired
-  never will, and waiting for it costs a PR its first life;
-* **the issues the body links**, parsed with the same
-  `_checks.closing_issue_refs` `gh-pr` uses, echoed back so a malformed `Closes`
-  line is caught here instead of discovered after the merge — PR #908 shipped
-  with one and nothing anywhere raised an error.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -38,46 +38,46 @@ try:
     import tomllib
 except ModuleNotFoundError:
     try:
-        import tomli as tomllib  # type: ignore[no-redef]
+        import tomli as tomllib  
     except ModuleNotFoundError:
-        tomllib = None  # type: ignore[assignment]
+        tomllib = None  
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
-import _checks  # noqa: E402
-import _remote_default as _rd  # noqa: E402
-import _repo_target  # noqa: E402
-import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
-import _untrusted  # noqa: E402
-import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
-import _publish_safety  # noqa: E402  (#2100 -- the forge-write disclosure marker)
+from _console import use_utf8_stdout  
+import _checks  
+import _remote_default as _rd  
+import _repo_target  
+import _payload_keys  
+import _untrusted  
+import _digits  
+import _publish_safety  
 
-# GitHub's own run-creation latency, measured in #585 and reused by `gh-branch`
-# rather than re-guessed. Inside it, zero runs means "still coming"; past it,
-# whether any workflow covers this ref is UNKNOWN — a path filter and a workflow
-# that never fired look identical from here.
+
+
+
+
 CHECK_CREATION_GRACE = 900
 
 NO_CHECKS_YET = "no checks yet"
 CHECKS_READ = "checks read"
 CHECKS_UNKNOWN = "unknown"
 
-# The escape hatch for #1967, named to match the one `paste`/`edit` already
-# ship for the same shape (`literal_backslashes = true`, #1096) rather than
-# invent a second vocabulary for the same decision.
+
+
+
 LITERAL_BS_KEY = "literal_backslashes"
 
-# The escape hatch for #1838 -- a `Part of #N` pull request that genuinely
-# closes nothing. Named for what it records (a deliberate decision), not for
-# what it disables, so a template carrying it unconditionally reads wrong on
-# sight rather than looking like ordinary configuration.
+
+
+
+
 NO_CLOSE_KEY = "no_close"
 
-# Every key this op reads from a payload. Checked against the payload before
-# anything is created (#2123) -- a key outside this set is refused rather
-# than silently dropped. No alias vocabulary here: `body`/`body_file` are
-# this op's own native names and nothing else in this repo calls a pull
-# request body anything different.
+
+
+
+
+
 ACCEPTED_KEYS = {
     "repo", "title", "base", "head", "body", "body_file", "draft", "labels",
     "assignees", "reviewers", "milestone", LITERAL_BS_KEY, NO_CLOSE_KEY,
@@ -88,23 +88,23 @@ _LITERAL_BS_QUOTE = re.compile(r'\\"')
 
 
 def literal_backslash_quotes(text: str) -> List[tuple[int, int]]:
-    """Every backslash-quote pair in a decoded body -- (1-based line, 1-based
-    column) each.
 
-    The doubled-backslash detector `paste`/`edit` already ship (#1087, #1096)
-    scans a payload's own *source* for an even backslash run, because a TOML
-    literal block processes no escapes and what is typed is what lands. A
-    published PR body is different: `gh-pr-create` reads `body` through
-    `json.load`/`tomllib`, which DOES process escapes, so the defect this
-    issue is about is not in the payload source -- it is in what the escaping
-    decoded to. A JSON author who means a literal quote writes a single
-    escaped quote and gets a bare quote; one who (mistakenly) doubles the
-    backslash first gets a real backslash immediately followed by a real
-    quote in the decoded string -- #1967's own example: an `ev.get(...)`
-    snippet with a stray backslash in front of each quote. So this scans the
-    DECODED string for that two-character sequence, not the payload's raw
-    text.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     hits: List[tuple[int, int]] = []
     for m in _LITERAL_BS_QUOTE.finditer(text):
         line_start = text.rfind("\n", 0, m.start()) + 1
@@ -114,7 +114,7 @@ def literal_backslash_quotes(text: str) -> List[tuple[int, int]]:
 
 
 def literal_backslash_quote_refusal(hits: List[tuple[int, int]]) -> str:
-    """The refusal `main()` prints -- named occurrences, and the way out."""
+
     n = len(hits)
     shown = ", ".join(f"line {ln}, col {c}" for ln, c in hits[:5])
     more = f" (+{n - 5} more)" if n > 5 else ""
@@ -132,12 +132,12 @@ def literal_backslash_quote_refusal(hits: List[tuple[int, int]]) -> str:
 
 
 def no_closing_reference_refusal() -> str:
-    """The refusal `main()` prints when the body closes nothing and nobody
-    said that was deliberate. `no_close = true` is the escape -- a
-    Part-of-#N pull request is a real, recurring case this repo's own merge
-    gates protect by name (#1838), so this refusal must stay openable
-    rather than becoming a gate every payload template disables.
-    """
+
+
+
+
+
+
     return (
         "ERROR: body has no working closing reference (Closes #N), so "
         "merging this pull request as written would close nothing. Add "
@@ -148,12 +148,12 @@ def no_closing_reference_refusal() -> str:
         "and publish anyway.")
 
 
-# ---------------------------------------------------------------------------
-# payload
-# ---------------------------------------------------------------------------
+
+
+
 
 def validate(payload: dict) -> str | None:
-    """The refusals, before anything is created. None means the payload is fine."""
+
     if not payload.get("repo"):
         return ("ERROR: payload missing required field: repo — and it could not "
                 "be resolved from the origin remote either.")
@@ -176,13 +176,13 @@ def validate(payload: dict) -> str | None:
 
 def resolve_head(payload: dict, current_branch: str,
                  err: str) -> tuple[str, str, str]:
-    """`(head, source, error)`. Defaulted from the branch you are on, or refused.
 
-    The branch you are standing on is an unambiguous fact, so it is a legitimate
-    default — but only when it was actually read. A detached HEAD, or a git call
-    that did not answer, is refused rather than substituted, because the failure
-    mode of guessing here is a PR opened from the wrong branch.
-    """
+
+
+
+
+
+
     explicit = str(payload.get("head") or "").strip()
     if explicit:
         return (explicit, "payload", "")
@@ -194,20 +194,20 @@ def resolve_head(payload: dict, current_branch: str,
     return (current_branch, "current branch", "")
 
 
-# ---------------------------------------------------------------------------
-# checks
-# ---------------------------------------------------------------------------
+
+
+
 
 def checks_section(rollup, age_secs, sha: str,
                    read_error: str = "") -> tuple[List[str], str]:
-    """`(lines, state)` — and zero is never rendered as pending.
 
-    Three states, not two. A rollup that came back with entries is read. A
-    rollup that came back empty is an established zero, which is a different
-    sentence from "a check is pending" and is the one that costs a PR its first
-    life: the reader waits for a run that no workflow will ever create. A rollup
-    that did not come back at all is UNKNOWN and is neither of those.
-    """
+
+
+
+
+
+
+
     short = sha[:7] if sha else "?"
 
     if not isinstance(rollup, list):
@@ -219,14 +219,14 @@ def checks_section(rollup, age_secs, sha: str,
         ], CHECKS_UNKNOWN)
 
     if rollup:
-        # `summarize_github`, not `summarize(github_states(rollup))` (#1804):
-        # a check run a later run of the same name replaced is not a live
-        # failure — same discriminator #1792 gave the merge gate, so this
-        # post-create summary and `gh-pr:N:status` cannot disagree about the
-        # PR just created. `github_named_live`/`github_named_superseded`
-        # split the disclosure the same way `gh-pr:N` does: what is still
-        # red, and what stopped deciding anything but is named rather than
-        # dropped.
+
+
+
+
+
+
+
+
         lines = [f"  {_checks.summarize_github(rollup)}"]
         named = [(_untrusted.flat(n), s, k, i)
                  for n, s, k, i in _checks.github_named_live(rollup)]
@@ -263,7 +263,7 @@ def checks_section(rollup, age_secs, sha: str,
 
 
 def result_line(number: str, checks_state: str, issue_note: str) -> str:
-    """One line, no newline, that survives `| tail -1`."""
+
     if checks_state == CHECKS_UNKNOWN:
         checks = "check state unknown (not read)"
     elif checks_state == NO_CHECKS_YET:
@@ -274,9 +274,9 @@ def result_line(number: str, checks_state: str, issue_note: str) -> str:
     return f"[result] PR #{number} opened; {checks}{tail}"
 
 
-# ---------------------------------------------------------------------------
-# gh plumbing
-# ---------------------------------------------------------------------------
+
+
+
 
 def _gh(args: List[str], timeout: int = 30):
     return subprocess.run(["gh"] + args, capture_output=True, text=True,
@@ -287,17 +287,17 @@ def _gh_json(args: List[str], timeout: int = 30) -> tuple[object, str]:
     try:
         r = _gh(args, timeout=timeout)
     except FileNotFoundError:
-        return (None, "gh not found — install from https://cli.github.com")
+        return (None, "gh not found — install the GitHub CLI")
     except subprocess.TimeoutExpired:
         return (None, "gh timed out")
     except OSError as e:
         return (None, f"gh could not be run: {e}")
     if r.returncode != 0:
-        # The same `_gh_json` as `pr_merge.py`, with the same defect and the
-        # same fix (#1648): `split_lines` decides the boundary so the server
-        # cannot pick the segment with a U+2028, `flat()` keeps it to one line.
-        # `read_err` reaches `checks_section` and is rendered above this op's
-        # own `[result] no PR created`.
+
+
+
+
+
         tail = _untrusted.split_lines((r.stderr or r.stdout).strip())
         return (None, _untrusted.flat(tail[-1]) if tail
                 else f"gh exited {r.returncode}")
@@ -345,11 +345,11 @@ def _age_secs(iso: str):
     return int((datetime.now(timezone.utc) - when).total_seconds())
 
 
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
 
-def main() -> int:  # noqa: C901
+
+
+
+def main() -> int:  
     use_utf8_stdout()
     raw_arg = sys.argv[1] if len(sys.argv) > 1 else ""
     path = raw_arg[1:] if raw_arg.startswith("@") else raw_arg
@@ -444,10 +444,10 @@ def main() -> int:  # noqa: C901
         print(no_closing_reference_refusal())
         return 1
 
-    # #2100: appended AFTER the closing-reference parse above, never before --
-    # the marker text carries no "Closes" substring, but the order is a real
-    # constraint the issue names explicitly (a marker parsed as part of the
-    # gate would be a coincidence to rely on, not a guarantee).
+
+
+
+
     content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
 
     cmd = ["pr", "create", "--repo", repo, "--base", base, "--head", head,
@@ -472,7 +472,7 @@ def main() -> int:  # noqa: C901
         try:
             result = _gh(cmd, timeout=60)
         except FileNotFoundError:
-            print("ERROR: gh not found — install from https://cli.github.com")
+            print("ERROR: gh not found — install the GitHub CLI")
             return 1
         except subprocess.TimeoutExpired:
             print("ERROR: gh timed out creating the PR")
@@ -483,9 +483,9 @@ def main() -> int:  # noqa: C901
 
     if result.returncode != 0:
         print(f"ERROR: gh pr create failed (exit {result.returncode})")
-        # One line above this op's own `[result]`, so an unflattened body does
-        # not merely reach column 0 — it sorts above a real verdict this op
-        # wrote itself. The writer of the text is the GitHub API (#1606).
+
+
+
         print(_untrusted.flat((result.stderr or result.stdout).strip()))
         print(f"[result] no PR created ({head} -> {base} in {repo})")
         return 1
@@ -493,13 +493,13 @@ def main() -> int:  # noqa: C901
     url = ""
     for line in (result.stdout or "").splitlines():
         if "/pull/" in line:
-            # Flattened at the seam, not at each print. `str.splitlines()`
-            # consumes every line SEPARATOR, so no line here can be forged and
-            # #1652's argument holds — but it does not consume ESC, and this
-            # value is written at column 0 six times: `URL:`, `PR:` and the
-            # three `## Next` commands via `number`, and this op's own
-            # `[result]` verdict. That last one is the line #851/#853 exist to
-            # protect, and `number` inherits whatever the URL carried (#1660).
+
+
+
+
+
+
+
             url = _untrusted.flat(line.strip())
             break
     number = url.rstrip("/").split("/")[-1] if url else "?"
@@ -514,13 +514,13 @@ def main() -> int:  # noqa: C901
     print(f"Disclosure: {disclosure_state}")
     print()
 
-    # ---- did anything actually start? -----------------------------------
+
     checks_state = CHECKS_UNKNOWN
     check_lines: List[str] = []
-    # ASCII digits, the same test `run.py`'s `refuse_run_id` applies to a run id
-    # (#1727). `number` is parsed out of `gh`'s own stdout, so a non-ASCII digit
-    # here means `gh` printed one and the blast radius is low — but the loose
-    # spelling sitting next to the strict one is what gets copied, and it was.
+
+
+
+
     if _digits.is_ascii_int(number):
         data, read_err = _gh_json(
             ["pr", "view", number, "--repo", repo, "--json",
@@ -542,10 +542,10 @@ def main() -> int:  # noqa: C901
         print(line)
     print()
 
-    # ---- what will this close? -------------------------------------------
-    # `refs` was already computed above, before creation -- the refusal at
-    # #1838 depends on it. Not re-parsed here so the receipt and the gate
-    # can never disagree about what the same body carries.
+
+
+
+
     print("## Linked issues (parsed from the body you just submitted)")
     print(f"  {_checks.linked_issue_line(refs)}")
     if refs:
@@ -558,12 +558,12 @@ def main() -> int:  # noqa: C901
               "the payload acknowledged this pull request closes nothing "
               "deliberately.")
     else:
-        # Unreachable in the ordinary path: the refusal above already
-        # stopped a body with no reference and no NO_CLOSE_KEY from
-        # reaching `gh pr create`. Left as a real branch, not an assert,
-        # because `refs`/`NO_CLOSE_KEY` are read from mutable state and a
-        # future edit that reorders the two checks should not silently
-        # start opening these PRs unlabelled.
+
+
+
+
+
+
         issue_note = "no closing reference in the body"
         print("  No closing keyword in the body, so merging this will close "
               "nothing. Add `Closes #N` now if that is wrong — it is far "

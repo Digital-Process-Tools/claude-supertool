@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""php-cs-fixer formatter adapter. Emits SCHEMA.md JSON.
 
-Runs php-cs-fixer fix on the target file and computes before/after line diff
-to populate metrics.lines_added / lines_removed.
 
-Usage: php-cs-fixer.py <file>
 
-Env vars:
-  PHPCSFIXER_BIN     php-cs-fixer binary (default: php-cs-fixer)
-  PHPCSFIXER_CONFIG  --config path (optional)
-"""
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -21,10 +21,10 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "validators" / "common"))
-from refusal import guard_main  # noqa: E402
-from bin_resolve import describe_unresolved, resolve_bin_cmd  # noqa: E402
-from spawnable import already_a_path, spawnable  # noqa: E402
-from line_diff import line_diff as _line_diff  # noqa: E402
+from refusal import guard_main  
+from bin_resolve import describe_unresolved, resolve_bin_cmd  
+from spawnable import already_a_path, spawnable  
+from line_diff import line_diff as _line_diff  
 
 
 def emit(obj: dict) -> None:
@@ -46,14 +46,14 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
     phpcsfixer_bin_cmd_str = os.environ.get("PHPCSFIXER_BIN", "php-cs-fixer")
-    # Accept either a single binary path (may contain a space, e.g.
-    # the default Windows install location under "C:\\Program Files")
-    # or a shlex-quoted command line. Cross-platform test stubs pass
-    # e.g. "python /path/stub.py" (each token shlex.quote'd) so the
-    # stub runs on Windows too (no #!/usr/bin/env bash dependency).
-    # resolve_bin_cmd() tries the whole string as one path first, and
-    # only falls back to shlex.split when that does not resolve to a
-    # real executable (#2176, #2191).
+
+
+
+
+
+
+
+
     bin_cmd = resolve_bin_cmd(phpcsfixer_bin_cmd_str, "php-cs-fixer")
     phpcsfixer_bin = bin_cmd[0]
     phpcsfixer_config = os.environ.get("PHPCSFIXER_CONFIG", "")
@@ -88,11 +88,12 @@ def main() -> None:
         cmd += ["--config", phpcsfixer_config]
     cmd.append(file)
 
-    env = os.environ.copy()
-
     try:
-        # php-cs-fixer exits 0 when no fixes, 1 when fixes applied, 16+ on error
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, encoding="utf-8", errors="replace")
+
+
+
+
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         emit({
             "tool": "php-cs-fixer", "file": file, "ok": False, "count": 1,
@@ -117,7 +118,7 @@ def main() -> None:
 
     dur = int((time.time() - start) * 1000)
 
-    # php-cs-fixer: exit 0 = no changes, exit 1 = fixes applied, exit >=16 = error
+
     if r.returncode >= 16:
         msg = (r.stderr.strip() or r.stdout.strip())[:500]
         emit({
@@ -134,11 +135,11 @@ def main() -> None:
     try:
         after = open(file, encoding="utf-8", errors="replace").read()
     except OSError as e:
-        # php-cs-fixer ran -- exit < 16 -- but the file could not be re-read
-        # to compute what changed. `after = before` would report
-        # `lines_added: 0, lines_removed: 0`: identical to a genuine no-op
-        # (#2162). `verify_failed` says the 0/0 is "could not measure",
-        # never "nothing changed".
+
+
+
+
+
         after = before
         verify_failed = f"could not re-read file to verify changes: {e}"
 

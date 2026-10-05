@@ -1,49 +1,49 @@
 #!/usr/bin/env python3
-"""One name for a watch channel, above the two variables it derives (#1477).
 
-A private channel used to be two exports that had to agree:
 
-    export SUPERTOOL_WATCH_SOCK=/tmp/supertool-watch-oss.sock
-    export SUPERTOOL_WATCH_STATE_DIR=/tmp/supertool-watch-oss
 
-and `presets/watch/README.md` says the quiet part: **setting only the socket is
-worse than setting neither.** The poller slot is a pid file held `O_CREAT|O_EXCL`
-by exactly one process per state directory (#476), so a second session that
-redirects its socket and shares `/tmp` spawns no pollers at all — every slot is
-already held, by pollers that captured the *first* session's socket at spawn and
-keep it for life. Both boards render healthy from both sides (#1309).
 
-The two variables are never independently useful. The only arrangement they can
-express that a single name cannot is exactly the broken one, so the name is the
-knob and they are the escape hatch.
 
-**Why this is an environment variable and not a new config route.** A
-non-reserved key in an op's `.supertool.json` block already reaches the
-subprocess as a `SUPERTOOL_`-prefixed variable (`docs/contributing.md`), so
-`{"ops": {"radar": {"watch_name": "oss"}}}` arrives here as
-`SUPERTOOL_WATCH_NAME` with no new plumbing at all. What that route does **not**
-reach is the consumer: `claude-channel` is spawned by the harness from
-`.mcp.json`, never by supertool. That asymmetry is why `channel.consumer_lines`
-exists — the name has two homes, and two homes that can disagree need a check,
-not a promise.
 
-**Precedence, and it is a decision rather than an accident.** An explicit
-`SUPERTOOL_WATCH_SOCK` or `SUPERTOOL_WATCH_STATE_DIR` **overrides** the name.
-Not because an export is more authoritative in principle, but because it is the
-value a *running* poller already captured and cannot migrate away from
-(`README.md`, "A watcher spawned before the variable was changed"): making the
-name win would move the paths underneath a live fleet. The override is put in
-`notes` and every surface that resolves prints them. A name losing silently to a
-stale export is the failure this repo files hardest against, and half of what
-this module is for is making sure that cannot happen quietly.
 
-**`<base>` stays `/tmp`.** It is world-traversable and that is the subject of
-#1184/#1187/#1197/#1200 — a per-name subdirectory is an opportunity to stop
-deriving predictable names in a shared directory, and moving the base is a
-migration for every running poller. That belongs in its own issue. What is done
-here is narrower and free: the derived state directory is created `0700` rather
-than inheriting `/tmp`'s mode.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -54,79 +54,79 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
+sys.path.insert(0, str(Path(__file__).parent.parent))  
 
-import _image_root  # noqa: E402  (a root created by us and proven ours, #1493/#1518)
-import _untrusted  # noqa: E402  (a name is operator text on a rendered surface, #1423)
+import _image_root  
+import _untrusted  
 
 NAME_ENV = "SUPERTOOL_WATCH_NAME"
 SOCK_ENV = "SUPERTOOL_WATCH_SOCK"
 STATE_DIR_ENV = "SUPERTOOL_WATCH_STATE_DIR"
-#: Paired with `NAME_ENV` by a process that derived the name *for a specific
-#: directory* rather than inheriting it (#1785) -- `bin/oss-workspace` in the
-#: consuming `oss` plugin is the first such caller: it reads a repo's own
-#: `.oss.json` slug and exports both, precisely for a repo whose
-#: `.supertool.json` declares no `watch_name` at all (`DECLARED_SILENT`
-#: below). Absent, or naming a directory other than the one this check is
-#: about, changes nothing -- this is opt-in evidence, never a default.
+
+
+
+
+
+
+
 ROOT_ENV = "SUPERTOOL_WATCH_NAME_ROOT"
 
-#: Not `os.path.join`, and deliberately: these are AF_UNIX paths, the two
-#: constants they have to reproduce byte-for-byte are POSIX literals, and a
-#: backslash separator on one platform would make a derived name disagree with
-#: the default it is meant to sit beside.
+
+
+
+
 BASE_DIR = "/tmp"
 DEFAULT_SOCK = f"{BASE_DIR}/supertool-watch.sock"
 DEFAULT_STATE_DIR = BASE_DIR
 
-#: One path component, and nothing that can leave the directory it is joined to.
-#: A leading dot is out because a state directory nothing lists is a fleet that
-#: renders as absent; a leading dash is out because the name reaches argv-shaped
-#: contexts. 32 is long enough for `oss`, `dvsi`, `pr-1477` and short enough that
-#: the derived socket stays inside macOS's ~104-byte AF_UNIX path limit.
-#:
-#: `\Z`, not `$`: Python's `$` matches before a final newline, so `^…$` accepts
-#: `oss` followed by a newline as the name `oss` (#1188). The `.strip()` in
-#: `resolve` happens to hide that today, which is exactly the kind of accidental
-#: defence that guard exists to refuse — and `channel.ts` uses JavaScript's `$`,
-#: which is already strict, so the two ends only agree with `\Z` here.
+
+
+
+
+
+
+
+
+
+
+
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 
 
 class Resolved(NamedTuple):
-    """Where this process's watch channel lives, and how that was decided.
 
-    `notes` is not decoration. Every branch below that could surprise the reader
-    — an override, a half-configured pair — writes a line here, and the surfaces
-    print them. A resolution whose reasoning is invisible is the same defect as
-    a verdict whose evidence is invisible.
-    """
+
+
+
+
+
+
 
     name: str
     sock: str
     state_dir: str
     notes: list[str]
     refusal: str
-    #: True when the state directory **is the one the name derives**. A path the
-    #: operator handed over — or the `/tmp` default — is theirs, and its absence
-    #: stays an unanswerable state rather than something this code manufactures
-    #: (#693). `ensure_state_dir` will only create what this flag covers.
-    #:
-    #: A question about the *value*, not about which variable delivered it, and
-    #: that is #1534: `transport.poller_env` exports the resolved state
-    #: directory, so a re-exec'd poller saw an explicit `SUPERTOOL_WATCH_STATE_DIR`
-    #: and read its own parent's derivation as somebody else's path. The flag was
-    #: `False` there, `ensure_state_dir` returned without asking anything, and
-    #: nothing between the parent's check and the child's first write
-    #: re-established the directory. `state_dir_for(name)` is public and
-    #: reproducible, so equality with it settles ownership without a marker that
-    #: has to survive an exec — and an environment naming a *different* path is
-    #: the operator-supplied case it always was.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     state_dir_is_derived: bool = False
-    #: Whether `SUPERTOOL_WATCH_STATE_DIR` carried the value, which is no longer
-    #: the same question as the one above. Only `state_dir_provenance` reads it:
-    #: telling an operator the variable is unset inside a child whose environment
-    #: sets it is the misdirection #1477 removed, arriving from the other side.
+
+
+
+
     state_dir_env_set: bool = False
 
 
@@ -139,41 +139,51 @@ def state_dir_for(name: str) -> str:
 
 
 def flat_path(path: str) -> str:
-    """A socket or state directory, rendered into a line the *tool* owns (#1522).
 
-    Only a path derived from a `NAME_RE`-matched name is this module's own text.
-    `SUPERTOOL_WATCH_SOCK` and `SUPERTOOL_WATCH_STATE_DIR` come from the
-    environment, from an op's `.supertool.json` block, or — through
-    `channel.consumer_lines` — out of an `.mcp.json` this process did not write.
-    Interpolated raw, a separator in one of those puts foreign text at column 0,
-    where `watches:`, `radar` and `channel:health` write their own structural
-    lines. The reproduction in #1522 forges a second `watches:` row.
 
-    `disclose_newline=True`, not the default space (#1557): a path can hold a
-    newline, and rendering it as a space converts *this directory's name has a
-    newline in it* into a plausible path that is not on disk.
 
-    **Render only.** The value handed to `connect()`, to `os.listdir()` or to
-    `pid_path()` is never this one — flattening a path before *using* it would
-    make the tool operate on a name nobody has.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     return _untrusted.flat(path, disclose_newline=True)
 
 
-def resolve(env: dict[str, str] | None = None) -> Resolved:
-    """The socket and the state directory this process should use.
+def resolve(overrides: dict[str, str] | None = None) -> Resolved:
 
-    Pure: reads a mapping, touches no filesystem. `ensure_state_dir` is the
-    separate call for the one side effect, because a module constant computed at
-    import must not create directories as a side effect of somebody importing it.
-    """
-    src = os.environ if env is None else env
-    # `or` rather than `in`, matching the two variables it sits above: an
-    # operator who exports an empty string gets the default, not a refusal
-    # about a name they did not set.
-    raw = (src.get(NAME_ENV) or "").strip()
-    explicit_sock = src.get(SOCK_ENV) or ""
-    explicit_state = src.get(STATE_DIR_ENV) or ""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    if overrides is not None:
+        raw = (overrides.get("SUPERTOOL_WATCH_NAME") or "").strip()
+        explicit_sock = overrides.get("SUPERTOOL_WATCH_SOCK") or ""
+        explicit_state = overrides.get("SUPERTOOL_WATCH_STATE_DIR") or ""
+    else:
+        raw = (os.environ.get("SUPERTOOL_WATCH_NAME") or "").strip()
+        explicit_sock = os.environ.get("SUPERTOOL_WATCH_SOCK") or ""
+        explicit_state = os.environ.get("SUPERTOOL_WATCH_STATE_DIR") or ""
 
     notes: list[str] = []
     refusal = ""
@@ -191,12 +201,12 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
     sock = sock_for(name) if name else DEFAULT_SOCK
     state_dir = state_dir_for(name) if name else DEFAULT_STATE_DIR
 
-    # Both notes are gated on the value actually differing. `poller_env` pins
-    # *both* halves into an exec'd poller's environment (#1477), so the
-    # unguarded form printed "the socket is X, not X" and "poller slots are in
-    # X, not X" on every poller surface — an override notice for an override
-    # that did not happen, on the one surface this module exists to keep
-    # trustworthy (#1534).
+
+
+
+
+
+
     if explicit_sock:
         if name and explicit_sock != sock:
             notes.append(
@@ -211,9 +221,9 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
         state_dir = explicit_state
 
     if not name and bool(explicit_sock) != bool(explicit_state):
-        # The state `README.md` calls worse than setting neither. It does not
-        # stop being a footgun because the operator declined the name, and the
-        # name is the one-step way out of it.
+
+
+
         missing = STATE_DIR_ENV if explicit_sock else SOCK_ENV
         notes.append(
             f"{missing} is NOT set while its partner is — the half-configured "
@@ -227,19 +237,19 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
 
 
 def state_dir_provenance(resolved: Resolved) -> str:
-    """Which knob put the poller slots where they are, in the operator's words.
 
-    `cmd_watch`'s refusal used to end "Check that SUPERTOOL_WATCH_STATE_DIR names
-    a writable directory" unconditionally. Under a name that is the one variable
-    the operator deliberately did not set, so the sentence sends them to a knob
-    that is not in force — a refusal naming the wrong cause is barely better than
-    a silent one, and it is the same misdirection this file exists to remove.
-    """
+
+
+
+
+
+
+
     if resolved.state_dir_is_derived:
         if resolved.state_dir_env_set:
-            # A re-exec'd poller, or an operator who exported the derivation by
-            # hand. The directory is ours either way, but saying the variable is
-            # unset would be false in a process that can read it (#1534).
+
+
+
             return (f"{STATE_DIR_ENV} is set to the path {NAME_ENV}="
                     f"{resolved.name} derives")
         return (f"{STATE_DIR_ENV} is not set — this directory was derived from "
@@ -249,60 +259,60 @@ def state_dir_provenance(resolved: Resolved) -> str:
     return (f"the default; {NAME_ENV} or {STATE_DIR_ENV} would move it")
 
 
-#: What a scan of the state directory established about the directory itself.
-#: Three states, not two, because a name derives a directory only a *spawn*
-#: creates (`ensure_state_dir`) while the default is `/tmp`, which always exists:
-#: `os.listdir` was unreachable-by-luck on the default and raised on the first
-#: read after naming a channel (#1502).
-#:
-#: `ABSENT` is a knowable fact about the world — zero watchers, nothing has ever
-#: spawned on this channel. `UNREADABLE` is the admission that the population is
-#: unknown. A reader that collapses the second into the first prints a claim
-#: about the fleet on the strength of a listing that never happened, which is
-#: this preset's most-filed defect.
+
+
+
+
+
+
+
+
+
+
+
 STATE_DIR_OK = "ok"
 STATE_DIR_ABSENT = "absent"
 STATE_DIR_UNREADABLE = "unreadable"
 
 
 def state_dir_listing(state_dir: str) -> tuple[list[str], str, str]:
-    """(sorted entries, one of the three states above, why not). Creates nothing.
 
-    Here rather than in `transport`, because `transport` and `channel` both
-    enumerate this directory and `channel.py` already says of it that "a second
-    convention for it would be one more thing to keep in step". Two copies of a
-    three-state classifier is two places to get it wrong, and #1502's first fix
-    was scoped to `transport.py` while `channel.stranded_watchers` still turned
-    an unlistable directory into `none recorded an emit into this socket`.
 
-    Takes the directory rather than reading a module constant: each module
-    resolves its own, and the tests monkeypatch each module's.
 
-    It creates nothing. Manufacturing the directory on a read would give a read
-    side effects and resurrect #693 for an operator-supplied
-    `SUPERTOOL_WATCH_STATE_DIR`, which is why only a *derived* one is created and
-    only on the spawn path.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         return sorted(os.listdir(state_dir)), STATE_DIR_OK, ""
     except FileNotFoundError:
         return [], STATE_DIR_ABSENT, ""
     except OSError as err:
-        # A file at the name (`NotADirectoryError` on POSIX and on Windows), a
-        # mode that excludes this uid, a vanished mount. All the same answer: it
-        # is there and the population could not be established. `FileNotFoundError`
-        # is caught above and is not reachable here, which is what keeps "nothing
-        # spawned yet" from absorbing "could not look".
+
+
+
+
+
         return [], STATE_DIR_UNREADABLE, (
             f"{flat_path(state_dir)} could not be listed ({type(err).__name__})")
 
 
 def state_dir_absence_note(state_dir: str, state: str, why: str) -> str:
-    """One sentence for a reader whose listing found nothing, or "" for `ok`.
 
-    Shared so the two surfaces that say it cannot word it differently, and so a
-    third one cannot omit it.
-    """
+
+
+
+
     if state == STATE_DIR_ABSENT:
         return (f"the state directory {flat_path(state_dir)} does not exist yet, "
                 f"so nothing has ever spawned on this channel")
@@ -311,24 +321,24 @@ def state_dir_absence_note(state_dir: str, state: str, why: str) -> str:
     return ""
 
 
-#: The five ops this preset ships. A `watch_name` in one op's `.supertool.json`
-#: block reaches only *that* op's subprocess (`_supertool.py`, "Extra config keys
-#: as environment variables"), so the set is what decides whether a project has
-#: configured its channel or only half of it. `watch` and `unwatch` are the two
-#: that spawn and kill pollers: a project that declares the name on `watches`
-#: alone reads a private board over a default-channel fleet, which is #1309's
-#: half-configured state arriving through the config door instead of the
-#: environment one.
+
+
+
+
+
+
+
+
 WATCH_OPS = ("channel", "radar", "unwatch", "watch", "watches")
 
 CONFIG_NAME = ".supertool.json"
 
-#: What a look at the project above the cwd established. Four states, and the
-#: last two are the reason this is not a boolean: `no-config` is a fact about the
-#: world — nothing here claims this channel — while `unreadable` is the admission
-#: that the question was not answered. Collapsing the second into the first
-#: prints a claim about ownership on the strength of a read that failed, which is
-#: the defect this repository files hardest against.
+
+
+
+
+
+
 DECLARED_FOUND = "found"
 DECLARED_SILENT = "silent"
 DECLARED_NO_CONFIG = "no-config"
@@ -336,48 +346,48 @@ DECLARED_UNREADABLE = "unreadable"
 
 
 class Declared(NamedTuple):
-    """Which project claims the channel name, read from its own config.
 
-    Separate from `Resolved` and never consulted by it. The environment stays
-    authoritative for the same reason `resolve`'s precedence note gives: an
-    export is the value a *running* poller already captured, and letting a file
-    win would move the socket and the slot directory underneath a live fleet.
-    This answers a different question — *whose name is that* — and its only
-    consumer is a render.
-    """
+
+
+
+
+
+
+
+
 
     state: str
-    #: The config that answered, or "" when none was found.
+
     path: str
-    #: Every distinct `watch_name` declared, sorted. More than one is a project
-    #: whose own op blocks disagree.
+
+
     names: tuple[str, ...]
-    #: The op blocks that declared one, sorted.
+
     declaring_ops: tuple[str, ...]
-    #: The `WATCH_OPS` that declared none, sorted. Those resolve from the
-    #: environment alone.
+
+
     silent_ops: tuple[str, ...]
-    #: Why `unreadable`, and "" otherwise.
+
     why: str = ""
 
 
 def find_config(start_dir: str | None = None) -> tuple[str, str]:
-    """(the nearest `.supertool.json` at or above `start_dir`, why not).
 
-    The same upward walk the core does to decide which project an op belongs to,
-    reproduced here rather than imported: this module is loaded by a preset
-    subprocess that has no route back into the core, and the walk is a few lines.
 
-    **`os.path.isfile` is the wrong test here and that is the whole reason this
-    returns two values.** `genericpath.isfile` is an `os.stat` inside
-    `except (OSError, ValueError): return False`, so a directory in the walk that
-    this uid cannot traverse answers *there is no config here* in exactly the
-    words a directory that genuinely has none uses. The walk then keeps climbing
-    and `declared_names` reports `no-config` — a claim about the world built on a
-    look that failed, one level above the `open`/`json.load` pair that was
-    already careful to tell `unreadable` from absent. Raised in review of #1732
-    against this function's first version, which had it.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     here = os.path.abspath(start_dir if start_dir is not None else os.getcwd())
     while True:
         candidate = os.path.join(here, CONFIG_NAME)
@@ -385,8 +395,8 @@ def find_config(start_dir: str | None = None) -> tuple[str, str]:
             if stat.S_ISREG(os.stat(candidate).st_mode):
                 return candidate, ""
         except (FileNotFoundError, NotADirectoryError):
-            # The two shapes of "there is nothing here", on every platform CI
-            # runs. Anything else is a look that failed and is answered below.
+
+
             pass
         except OSError as err:
             return "", (f"{_untrusted.flat(candidate, disclose_newline=True)} "
@@ -399,18 +409,18 @@ def find_config(start_dir: str | None = None) -> tuple[str, str]:
 
 def declared_op_values(key: str, start_dir: str | None = None
                        ) -> tuple[str, str, dict[str, str], str]:
-    """(state, config path, {op: value} for each op block declaring `key`, why).
 
-    The parse `declared_names` used to hold inline, one key wider (#2135):
-    `watch_sources_path` asks the same four-state question of the same file, and
-    two copies of a four-state classifier is two places to get it wrong -- which
-    is the argument `state_dir_listing` already makes one module over.
 
-    `state` is one of the `DECLARED_*` constants. Only `DECLARED_FOUND` carries
-    a non-empty mapping, and `DECLARED_UNREADABLE` is never collapsed into
-    `DECLARED_NO_CONFIG`: the first is the admission that the question was not
-    answered, the second is a fact about the world.
-    """
+
+
+
+
+
+
+
+
+
+
     path, unreachable = find_config(start_dir)
     if unreachable:
         return DECLARED_UNREADABLE, "", {}, unreachable
@@ -436,12 +446,12 @@ def declared_op_values(key: str, start_dir: str | None = None
 
 
 def declared_names(start_dir: str | None = None) -> Declared:
-    """What the project above `start_dir` declares about the watch channel.
 
-    Reads a file, so it is deliberately not part of `resolve`, which is pure and
-    is imported by a detached poller. `transport.channel_disclosure` calls it on
-    the render path, where there is a reader.
-    """
+
+
+
+
+
     state, path, declaring, why = declared_op_values("watch_name", start_dir)
     if state == DECLARED_UNREADABLE:
         return Declared(state=state, path=path, names=(),
@@ -464,49 +474,49 @@ def _flat_list(values: tuple[str, ...]) -> str:
 
 
 def project_notes(resolved: Resolved, declared: Declared | None,
-                  env: dict[str, str] | None = None) -> list[str]:
-    """Whose channel this is, for a board that used to render every fleet alike.
+                  overrides: dict[str, str] | None = None) -> list[str]:
 
-    A name derives one socket and one poller-slot directory, so two projects
-    under one name are one fleet — events from one project's pollers arrive on
-    the other's channel, and each board reports a population that is not its own.
-    Every surface rendered that identically to a correct private fleet: the name,
-    the two paths, and no field naming an owner. The reported instance was four
-    repositories sharing one hand-copied `SUPERTOOL_WATCH_NAME` in one machine's
-    `settings.local.json` (#1732).
 
-    Silent when there is nothing to say — no name in force and nothing declared
-    is the default channel, and a banner on every board is one nobody reads
-    (#1495). Nothing here changes what is in force; a render cannot, and should
-    not, move a live fleet's paths.
 
-    Every value below is flattened. The name arrives from a file this process did
-    not write and the path from directory names an operator chose, and both land
-    at column 0 on `watches`' board, where a newline used to be able to forge a
-    row (#1423/#1522).
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if declared is None or not resolved.name:
-        # **Only a named channel has an owner to dispute.** The default paths are
-        # shared by construction and `README.md` says so, so "whose is this" has
-        # no answer worth a line there. The tempting extra case — a project that
-        # declares a name nothing exported — is dropped on purpose, twice over:
-        # it is nearly unreachable, because a `watch_name` in an op's block
-        # arrives at *that* op as `SUPERTOOL_WATCH_NAME` with no launcher
-        # involved, so the op whose block declares it always has it in force; the
-        # reachable half is an op whose own block is silent, which `silent_ops`
-        # reports from the declaring side and reports better. Measured cost of
-        # printing it anyway: twelve exact-stdout board tests in four unrelated
-        # suites gained a banner, which is the "banner nobody reads" #1495
-        # refused, arriving as churn.
+
+
+
+
+
+
+
+
+
+
+
+
         return []
     name = _untrusted.flat(resolved.name)
 
     out: list[str] = []
     where = _untrusted.flat(declared.path, disclose_newline=True)
     if declared.state == DECLARED_UNREADABLE:
-        # `path` is "" when the *walk* failed rather than the parse, and there
-        # `why` already names the path it could not reach. One branch, so the
-        # two ways of not knowing read as the same answer, which they are.
+
+
+
         what = (f"{where} could not be read ({declared.why})" if where
                 else declared.why)
         return [f"{what}, so which project claims {name} is unknown — "
@@ -516,15 +526,20 @@ def project_notes(resolved: Resolved, declared: Declared | None,
                 f"claims the name {name} — this socket and these poller slots "
                 f"may be another project's fleet"]
     if declared.state == DECLARED_SILENT:
-        root = ((env if env is not None else os.environ).get(ROOT_ENV) or "").strip()
+
+
+        if overrides is not None:
+            root = (overrides.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
+        else:
+            root = (os.environ.get("SUPERTOOL_WATCH_NAME_ROOT") or "").strip()
         if root and declared.path and os.path.abspath(root.rstrip(os.sep)) == \
                 os.path.dirname(os.path.abspath(declared.path)):
-            # A process that exported `name` said, separately, which
-            # directory it derived it for -- and it matches this one (#1785).
-            # That is not the same fact as an inherited name copied in from
-            # another project's settings, which is the case this warning
-            # exists for; without this check the two read identically and
-            # the warning fired on every healthy `radar`/`channel` call.
+
+
+
+
+
+
             return [f"{name} came from the environment, but {ROOT_ENV} "
                     f"says it was derived for this directory — not another "
                     f"project's fleet"]
@@ -556,30 +571,30 @@ def project_notes(resolved: Resolved, declared: Declared | None,
 
 def disclosure_lines(resolved: Resolved,
                      declared: Declared | None = None) -> list[str]:
-    """The channel this process is on, for any surface that renders a board.
 
-    `[]` when there is nothing to say — the default paths, no override, no
-    refused name. A banner printed on every board is one nobody reads, and on
-    the default channel there is no half-set state to disclose.
 
-    **Why a formatter here rather than a print in `transport` (#1495).** The
-    #1476/#1477 reviewer raised `notes` as computed-and-never-printed and it was
-    argued down there deliberately: `transport` is imported by a *detached
-    poller* whose stdout has no reader, so a print from it writes into nothing.
-    What was left open is exactly this — one formatter, consumed by every render
-    through `transport.channel_disclosure`, so `radar`, `watches` and
-    `channel:health` cannot disagree about the same resolution. `delivery_of`
-    lives in `transport` for the same reason.
 
-    None of the three values on this line is this module's own text, and the
-    docstring used to claim two of them were. The *name* arrives from an op's
-    `.supertool.json` block or from the environment, and it lands on `watches`'
-    fixed-width board, where a newline used to print a whole extra row at column
-    0 (#1423). The two **paths** are the same environment one variable over:
-    they are this module's text only when they were derived from the name, and
-    `SUPERTOOL_WATCH_SOCK` overrides exactly that (#1522). So all three are
-    flattened here, once, rather than at each of the three call sites.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     out: list[str] = []
     if resolved.name:
         out.append(
@@ -594,93 +609,93 @@ def disclosure_lines(resolved: Resolved,
 
 
 def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
-    """Create a *derived* state directory if it is missing. "" or why not.
 
-    A name derives a directory nobody has made, and `claim_pidfile`'s `os.open`
-    inside a missing directory raises `ENOENT` — which lands, correctly, in
-    `CLAIM_UNKNOWN` and a refusal telling the operator to check a variable they
-    deliberately did not set. Correct and useless: the point of the name is not
-    having to know about the directory.
 
-    **It creates only the directory the name derives, and that boundary is the
-    whole care in this function.** A `SUPERTOOL_WATCH_STATE_DIR` naming some
-    other path — and the `/tmp` default — is somebody else's, and a missing one
-    there is an *unanswerable* state that `cmd_watch` reports rather than repairs
-    (#693, `tests/test_unanswerable_checks_693.py`). Manufacturing it would trade
-    a loud refusal for a poller quietly spawned into a directory nobody asked
-    for, which is the same trade this repo keeps filing against.
 
-    **The question is the value, not the variable (#1534).** It used to be "the
-    operator did not set `SUPERTOOL_WATCH_STATE_DIR`", and `transport.poller_env`
-    sets it — so a re-exec'd poller read the directory *its own parent derived*
-    as operator-supplied, this function returned `""` without asking anything,
-    and the establishment below happened exactly once, in the parent, before the
-    spawn. Everything downstream inherited that: `claim_pidfile` and, since
-    #1540, every `write_state` in the poller. `state_dir_is_derived` is now
-    equality with `state_dir_for(name)`, which survives an exec because the
-    derivation is reproducible rather than because a marker was carried.
 
-    `state_dir` is passed rather than read off `resolved` because callers
-    monkeypatch the module constant; the flag says whether creating is allowed,
-    the argument says where. The two are not cross-checked, deliberately — every
-    caller passes `transport.STATE_DIR`, which is `RESOLVED.state_dir`, and a
-    test that patches one and not the other is asking about the argument.
 
-    **Creating it is not the same as establishing it, and this used to be
-    `os.makedirs(state_dir, mode=0o700, exist_ok=True)` (#1518).** The derived
-    leaf is `/tmp/supertool-watch-<name>`, `/tmp` is world-writable, and the name
-    is public — `6047d98` commits `"watch_name": "oss-supertool"` to this repo's
-    own `.supertool.json`. `exist_ok=True` accepts whatever already holds that
-    name and `makedirs` reaches it through `os.path.isdir`, which follows
-    symlinks, so a link planted at the leaf was adopted in silence and
-    `claim_pidfile`'s `O_CREAT|O_EXCL` then wrote the pid file inside the
-    planter's directory, where it is a perfectly ordinary new file. `mode=0o700`
-    applies only to directories that call creates, so in the pre-taken case it
-    was never a defence.
 
-    `_image_root.ensure` is the boundary instead of a third hand-rolled one: it
-    creates the leaf non-recursively, holds it open `O_RDONLY | O_DIRECTORY |
-    O_NOFOLLOW`, `fchmod`s it and then asks *that descriptor* about ownership and
-    mode, so the tightening and the two checks are three questions about one
-    object rather than three path resolutions that can each answer about
-    something different. Its Windows branch declines the arms `st_uid` and
-    synthesized permission bits cannot answer, rather than faking them.
 
-    **Reused rather than reproduced, and the name is the only thing that does not
-    fit.** The module was written for `gl-issue`'s attachment root (#1493) and
-    everything it exports beyond `default_root` is about a directory, not about
-    images; the shape it wants — a fixed leaf under a directory that already
-    exists, created by us, written by path afterwards — is exactly this caller's.
-    What differs here is that the leaf is public and committed rather than
-    per-uid, which makes the residual below more likely, not different in kind.
 
-    **This function has one caller, and that used to be the whole defence
-    (#1540).** `transport.claim_pidfile` calls it, and `claim_pidfile` is the one
-    path that spawns a poller — so the residual below was written as though a
-    poller were the only thing that ever wrote here. `transport.write_state` is
-    reached from `record_death` and `clear_deaths` in *reader* processes —
-    `watches`, `unwatch`, the `radar` heal — none of which claim a slot, and it
-    opened `<path>.tmp` by name. `write_state` now calls this itself on every
-    write, and writes through a `tempfile.mkstemp` temporary whose name nobody
-    can predict and whose `O_CREAT|O_EXCL` create cannot adopt an existing one
-    (#1542 — the `O_NOFOLLOW` that fix first used is `0` on Windows, so it
-    followed the link there while POSIX was green).
 
-    **Not closed, stated at the width it actually has.** Another local uid can
-    squat `/tmp/supertool-watch-<name>` ahead of us with a directory of their
-    own, and *every* write to that channel then refuses rather than landing in
-    it — no poller spawns, and no reader records a death or clears a ledger,
-    until it is removed. That is the correct side of the trade and it is named,
-    not fixed, the same way `docs/presets/gitlab.md` names it for the attachment
-    root. Two things this does not reach at all: an operator-supplied or default
-    `state_dir` is somebody else's path and is never established (#693), so on
-    the unnamed default the state files sit loose in world-writable `/tmp` and
-    each name's own containment is the whole boundary; and on Windows there is
-    no `O_NOFOLLOW` at all, so `_image_root`'s `lstat` on the directory is all
-    there is on the directory side, and on the file side the containment must
-    not depend on that flag — which is why the write goes through an
-    unpredictable `O_EXCL` temporary rather than a guarded fixed name (#1542).
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not resolved.state_dir_is_derived:
         return ""
     _root, why = _image_root.ensure(state_dir)

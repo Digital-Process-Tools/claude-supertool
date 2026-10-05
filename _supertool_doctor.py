@@ -1,29 +1,29 @@
-"""supertool core -- doctor / init (#2706).
 
-Split out of _supertool.py to keep that file under the Anthropic plugin
-directory's 256 KiB per-file limit. Imported lazily, inside the function
-body, by the op_doctor/op_init stubs still living in _supertool.py (so
-dispatch, _dispatch_impl and the op registry are untouched) -- never
-imported at _supertool.py module-load time.
 
-Every reference back into _supertool.py below goes through the qualified
-`_supertool.NAME` form rather than `from _supertool import NAME`, and is
-looked up at call time, not at import time. That is load-bearing: several
-tests patch e.g. `monkeypatch.setattr(supertool, "_which_excluding_cwd",
-...)` on the staying-behind helper, and `supertool` IS `_supertool` (the
-same module object, via supertool.py's own sys.modules shim, #931) -- a
-qualified attribute access performed inside a function body re-reads
-whatever is currently bound in that dict on every call, so the patch is
-seen. A bare `from _supertool import X` would instead bind X once, at
-this module's own import time, and silently stop seeing a later patch.
 
-The doctor/init helpers that moved here (_doctor_*, _init_*) are NOT
-re-exported back into _supertool.py -- the handful of tests that called
-or monkeypatched them directly (as opposed to through op_doctor/op_init)
-were migrated in this same change to reference _supertool_doctor
-directly, per CLAUDE.md's own rule against a re-export that keeps an old
-patch green while it no longer reaches the code.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -39,28 +39,28 @@ import _supertool
 
 
 def _doctor_interpreter() -> Dict[str, Any]:
-    """Facts about the interpreter answering this call (#1857).
 
-    `rosetta` is a tri-state, not a bool: `True` (translated), `False`
-    (confirmed native), or `None` — the sysctl node this reads
-    (`sysctl.proc_translated`) exists only on Apple Silicon, so it is absent
-    by design on an Intel Mac and answers nothing there. Defaulting the
-    unreadable case to `False` would assert "native" about a host nobody
-    checked, which is the exact failure #1857 was filed to stop happening
-    silently — an architecture mismatch is a performance fact, not a fault,
-    but only when it is reported rather than assumed away.
 
-    **`sysctl.proc_translated` is not trusted on its own.** Confirmed on real
-    hardware: `timeout 5 python3 -c '…sysctl.proc_translated…'` answers `1`
-    for a python3 binary `file` reports as `Mach-O 64-bit executable arm64`
-    — the flag reads as `1` when a translated ancestor sits anywhere in the
-    exec chain (Homebrew's `timeout` is compiled x86_64), not only when THIS
-    process is the one being translated. Rosetta translates x86_64 binaries;
-    an arm64 process can never itself be the thing being translated, so
-    `platform.machine() == "arm64"` forces `rosetta` to `False` regardless of
-    what the sysctl answers — the alternative publishes "install a native
-    interpreter" about an interpreter that already is one.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     machine = platform.machine()
     info: Dict[str, Any] = {
         "executable": sys.executable,
@@ -81,26 +81,26 @@ def _doctor_interpreter() -> Dict[str, Any]:
                 if r.returncode == 0 and out in ("0", "1"):
                     info["rosetta"] = out == "1"
             except (OSError, subprocess.TimeoutExpired):
-                # Deliberately swallowed: `rosetta` stays None, which is this
-                # op's third state — "could not tell" — and is rendered as
-                # such. A missing or hung `sysctl` is not evidence either way
-                # about translation, so neither True nor False may be
-                # inferred here, and raising would take the whole report down
-                # over one unanswerable line.
+
+
+
+
+
+
                 pass
     return info
 
 
 def _doctor_cpu_topology() -> Dict[str, Any]:
-    """Logical CPU count, plus a performance/efficiency split where askable.
 
-    macOS exposes the split via `hw.perflevel{0,1}.logicalcpu`; nothing in
-    the standard library answers it elsewhere, and this does not shell out
-    to a second tool to guess — `state` is `unknown` there rather than a
-    fabricated split. #1857's own case: a worker pool sized off
-    `os.cpu_count()` alone asks for one worker per core on a 5+6 chip and
-    gets six of them fighting the other five, and only the split shows that.
-    """
+
+
+
+
+
+
+
+
     topo: Dict[str, Any] = {
         "logical_cpus": os.cpu_count(),
         "performance": None,
@@ -121,8 +121,8 @@ def _doctor_cpu_topology() -> Dict[str, Any]:
                     topo["efficiency"] = int(e.stdout.strip())
                     topo["state"] = "split"
                 else:
-                    # perflevel0 answers and perflevel1 does not: a
-                    # non-hybrid Mac, not an unreadable one.
+
+
                     topo["state"] = "uniform"
         except (OSError, subprocess.TimeoutExpired, ValueError):
             topo["state"] = "unknown"
@@ -130,33 +130,33 @@ def _doctor_cpu_topology() -> Dict[str, Any]:
 
 
 def _doctor_symlink() -> Dict[str, Any]:
-    """Health of the `supertool` binary on PATH — the dangling-symlink trap.
 
-    `CLAUDE.md`'s own words: a plugin update can leave `~/.local/bin/supertool`
-    pointing at nothing, which is `exit 127` mid-session with no other signal.
-    Also flags when PATH resolves to a different file than the one answering
-    this very call — the ordinary, expected case inside a worktree (`python3
-    supertool.py` is run directly, and CLAUDE.md says to), surfaced rather
-    than silently assumed innocent, because the other cause of the same
-    symptom is a stale symlink target.
-    """
-    # #2611: the resolved path is spawned below (`[which, "version"]`, no
-    # cwd=) to compare its own reported version -- a raw shutil.which()
-    # would let a repo-planted "supertool.exe"/".bat"/".cmd" at cwd shadow
-    # the real tool on Windows, the same class fixed for _has_rtk()/
-    # _has_ctags() in this same change.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     which = _supertool._which_excluding_cwd("supertool")
     result: Dict[str, Any] = {"which": which, "symlink_target": None,
                               "dangling": False}
     if which is None:
         return result
     if os.path.islink(which):
-        # TOCTOU: the link can vanish between the check above and the read
-        # below (a plugin update mid-session is exactly the scenario this
-        # function exists to catch). An unguarded OSError here would crash
-        # the whole `doctor` op over one race window instead of degrading —
-        # so a link that disappears between the two calls answers `None`,
-        # not a crash and not a false `dangling: False`.
+
+
+
+
+
+
         try:
             target = os.readlink(which)
         except OSError:
@@ -175,15 +175,15 @@ def _doctor_symlink() -> Dict[str, Any]:
         result["path_resolves_to_running_module"] = None
     result["running_module"] = running
 
-    # #2121: a path mismatch alone does not mean stale. A launcher script
-    # that resolves the newest install at run time (CLAUDE.md's own
-    # documented remedy for #2071's dangling-symlink trap) necessarily
-    # fails the path comparison above while being exactly as current as
-    # the module answering this call. Ask the cheaper question directly:
-    # run the PATH entry with `version` and compare what it answers.
-    # Three states, not two -- `current` / `stale` / `unknown` -- because
-    # folding "could not run" into either would either mask a genuinely
-    # stale build or false-alarm a healthy one.
+
+
+
+
+
+
+
+
+
     result["path_version"] = None
     result["path_version_state"] = None
     if result["path_resolves_to_running_module"] is False and not result["dangling"]:
@@ -205,27 +205,27 @@ def _doctor_symlink() -> Dict[str, Any]:
 
 
 def _doctor_tracked_files() -> Optional[List[str]]:
-    """`git ls-files -z`, or `None` when the answer could not be obtained.
 
-    `None` is load-bearing: a validator's scope cannot be reported as
-    "not applicable" off a listing that itself failed, or a real gap reads
-    as furniture nobody needs to install.
 
-    `-z` rather than the default rendering, split on NUL rather than
-    `str.splitlines()` (#2022). Two defects in one call, both closed by the
-    same flag:
 
-    - `splitlines()` folds on ten separators (U+2028/U+2029 among them);
-      `git ls-files`' own delimiter is LF alone. A tracked path containing
-      U+2028 became two list entries under `core.quotePath=false`, and the
-      fragment after the separator reached `_validator_run_one`'s `target`
-      argument -- a path handed straight to a subprocess.
-    - Git C-quotes an unusual filename (one holding a backslash, for
-      instance) in its default rendering -- `"ff\\ff.py"`, literal quotes
-      included -- which `_match_glob` can never match against an ordinary
-      glob. `-z` disables that quoting entirely rather than requiring a
-      second unquoting pass this function would then have to get right.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         r = subprocess.run(["git", "ls-files", "-z"], capture_output=True,
                            text=True, timeout=15,
@@ -238,40 +238,40 @@ def _doctor_tracked_files() -> Optional[List[str]]:
 
 
 def _doctor_looks_absent(text: str) -> bool:
-    """Does this adapter-authored sentence read as "the binary is missing"?
 
-    One heuristic, applied to both routes an adapter uses to say it — the
-    `skipped()`/`absent()` third state, and the `errors` list. #1950's own
-    `absent()` helper escalates to an `errors`+`code:"adapter"` entry instead
-    of a `skipped` one the moment a repo names the tool in
-    `$SUPERTOOL_REQUIRE_VALIDATORS`, and several shipped adapters
-    (`phpstan`, `xmllint`, `node-check`, `prettier-check`, `bash-check`,
-    `phpmd`, `psr`, `lsp-diag`) report a missing binary as an inline `errors`
-    entry directly, never through `skipped()` at all. A classifier that only
-    read this heuristic off the `skipped` branch reported every one of those
-    as "could not tell" for a tool that is, in fact, definitively absent —
-    never wrong in the dangerous direction (never "resolves"), but a real
-    accuracy gap in the exact three-state count #1950 asks for.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     low = text.lower()
     return ("not found" in low or "not installed" in low
             or "could not be run" in low or "binary not found" in low)
 
 
 def _doctor_classify_probe(data: Dict[str, Any]) -> "Tuple[str, str]":
-    """Sort one `_validator_run_one` verdict into resolves/absent/could-not-tell.
 
-    Reuses the adapter's own vocabulary (`validators/common/refusal.py`)
-    rather than re-deriving it: `skipped()`/`absent()` already say "not
-    found" in their own words when the binary is missing, and
-    `crashed()`/`tool_fault()` already mark themselves `code: "adapter"` when
-    the tool ran and fell over without answering. Anything this cannot place
-    with confidence — an ambiguous skip reason, a scope-shaped decline this
-    probe should not have hit given it was pointed at a matching file — lands
-    on "could not tell" rather than "resolves", because laundering an
-    unreadable answer into a clean one is exactly the failure #1950 exists to
-    end.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
     if data.get("timeout"):
         return "could not tell", f"timed out after {data.get('duration_ms', 0)}ms"
     if "skipped" in data:
@@ -291,37 +291,37 @@ def _doctor_classify_probe(data: Dict[str, Any]) -> "Tuple[str, str]":
 
 
 def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
-    """The #1950 half: per configured validator, resolves/absent/could-not-tell.
 
-    Two costs are kept apart on purpose. Scope — does any tracked file match
-    this validator's `match` glob — is always computed, because it is free
-    (string matching against a `git ls-files` already paid for once). Binary
-    resolution is a subprocess per adapter and is gated behind `doctor:probe`
-    (issue's own words: "do not run 39 adapters to find out"); the default
-    render says "could not tell without probing" for every in-scope
-    validator rather than guessing from `shutil.which`, which the issue
-    documents as actively wrong (`npx` present, `stylelint` absent).
 
-    Probing invokes the adapter's own resolution path — never a
-    `shutil.which` sweep — against a real tracked file that matches its
-    `match` glob, which is also what surfaces the config half of #1950 for
-    free: `eslint.py`'s `_NO_CONFIG` decline and `stylelint`'s ignore-marker
-    skip are both ordinary `skipped()` results the real invocation already
-    produces when this tree lacks the config the tool needs, with no second
-    per-tool config-detection layer required.
 
-    **Probing always bypasses `_validator_run_one`'s own result cache**
-    (`~/.cache/supertool/validators/`, up to a 24h TTL by default). That
-    cache exists to make an *edit* fast on a file whose validator answer has
-    not changed; `doctor:probe` exists to answer "does this resolve NOW",
-    which a cache hit from before a binary was installed or removed would
-    silently contradict — the same silently-stale-green failure #1950 was
-    filed to end, one layer down through infrastructure reuse.
-    `$SUPERTOOL_NO_VALIDATOR_CACHE` is the existing, already-plumbed knob for
-    this; it is set for the duration of this function only and always
-    restored, so a concurrent `edit`/`validate` call in another process is
-    unaffected.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     validators = config.get("validators") or {}
     lines: List[str] = ["## Toolchain validators (#1950)"]
     if not validators:
@@ -344,7 +344,7 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
             glob = spec.get("match", "*")
             target: Optional[str] = None
             if not scope_unknown:
-                for f in files:  # type: ignore[union-attr]
+                for f in files:  
                     if _supertool._match_glob(f, glob):
                         target = f
                         break
@@ -367,13 +367,13 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
                 continue
             try:
                 data = _supertool._validator_run_one(name, spec, target)
-            except Exception as exc:  # noqa: BLE001 — a crashing probe is itself a finding
+            except Exception as exc:  
                 unknown += 1
-                # Flattened like every other adapter/filename-derived render
-                # in this loop (#2022 finding 3): `target` can legitimately
-                # carry a newline post-fix, and an exception commonly echoes
-                # its argument verbatim, so an unflattened str(exc) could
-                # forge a row here exactly as an unflattened `detail` did.
+
+
+
+
+
                 rows.append(f"- {name}: could not tell — probing it raised "
                             f"{type(exc).__name__}: {_supertool._flat_field(str(exc))}")
                 continue
@@ -406,20 +406,20 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
 
 
 def _doctor_looks_absent_formatter(text: str) -> bool:
-    """`_doctor_looks_absent`, widened for the formatter half's own failure
-    shape (#2086) -- kept as a separate function rather than editing the
-    validator's shared heuristic, so this addition cannot change what a
-    validator probe reports.
 
-    A SCHEMA-emitting formatter phrases an absent binary exactly like a
-    validator does ("RUFF_BIN not found: ruff") and the base heuristic
-    already catches that. A *legacy*, non-JSON formatter has no adapter
-    script standing between it and `subprocess.run(shell=False, ...)`, so
-    a missing binary there is Python's own `FileNotFoundError` text --
-    "[Errno 2] No such file or directory: 'binary'" -- which contains
-    neither "not found" nor "not installed". Left unwidened, every legacy
-    formatter's absent-binary case would misreport as "could not tell".
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
     low = (text or "").lower()
     if _doctor_looks_absent(text):
         return True
@@ -427,23 +427,23 @@ def _doctor_looks_absent_formatter(text: str) -> bool:
 
 
 def _doctor_classify_formatter_probe(data: Any) -> "Tuple[str, str]":
-    """Sort one `_formatter_run_one` verdict into resolves/absent/could-not-tell.
 
-    Mirrors `_doctor_classify_probe` (#1950) for the formatter twin of the
-    same dispatch (#2086) -- the shapes differ enough that reusing the
-    validator classifier directly would misread a formatter's own decline.
 
-    A SCHEMA-emitting formatter (`php-cs-fixer`, `phpcbf`, `prettier-write`,
-    `ruff-format`) reports an absent binary the same way every validator
-    does: an inline `errors` entry with `code: "adapter"`, never a `skipped`
-    key -- formatters have no third state of their own, see
-    `_formatter_run_one`. A legacy, non-JSON formatter (a bare `cmd` with no
-    adapter script) carries no `errors` list at all on failure; its only
-    signal is `ok: False` plus a top-level `msg` set by `_formatter_run_one`
-    itself (`OSError`, a timeout). Both routes are checked, in that order,
-    before falling back to the bare `ok` key -- an unreadable verdict must
-    never default to "resolves", the same rule #1950 states for validators.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not isinstance(data, dict):
         return "could not tell", "probe returned no verdict"
     errors = data.get("errors") or []
@@ -461,16 +461,16 @@ def _doctor_classify_formatter_probe(data: Any) -> "Tuple[str, str]":
     if isinstance(raw, str) and not data.get("ok", True) and (
         "Traceback (most recent call last)" in raw
     ):
-        # `_formatter_run_one`'s "legacy fallback" branch fires whenever
-        # stdout does not parse as SCHEMA JSON -- which is exactly what a
-        # crashing formatter SCRIPT (not the underlying tool) produces too:
-        # a raw `cmd` that fails to format a file and a custom adapter that
-        # raised before calling `emit()` are otherwise indistinguishable
-        # here, both landing on `ok: False` with no `errors`/`msg` key. A
-        # Python traceback in `raw` is the one signal that tells them apart
-        # without guessing, so it is read before the bare `ok` fallback
-        # below reports the crash as a working toolchain that merely found
-        # something wrong with this file.
+
+
+
+
+
+
+
+
+
+
         return "could not tell", "adapter raised an exception -- " + raw[:200]
     if "ok" in data:
         return "resolves", f"ok={data.get('ok')}"
@@ -478,54 +478,54 @@ def _doctor_classify_formatter_probe(data: Any) -> "Tuple[str, str]":
 
 
 def _doctor_formatters_section(config: Dict[str, Any], probe: bool) -> str:
-    """The formatter twin of `_doctor_validators_section` (#2086).
 
-    `doctor` reported validator toolchains in full (#1950) and said nothing
-    about formatters, so a repo with no working Python formatter -- the
-    subject of #2085 -- had no way to learn that from the one op that exists
-    to answer "what is this environment able to check/fix". The silence
-    read exactly like formatters being fine, which is this repo's own
-    defect class (CLAUDE.md, "The defect this codebase keeps having") aimed
-    at its own diagnostic.
 
-    Same cost split as the validator half: scope (does any tracked file
-    match this formatter's `match` glob) is always computed, because a
-    `git ls-files` listing is already paid for by the validator section run
-    moments earlier. Binary resolution costs a real subprocess and stays
-    behind `doctor:probe`, for the same reason -- up to N adapters is not a
-    cost a bare `doctor` should pay by default.
 
-    Unlike validators, `doctor:probe`'s formatter probe does not disable
-    `_formatter_run_one`'s cache: formatters have none to disable (no
-    caching layer exists for them, unlike `_validator_run_one`'s
-    `~/.cache/supertool/validators/`), so there is nothing to bypass.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     formatters = config.get("formatters")
     lines: List[str] = ["## Formatters (#2086)"]
     if formatters is None:
-        # No key at all -- nobody has DECLARED anything, so every write this
-        # tool makes goes out unformatted and nothing says so at the moment
-        # it lands. WARN rather than an unweighted bullet (#2316): unlike a
-        # genuine not-applicable ("no tracked file matches"), this is a
-        # capability switched off, not a fact about the tree.
+
+
+
+
+
         lines.append("- " + _supertool.mark("⚠") + " no \"formatters\" section in "
                      ".supertool.json — no formatter configured, and nothing "
                      "on record says that is intentional")
         return "\n".join(lines)
     if formatters == {}:
-        # An explicit empty dict is a DECISION on record -- the repo declared
-        # it wants no formatter, the same absent-vs-empty shape claude-oss's
-        # own `changelog_untagged` already uses. ok, not a nag (#2316).
+
+
+
         lines.append("- 0 configured — \"formatters\": {} on record, no "
                      "formatter declared")
         return "\n".join(lines)
     if not isinstance(formatters, dict) or not formatters:
-        # Present, but neither the dict this key is documented to hold NOR
-        # the empty-dict decision above -- a list, a string, 0, False. This
-        # is a malformed config, not "declared empty", and must not be
-        # laundered into the same ok line real {} gets (oss:auditor review
-        # of #2314x2316: `[]`/`""`/`0`/`False` all rendered the {} sentence
-        # verbatim, claiming a JSON shape the config did not actually hold).
+
+
+
+
+
+
         lines.append("- " + _supertool.mark("⚠") + " \"formatters\" is set but is not a "
                      "table (got " + type(formatters).__name__ + ") — expected "
                      "either no key, {} for an explicit decision, or a table "
@@ -544,7 +544,7 @@ def _doctor_formatters_section(config: Dict[str, Any], probe: bool) -> str:
         glob = spec.get("match", "*")
         target: Optional[str] = None
         if not scope_unknown:
-            for f in files:  # type: ignore[union-attr]
+            for f in files:  
                 if _supertool._match_glob(f, glob):
                     target = f
                     break
@@ -567,7 +567,7 @@ def _doctor_formatters_section(config: Dict[str, Any], probe: bool) -> str:
             continue
         try:
             data = _supertool._formatter_run_one(name, spec, target)
-        except Exception as exc:  # noqa: BLE001 — a crashing probe is itself a finding
+        except Exception as exc:  
             unknown += 1
             rows.append(f"- {name}: could not tell — probing it raised "
                         f"{type(exc).__name__}: {_supertool._flat_field(str(exc))}")
@@ -595,21 +595,21 @@ def _doctor_formatters_section(config: Dict[str, Any], probe: bool) -> str:
 
 
 def op_doctor(arg: str = "") -> str:
-    """Report the environment supertool runs in, and what it dispatches to.
 
-    Two halves, filed as #1857 and #1950. The interpreter/CPU/symlink half
-    always runs — it is in-process and cheap. The validator half always
-    reports scope, and only probes binary resolution when called as
-    `doctor:probe`, because that half costs a subprocess per adapter (up to
-    39 in this tree) and a doctor nobody runs because it takes thirty
-    seconds is worse than none.
 
-    A separate op rather than folding into `version`: this is what somebody
-    reaches for by name after a morning like the one #1857 describes, and
-    `version`'s own one-line contract (`f"supertool {VERSION}\n"`, asserted
-    by `tests/test_version.py`) is not the place to grow a multi-section
-    report.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
     probe = arg.strip().lower() == "probe"
     lines: List[str] = []
 
@@ -677,12 +677,12 @@ def op_doctor(arg: str = "") -> str:
             elif version_state == "current":
                 pass
             elif sym.get("dangling"):
-                # The version check is deliberately not attempted for a
-                # dangling symlink, so the `unknown` arm below must not be
-                # printed here: it would say "running it with `version` did
-                # not answer" about a subprocess that was never spawned, and
-                # hedge under the DANGLING line above it, which is a
-                # stronger and already-correct diagnosis (#2121).
+
+
+
+
+
+
                 pass
             else:
                 lines.append(
@@ -709,12 +709,12 @@ def op_doctor(arg: str = "") -> str:
 
 
 def _init_run_git(args, cwd):
-    """`git` in ``cwd``, trimmed stdout, or ``None`` on any failure.
 
-    Local rather than reusing `_doctor_tracked_files`'s subprocess pattern:
-    that helper runs from the process cwd and `op_init` needs an explicit
-    ``cwd`` (the repo root, resolved before this is ever called).
-    """
+
+
+
+
+
     try:
         r = subprocess.run(["git"] + args, capture_output=True, text=True,
                            timeout=15, cwd=cwd, encoding="utf-8",
@@ -727,22 +727,22 @@ def _init_run_git(args, cwd):
 
 
 def _init_parse_remote(url):
-    """Parse a git remote URL into (host, 'namespace/repo'), or None.
 
-    Mirrors `presets/_remote_default.py`'s `parse_remote`. Duplicated rather
-    than imported: presets are subprocess-invoked scripts with no package
-    boundary into core (`presets/` ships no `__init__.py`), and a sys.path
-    splice for one 20-line helper is more fragile than keeping the two in
-    sync by sharing the same two regexes verbatim.
-    """
+
+
+
+
+
+
+
     url = url.strip()
     if not url:
         return None
-    scp = re.match(r"^[\w.+-]+@([^:/]+):(.+)$", url)  # anchored-ok: url is .strip()ed above
+    scp = re.match(r"^[\w.+-]+@([^:/]+):(.+)$", url)  
     if scp:
         host, path = scp.group(1), scp.group(2)
     else:
-        uri = re.match(  # anchored-ok: url is .strip()ed above
+        uri = re.match(  
             r"^[a-zA-Z][\w+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", url)
         if not uri:
             return None
@@ -757,23 +757,23 @@ def _init_parse_remote(url):
 
 
 def _init_tracked_files(root):
-    """`git ls-files` in ``root``, or ``None`` when the call could not be
-    trusted -- not the same question as `_init_run_git`'s "" == None fold.
 
-    `_init_run_git` treats empty stdout the same as a failure, which is the
-    right read for a remote URL (an empty answer means no remote either
-    way) and the wrong one here: a real `git ls-files` failure (timeout, a
-    corrupted index, a permission error) must not read the same as "this
-    repo genuinely tracks no files yet" (#858 review). Collapsing the two
-    would let `init` silently drop `xml`/`ruff`/`shellcheck` out of a
-    generated config with no way for the caller to tell a real gap from a
-    tool that could not look -- the exact failure `_doctor_tracked_files`
-    a few thousand lines away in this same file exists to avoid, and whose
-    None-propagation discipline this mirrors rather than reuses (they run
-    against different cwds: `_doctor_tracked_files` reads the process cwd,
-    `init` must read an already-resolved repo root that can differ from it
-    before the root-vs-cwd check below has even run).
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         r = subprocess.run(["git", "ls-files"], capture_output=True,
                            text=True, timeout=15, cwd=root,
@@ -786,44 +786,44 @@ def _init_tracked_files(root):
 
 
 def _init_platform(host):
-    """github, gitlab, or None for a host `init` does not recognise.
 
-    github: exact host only (`github.com`). A substring match here would
-    reopen the exact spoof #1212 fixed for the preset's own host check
-    (`endswith("github.com")` matching `evilgithub.com`) -- `init` generates
-    the same `defaults.github_repo` that check exists to protect, one caller
-    over.
 
-    gitlab: `gitlab.com`, or a self-hosted instance whose host contains
-    "gitlab" -- the same substring convention `presets/_remote_default.py`'s
-    `origin_slug` already uses for self-hosted GitLab (`gitlab.dp.tools`
-    matches `"gitlab"`), kept consistent here rather than tightened
-    unilaterally in one of the two callers.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
     host = host.lower()
-    # Exact only -- see #1212 above. A substring/suffix match here would
-    # match "evilgithub.com" the same way `endswith` once did.
+
+
     if host == "github.com":
         return "github"
-    # Deliberately loose, unlike the exact match above: substring match,
-    # same convention as `presets/_remote_default.py`'s `origin_slug`, so a
-    # self-hosted instance like "gitlab.dp.tools" still resolves. Not an
-    # oversight, and #1212 does not justify tightening this line too -- it
-    # only concerns the github branch above. Do not tighten this to match
-    # the github branch without re-reading the docstring above.
+
+
+
+
+
+
     if host == "gitlab.com" or "gitlab" in host:
         return "gitlab"
     return None
 
 
-# Validator specs `init` may declare, keyed by the tracked-file predicate and
-# the binary each one's adapter actually shells out to (`shutil.which(TOOL)`
-# in the adapter itself -- `validators/ruff/ruff.py:57`,
-# `validators/shellcheck/shellcheck.py:56`). jsonlint is not in this table:
-# its adapter is stdlib `json.load()`, no external binary, so it is always
-# in scope rather than conditional (#858's own "*.json always").
+
+
+
+
+
+
 _INIT_CONDITIONAL_VALIDATORS = (
-    # (validator name, tracked-file suffixes, binary to resolve, match glob, spec)
+
     ("ruff", (".py",), "ruff", "*.py", {
         "cmd": "{python} {supertool_dir}/validators/ruff/ruff.py {file}",
         "match": "*.py",
@@ -850,64 +850,64 @@ _INIT_JSONLINT_SPEC = {
 
 
 def op_init(mode: str = "") -> str:
-    """Derive and write a starter .supertool.json for the current repo (#858).
 
-    Without a config, every preset op (`gh-pr`, `gh-issue`, `git-trail`,
-    `gl-mr`, ...) simply does not exist (#614) -- there is no fallback, only
-    silence. This derives what it safely can from the repo itself and
-    refuses, writing nothing, everywhere it cannot:
 
-    - **defaults.github_repo / defaults.gitlab_project** from the `origin`
-      remote. No remote, an unparseable URL, or a host that is neither
-      github.com nor a recognised GitLab host: decline rather than emit a
-      plausible-but-wrong repo slug (a config naming the wrong repo answers
-      confidently about someone else's PRs).
-    - **presets**: the matching platform preset, `git` always, `xml` only if
-      a tracked file has that extension. `mcp`/`watch` stay opt-in -- this
-      op never turns them on, because both need machine-specific setup
-      (an MCP server binary, a watch fleet name) `init` cannot infer.
-    - **validators**: `jsonlint` always (its adapter is stdlib `json.load`,
-      nothing to resolve). `ruff`/`shellcheck` only when BOTH a tracked file
-      matches their extension AND the adapter's own binary
-      (`shutil.which(...)`) actually resolves -- declaring a validator that
-      cannot run is the silent-pass class this repo's own contract forbids
-      (`docs/validators.md` "Declining instead of guessing").
-    - **allow_outside_cwd / allow_vim_shell**: always `False`. This repo's
-      own `.supertool.json` sets `allow_outside_cwd: true` because it is
-      supertool's own checkout -- a stranger's repo must not inherit a
-      widened capability it never asked for.
-    - **rtk**: always `False` too, but for a different reason -- #858 asks
-      for it explicitly, alongside the other two, as one of the "safe
-      defaults, not copies of whatever the last repo used". Unlike the
-      other two this is not a widened *capability* (`rtk` only decides
-      whether `read`/`grep`/`wc` delegate to an optional external binary
-      for compressed output, on a repo with no config at all `_rtk_enabled`
-      already defaults it to on) -- worth keeping distinct in review, but
-      the issue is explicit that the field belongs in this list regardless.
 
-    Two more refusals, both about the write itself rather than what to
-    write: an existing `.supertool.json` is never overwritten, hand-written
-    or not (`allow_vim_shell`/`allow_outside_cwd` widen what supertool may
-    do, so a silent rewrite is worse than doing nothing) -- and merging
-    presets into an already-hand-edited config is explicitly out of scope
-    for this op (#858 calls that the harder "auto change it for you" half
-    and leaves it to a follow-up); `init` only ever creates a file that does
-    not exist yet.
 
-    Previews by default -- prints the JSON it would write and does not touch
-    disk. `init:write` (or `:apply`/`:commit`) commits it through the same
-    `_run_with_validators` wrapper the dispatcher's own `paste` branch uses
-    (op_paste() called bare, outside that wrapper, was this op's one direct
-    call site in the whole module -- #858 review finding 1) rather than a
-    bare `op_paste()` call: mutation counting, notifier firing and rollback
-    handling all run the same way a caller-typed `paste` would get them.
-    One thing it does NOT buy, and the two must not be conflated: a
-    validator jsonlint declares can only be *applicable* by way of an
-    already-loaded `.supertool.json` -- and by construction the write only
-    ever runs where none exists yet (the refusal above), so the config that
-    would validate the file `init:write` just created is not loaded until a
-    later, separate call reads it back in.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     write = mode.strip().lower() in ("write", "apply", "commit")
 
     cwd = os.path.abspath(os.getcwd())
@@ -916,11 +916,11 @@ def op_init(mode: str = "") -> str:
         return ("ERROR: not inside a git working tree (or the repo is bare) "
                 "-- init needs a real repo root to derive defaults from.\n")
     root = os.path.abspath(root)
-    # Windows: `git rev-parse --show-toplevel` can answer with a lowercase
-    # drive letter and forward slashes independent of how `os.getcwd()`
-    # spells the same directory. `os.path.normcase` is the fix `_safe_path`
-    # already applies to this exact problem elsewhere in this file --
-    # POSIX-side it is a no-op, so the comparison stays exact there.
+
+
+
+
+
     if os.path.normcase(root) != os.path.normcase(cwd):
         return (f"ERROR: init only writes at the repo root -- run it from "
                 f"{root}, not {cwd}.\n")
@@ -999,14 +999,14 @@ def op_init(mode: str = "") -> str:
 
     out = []
     if write:
-        # Through the same wrapper every "paste" dispatch goes through
-        # (`_supertool.py`'s "elif op == \"paste\":" branch), not a bare
-        # `op_paste()` call -- that was this op's only direct call site in
-        # the module and skipped formatter/validator/rollback/notifier
-        # handling entirely (#858 review finding 1). `_OP_TARGETS["paste"]`
-        # reads `parts[1]` as the path, so a synthetic parts list gets the
-        # real target path validated and reported exactly like a caller
-        # who typed `paste:::.supertool.json:::...` themselves.
+
+
+
+
+
+
+
+
         out.append(_supertool._run_with_validators(
             "paste", ["paste", ".supertool.json", content],
             lambda: _supertool.op_paste(".supertool.json", content)))

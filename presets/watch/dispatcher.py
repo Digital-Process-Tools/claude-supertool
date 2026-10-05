@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
-"""Dispatcher for the `watch` preset — handles watch/unwatch/watches sub-ops.
 
-Each `watch:SOURCE:ID[:only=...]` invocation forks a poller child for
-SOURCE/ID. The child detaches (setsid + double-fork) and runs the source's
-`poller.poll()` function in a loop until terminal or until killed.
 
-The dispatcher does NOT contain source-specific logic. It only:
-  - Resolves the source's poller module through `sourcepath.find` (#2135)
-  - Manages PID files
-  - Spawns + kills children
-  - Renders the `watches` table
 
-A source plugin lives at `<dir>/<NAME>/poller.py`, where `<dir>` is
-`presets/watch/sources/` or any directory on `SUPERTOOL_WATCH_SOURCES_PATH`
-(#2135, `presets/watch/sourcepath.py`). It exposes:
-  - INTERVAL: int — seconds between polls
-  - poll(state: dict, ctx: dict) -> tuple[list[dict], dict]
-        returns (events_to_emit, new_state)
-  - is_terminal(state: dict) -> bool
-        True when the watcher should stop on its own (merged/closed/finished)
 
-Each event is a dict {event: str, payload: dict, notify_title?: str,
-notify_message?: str}. The dispatcher passes them to transport.emit_event.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import calendar
@@ -35,27 +35,27 @@ import time
 from pathlib import Path
 from typing import Any
 
-# Allow importing transport as a sibling module when launched via `python3 dispatcher.py`.
+
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
-import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist -- #905)
-import _untrusted  # noqa: E402  (the state files are somebody else's text, #1197)
-import naming  # noqa: E402  (which knob put the state directory where it is, #1477)
-import ratelimit  # noqa: E402  (fleet-wide GitHub API budget projection, #2509)
-import sourcepath  # noqa: E402  (a source may live outside the plugin, #2135)
-import transport  # noqa: E402
+sys.path.insert(0, str(Path(__file__).parent.parent))  
+from _console import use_utf8_stdout  
+import _st_hint  
+import _untrusted  
+import naming  
+import ratelimit  
+import sourcepath  
+import transport  
 
 
 def _load_source(name: str, resolved: "sourcepath.Resolved | None" = None):
-    """Import the poller module for SOURCE, from wherever it is allowed to live.
 
-    The one door into `sourcepath.find`, and deliberately so: `radar` and
-    `tiers/gl_mrs` call this function rather than resolving a directory of their
-    own, so all five watch ops search the same path in the same order. A second
-    `__file__ / "sources"` anywhere in this preset is the half-configured shape
-    of #1309 re-entering by the back door (#2135).
-    """
+
+
+
+
+
+
+
     poller_path, _origin = sourcepath.find(name, resolved)
     if poller_path is None:
         return None
@@ -67,43 +67,43 @@ def _load_source(name: str, resolved: "sourcepath.Resolved | None" = None):
     return module
 
 
-# Keys a poller writes when it could not look at all (#541). A state made only
-# of these is bookkeeping about a failed lookup, not an observation of anything.
+
+
 LOOKUP_ONLY_STATE_KEYS = {"lookup", "error"}
 
 
 def _is_bootstrap_state(state: dict) -> bool:
-    """True when this watcher has never successfully observed the world.
 
-    #464 keys "this emission describes what I found, not what changed" on state
-    being empty. Once a failed poll writes `{lookup, error}`, empty is no longer
-    the right test: a watcher whose *first* poll 401s has non-empty state and
-    has still seen nothing, so the first successful poll after the outage would
-    report an already-red MR as a live transition.
-    """
+
+
+
+
+
+
+
     return not state or set(state) <= LOOKUP_ONLY_STATE_KEYS
 
 
 def _parse_args(parts: list[str]) -> tuple[str, str, list[str]]:
-    """Parse SOURCE ID [only=ev1,ev2 ...] from positional argv segments.
 
-    Supertool's {args} placeholder explodes the colon-separated op into one
-    argv element per segment, so we receive ["gitlab-mr", "21803", "only=..."]
-    rather than a single colon-joined string.
 
-    Returns (source, id, allowed_event_keys_or_empty_meaning_all).
-    """
+
+
+
+
+
+
     if len(parts) < 1 or not parts[0]:
         raise ValueError("missing SOURCE")
     if len(parts) < 2 or not parts[1]:
         raise ValueError(f"missing ID for source {parts[0]!r}")
     source, watcher_id = parts[0], parts[1]
-    # PID/state filenames use `__` to separate source and id (see transport.py).
-    # Allowing it inside either field would make `list_active_pids` ambiguous.
+
+
     if "__" in source or "__" in watcher_id:
         raise ValueError("SOURCE and ID must not contain '__' (reserved as filename separator)")
-    # Both fields are interpolated straight into a /tmp path. Feed sources take
-    # a filter string as their id, so this is now reachable from ordinary use.
+
+
     if "/" in source or "/" in watcher_id:
         raise ValueError("SOURCE and ID must not contain '/' (they are filename components)")
     only: list[str] = []
@@ -119,41 +119,41 @@ def cmd_watch(parts: list[str]) -> int:
     except ValueError as e:
         print(f"ERROR: {e}")
         return 1
-    # `watch:SOURCE:ID:reload` (#2212) -- a third form beside `only=`, on the
-    # SAME op rather than a new one, because it is asking for a poller that
-    # already exists to pick up a change, not to be started. Checked before
-    # any of the spawn machinery below runs: reload never spawns, and the
-    # `sourcepath.resolve()` call just under this would otherwise search and
-    # report on a start that is not happening.
+
+
+
+
+
+
     if "reload" in parts[2:]:
         return cmd_reload(source, watcher_id)
     resolved = sourcepath.resolve()
-    # The same resolution the refusal below reports on. Resolving twice would
-    # stat every entry twice and, worse, let what was loaded and what is
-    # reported describe two different moments on disk.
+
+
+
     poller = _load_source(source, resolved)
     if poller is None:
-        # Every directory that was consulted, and every one that was declared
-        # and could not be (#2135). `Available: <shipped>` named neither the
-        # directory those came from nor the one the operator had just
-        # configured, so an absence arrived without saying where it looked --
-        # in the single message a user hits while setting the feature up.
+
+
+
+
+
         print(f"ERROR: unknown source {source!r}. Searched:")
         for line in sourcepath.search_report(resolved):
             print(line)
         return 1
-    # After the refusal, not before it: the refusal already prints every
-    # directory and every declined entry, and printing both put the same
-    # sentence on screen twice on the one path where a reader is reading
-    # carefully.
+
+
+
+
     for line in sourcepath.op_lines("watch", resolved):
         print(f"watch: {line}")
     status, pid = start_poller(source, watcher_id, only)
     if status == "alive":
-        # Never silent, and never rendered like a clean start: an operator who
-        # cannot tell "started" from "refused" learns nothing from running the
-        # op twice, which is how the duplicates in #476 went unnoticed for a
-        # day. Say what was found, and which live process holds the slot.
+
+
+
+
         print(f"Already watching {source}:{watcher_id} (PID {pid}) — "
               f"not starting a second. "
               f"Use ./supertool 'unwatch:{source}:{watcher_id}' to stop it.")
@@ -162,13 +162,13 @@ def cmd_watch(parts: list[str]) -> int:
         print(f"ERROR: could not spawn a poller for {source}:{watcher_id}")
         return 1
     if status == "unclaimable":
-        # The provenance rather than a fixed variable name (#1477): under
-        # `SUPERTOOL_WATCH_NAME` the state directory is derived, so naming
-        # `SUPERTOOL_WATCH_STATE_DIR` here would send the operator to a knob
-        # that is not the one in force. Derived no longer implies that variable
-        # is unset — a poller re-exec'd through `poller_env` is handed the
-        # derivation in it — and `state_dir_provenance` says which of the two
-        # this process is (#1534).
+
+
+
+
+
+
+
         print(f"ERROR: could not claim the slot for {source}:{watcher_id} — its "
               f"pid file at "
               f"{naming.flat_path(transport.pid_path(source, watcher_id))} could "
@@ -177,9 +177,9 @@ def cmd_watch(parts: list[str]) -> int:
               f"{naming.flat_path(transport.STATE_DIR)} is a writable directory "
               f"({naming.state_dir_provenance(transport.RESOLVED)}).")
         return 1
-    # An explicit re-arm is the operator saying they have seen the deaths and
-    # are starting over — the one door out of the respawn cap in
-    # `transport.DEATH_RESPAWN_LIMIT`. Nothing automatic clears the ledger.
+
+
+
     if transport.clear_deaths(source, watcher_id):
         print(f"Cleared the recorded deaths for {source}:{watcher_id} — "
               f"radar will respawn it again if it dies.")
@@ -191,33 +191,33 @@ def cmd_watch(parts: list[str]) -> int:
 
 
 def cmd_reload(source: str, watcher_id: str) -> int:
-    """`watch:SOURCE:ID:reload` -- signal a running poller to re-import its
-    own `poller.py` in place, keeping its baseline (#2212).
 
-    `unwatch` + `watch` is the alternative and it works, but it forks a fresh
-    process that resumes the prior `source_state` from disk instead of
-    starting from an empty one -- `unwatch` never clears the state file
-    (#2697), so nothing is re-announced on the new process's first tick
-    unless something actually changed while the old one was down. What it
-    does cost, unlike this signal, is a full re-import of both `poller.py`
-    and `dispatcher.py`/`transport.py`.
 
-    A multi-signal, on the same evidence `cmd_unwatch` requires before it
-    multi-kills: every PID here comes from a process whose own argv names
-    this exact source and id **and this channel** (`transport.watcher_pids`).
-    An untracked survivor on this slot is signalled too, for the same reason
-    `unwatch` stops one -- a poller this channel cannot see is one it cannot
-    tell has picked up the fix either.
 
-    This only re-imports `{source}`'s own `poller.py`. `dispatcher.py` itself
-    -- the shared back-off/retry/wait machinery every poller runs under
-    (`_retry_after_seconds`, `_wait_interruptible`, `MAX_RETRY_AFTER_SECONDS`,
-    the outer poll loop) -- was imported once by the running process at its
-    own spawn and is never swapped by this signal (#2518). A fix that lives
-    in `dispatcher.py` needs `unwatch` + `watch` to actually take effect; the
-    printed receipt below says so on every reload that lands on at least one
-    live PID.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     for line in sourcepath.op_lines("watch"):
         print(f"watch: {line}")
     if RELOAD_SIGNAL is None:
@@ -273,12 +273,12 @@ def cmd_reload(source: str, watcher_id: str) -> int:
                   f"event means the import failed and it is still on today's "
                   f"code; a `{RELOAD_EVENT}` event confirms the swap.")
     if failures < len(pids):
-        # At least one PID was actually signalled -- the caveat below is
-        # about what THAT signal reaches, so it belongs here, after the
-        # signalling is known to have landed on somebody, not before it
-        # (#2518 self-review: printing it unconditionally, before this loop,
-        # meant it still rendered a description of "this signal" even when
-        # every PID had already exited and nothing was reached at all).
+
+
+
+
+
+
         print(f"Note: this signal only re-imports {source}'s own poller.py in "
               f"the running process -- dispatcher.py itself (the shared "
               f"back-off/retry/wait machinery every poller runs under: "
@@ -300,12 +300,12 @@ def cmd_reload(source: str, watcher_id: str) -> int:
 
 
 def _stop_pid(pid: int) -> str:
-    """SIGTERM, then SIGKILL. Empty string on success, else why not.
 
-    Never raises. One PID this process may not signal must not abort a set, and
-    an OSError escaping from a process that had already exited on its own would
-    end the op with survivors still running — which is #511 with extra steps.
-    """
+
+
+
+
+
     hard = getattr(signal, "SIGKILL", signal.SIGTERM)
     try:
         os.kill(pid, signal.SIGTERM)
@@ -328,19 +328,19 @@ def _stop_pid(pid: int) -> str:
 
 
 def _foreign_slot_lines(census: dict, source: str, watcher_id: str) -> list[str]:
-    """Foreign pollers on exactly this slot — the #1893 disclosure.
 
-    `_foreign_poller_lines` answers "what does this board not show at all",
-    which is a fleet-wide question. This one answers "is *this* slot covered
-    by somebody else's poller", which is the question an operator staring at
-    an `unwatch` that reached zero of this channel's pollers actually has.
-    Same rule as #1881/#1890: this channel may not act on what it finds here,
-    so it is stated, never offered — no PID is printed, because a printed PID
-    reads as a target.
 
-    [] when the scan did not run (nothing here is evidence of absence) or when
-    it ran and found nothing on this slot on another channel.
-    """
+
+
+
+
+
+
+
+
+
+
+
     if not census["scan_ok"]:
         return []
     key = (source, watcher_id)
@@ -369,11 +369,11 @@ def _foreign_slot_lines(census: dict, source: str, watcher_id: str) -> list[str]
                      f"their argv (started before the channel token existed)")
     if not lines:
         return []
-    # Not "on another channel" unconditionally: an `unknown` entry is a
-    # poller whose argv predates the channel token, and its true channel is
-    # not established -- it could in fact be this one's, wearing a stale
-    # label. Categorical wording here would assert more than the census
-    # knows, which is exactly the shape #1881 was filed against one layer up.
+
+
+
+
+
     header = (f"The process scan also saw poller(s) for {source}:{watcher_id} "
               + ("on another channel, " if other_lines else "whose channel "
                  "could not be established, ")
@@ -385,17 +385,17 @@ def _foreign_slot_lines(census: dict, source: str, watcher_id: str) -> list[str]
 
 def _disclose_or_decline_foreign(census: dict[str, Any], source: str,
                                   watcher_id: str) -> None:
-    """`_foreign_slot_lines`, plus the third state its own `[]` return hides.
 
-    `[] ` out of `_foreign_slot_lines` means two different things — the scan
-    ran and found nothing on this slot elsewhere, or the scan never ran at
-    all — and only the caller holds `census["scan_ok"]` to tell them apart.
-    Printing nothing in both cases is the absence-read-as-absence defect this
-    whole issue is about, one call deeper: a caller that reached one of the
-    two early "nothing stopped" branches below with a broken scan got no
-    signal that a foreign poller could not be ruled out, where the plain
-    "no PID file, no process" branch already said so.
-    """
+
+
+
+
+
+
+
+
+
+
     if not census["scan_ok"]:
         print("The process scan for other channels was unavailable, so a "
               "poller covering this slot on another channel could not be "
@@ -407,11 +407,11 @@ def _disclose_or_decline_foreign(census: dict[str, Any], source: str,
 
 def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any],
                              census: dict[str, Any]) -> None:
-    """Say which kind of nothing this is. There are three, and they differ."""
+
     if info.get("tracked_refusal"):
-        # Not "no PID file": there is a name here and this process would not
-        # follow it. The two send an operator to different places, and the
-        # second one means somebody planted it (#1200).
+
+
+
         print(f"No readable PID file for {source}:{watcher_id} — "
               f"{info['tracked_refusal']}. Nothing was stopped, and whether a "
               f"poller holds this slot is not known from here. Inspect the "
@@ -437,49 +437,49 @@ def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any],
 
 
 def cmd_unwatch(parts: list[str]) -> int:
-    """Stop every live poller for SOURCE:ID and name each one.
 
-    A multi-kill, deliberately. The one-PID model failed the other way in #511:
-    `unwatch` stopped the tracked poller, the untracked ones kept emitting into
-    a context window, and the next `unwatch` answered "No active watcher" while
-    the state file was still being rewritten every tick. The only recovery was
-    `pkill`. A survivor nobody can reach is worse than a stop that is broader
-    than one process, *provided* the operator can see what it did.
 
-    So the breadth is bounded by evidence, not by a guess: every PID here comes
-    from a process whose own argv names this exact source and id as whole
-    tokens **and names this channel** (see `transport.poller_argv`), each is
-    printed with its provenance before any signal is sent, one that will not
-    die is named rather than swallowed, and an absence is only reported as an
-    absence when the scan that would have found a survivor actually ran.
 
-    The channel token is #1514: without it this stopped a poller belonging to
-    another channel, offered by a board that had listed it as this channel's
-    own orphan.
 
-    Not reached, and it matters: a poller spawned before the labelling landed
-    still wears its parent's argv, so it cannot be told apart from the process
-    that forked it — and since #1514 the same is true of one whose argv names
-    no channel, which is any poller started before that token existed.
-    `pkill -f presets/watch/` remains the only way to clear those, once. See
-    docs/presets/watch.md.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         source, watcher_id, _ = _parse_args(parts)
     except ValueError as e:
         print(f"ERROR: {e}")
         return 1
-    # Where sources come from, on this op too (#2135). `unwatch` loads no
-    # poller, so this changes nothing it does -- and that is the point: a
-    # `watch_sources_path` declared for `watch` alone is a fleet one op can
-    # start and another cannot account for, and the op that says nothing is the
-    # one where the operator never finds out.
+
+
+
+
+
     for line in sourcepath.op_lines("unwatch"):
         print(f"unwatch: {line}")
-    # One `ps` for both: `watcher_pids` needs only the `mine` bucket to decide
-    # what it may act on, and the #1893 disclosure below needs the other two.
-    # `poller_census` is what `scan_poller_pids` already computes internally,
-    # so threading it through costs nothing extra.
+
+
+
+
     census = transport.poller_census()
     info = transport.watcher_pids(
         source, watcher_id, scan=(census["mine"], census["scan_ok"]))
@@ -488,11 +488,11 @@ def cmd_unwatch(parts: list[str]) -> int:
     if skipped:
         print("Not signalling " + ", ".join(str(p) for p in skipped)
               + " — a watcher is never PID 1 nor this process.")
-    # An unreadable pid file is not released. `release_pidfile` with no `pid`
-    # unlinks unconditionally — that is correct for a poller giving up its own
-    # slot, and wrong here: this arm has just told the operator to inspect the
-    # path, and removing it is removing the thing to inspect. It also puts the
-    # unlink back on the one path #1200 took it off everywhere else.
+
+
+
+
+
     releasable = not info.get("tracked_refusal")
     if not pids:
         _report_nothing_stopped(source, watcher_id, info, census)
@@ -526,13 +526,13 @@ def cmd_unwatch(parts: list[str]) -> int:
 
 
 def _acknowledge_deaths(source: str, watcher_id: str) -> None:
-    """`unwatch` is the operator saying "seen". Clear the supervision record.
 
-    Without this every deliberate stop would leave a permanent warning row on
-    the board, readers would learn to skim it, and skimming is how a real red
-    gets missed — the failure #511 opens with. A deliberate stop is not a loss
-    of coverage, it is coverage being withdrawn on purpose.
-    """
+
+
+
+
+
+
     if transport.clear_deaths(source, watcher_id):
         print(f"Acknowledged the recorded death(s) for {source}:{watcher_id}.")
 
@@ -540,11 +540,11 @@ def _acknowledge_deaths(source: str, watcher_id: str) -> None:
 def _row_note(row: dict[str, Any]) -> str:
     notes = []
     if row.get("state_refusal"):
-        # First, because every other note on this row is a statement about a
-        # file that was read, and this row's was not (#1197). An empty
-        # LAST_EVENT here means "I could not look", and a board that renders
-        # that identically to "nothing has happened" is the defect this repo
-        # keeps filing.
+
+
+
+
+
         notes.append(f"state unread — {row['state_refusal']}")
     if row.get("dead"):
         recorded = row.get("deaths") or []
@@ -552,10 +552,10 @@ def _row_note(row: dict[str, Any]) -> str:
         notes.append(f"LOST — PID {last} died, no poller since"
                      + (f" ({len(recorded)} deaths recorded)" if len(recorded) > 1 else ""))
     elif len(row.get("deaths") or []) > 1:
-        # A slot that died once and healed cleanly says so on the radar run
-        # that healed it and then goes quiet. Only a *flapping* one keeps a
-        # note here — a permanent mark on a covered slot is what teaches a
-        # reader to skim the board, and the board has exactly one job.
+
+
+
+
         notes.append(f"flapping — {len(row['deaths'])} deaths recorded, currently respawned")
     if row.get("orphan"):
         notes.append("no pidfile")
@@ -566,12 +566,12 @@ def _row_note(row: dict[str, Any]) -> str:
 
 
 def _scan_unavailable_reason() -> str:
-    """Which kind of unavailable this is — the platform's, or this run's.
 
-    `watches` is the surface where someone is asking about the fleet on
-    purpose, so it is where the permanent version belongs. radar's board
-    carries only the one that is news (see `reap_duplicate_pollers`).
-    """
+
+
+
+
+
     if not transport.ps_scan_supported():
         return ("This machine's process scan cannot answer — either there is "
                 "no `ps` here, or the one there is does not accept the "
@@ -585,25 +585,25 @@ def _scan_unavailable_reason() -> str:
 
 
 def _foreign_poller_lines(census: dict) -> list[str]:
-    """What the scan saw that this board may not act on. [] when there is none.
 
-    #1881: 564 orphaned pollers on one other channel, `watches` printing `No
-    active watchers. None recorded as lost either.`, and an operator whose only
-    remaining tool was the `pkill` this preset tells them not to use. The scan
-    had seen all 564 and `scan_poller_pids` dropped them, which is right for
-    every caller that *acts* — the reap on that set is a cross-channel kill
-    (#1514) — and wrong for the one that only speaks.
 
-    So: counts, never rows. No SOURCE/ID is named here, because naming one is
-    what invites `unwatch:SOURCE:ID` against a slot this channel does not own,
-    and that offer is the exact render #1514 was filed to remove. The route out
-    is the other channel's own board, and the state directory is printed so the
-    operator can get there.
 
-    Empty when the scan did not run: a disclosure reading `0 pollers on another
-    channel` off a scan that never happened is this issue one layer in. The
-    caller prints `_scan_unavailable_reason()` for that case instead.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not census["scan_ok"]:
         return []
     other, unknown = census["other"], census["unknown"]
@@ -614,10 +614,10 @@ def _foreign_poller_lines(census: dict) -> list[str]:
     total += sum(len(p) for p in unknown.values())
     out = [f"the process scan also saw {total} labelled poller(s) that this "
            f"board may not list or stop:"]
-    # #2529: read fresh, not once per channel — the census this render was
-    # built from already paid for the `ps` scan, and this is a plain file
-    # read against `_supertool.py` on disk, cheap enough not to memoize
-    # across a `for` loop that in practice runs a handful of times.
+
+
+
+
     installed, _installed_why = transport.installed_version()
     other_versions = census.get("other_versions", {})
     for channel, slots in sorted(other.items()):
@@ -625,8 +625,8 @@ def _foreign_poller_lines(census: dict) -> list[str]:
         if channel in dirs:
             where = f"state dir {naming.flat_path(dirs[channel])}"
         elif dir_state != transport.STATE_DIR_OK:
-            # Not "no directory matches" — nobody could look. The two answers
-            # send an operator to different places.
+
+
             where = f"could not be resolved to a directory ({dir_why})"
         else:
             where = (f"no state directory under "
@@ -649,22 +649,22 @@ def _foreign_poller_lines(census: dict) -> list[str]:
 def _active_gh_rate_limit_errors(
     rows: list[dict[str, Any]],
 ) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
-    """(errors, unreadable) -- `ratelimit.active_gh_rate_limit_errors`, fed
-    from this channel's own watcher rows (#2525).
 
-    `rows` (from `transport.list_watchers`) carries `last_event`'s event
-    key, never the raw error text `is_rate_limit_error` classifies -- so
-    each `GH_SOURCES` row's state is read fresh here, one
-    `transport.read_state_checked` per row. **Not `read_state`** (self-review
-    finding): this function feeds `render_budget_lines`, which is a report,
-    and `transport.read_state`'s own docstring says a report call site wants
-    the checked read so "I could not read this watcher's state" does not
-    collapse into "this watcher has had no events" -- exactly the
-    absence-read-as-clean shape this whole preset exists to stop. A row
-    whose state could not be read (symlink refusal, corrupt/mid-write JSON)
-    is returned separately as `unreadable`, never silently folded into "no
-    active error".
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     states: dict[tuple[str, str], dict[str, Any]] = {}
     unreadable: list[tuple[str, str, str]] = []
     for row in rows:
@@ -681,69 +681,69 @@ def _active_gh_rate_limit_errors(
 
 
 def cmd_list() -> int:
-    """The authoritative view of the watcher fleet.
 
-    Authoritative because `ps` is not: a poller that predates the argv
-    labelling shows its parent's command line, so two watchers on different MRs
-    can render as byte-identical rows. In #511 that read as duplicates and cost
-    two wrong kills. This table is built from PID files *and* a scan for
-    labelled pollers, so it also shows the two things the PID files alone
-    cannot: an id with more than one live poller, and a poller whose PID file
-    was deleted out from under it.
-    """
-    # Above the board, because the board is a board *of a channel* and until
-    # #1495 it printed neither the name nor the export overriding it. Empty on
-    # the default paths with no override — a banner on every board is one nobody
-    # reads. One accessor, so this and `radar` cannot disagree.
+
+
+
+
+
+
+
+
+
+
+
+
+
     for line in transport.channel_disclosure():
         print(f"watches: {line}")
     for line in sourcepath.op_lines("watches"):
         print(f"watches: {line}")
     census = transport.poller_census()
     rows, scan_ok = transport.list_watchers(census)
-    # Above every early return below, because a fleet running on another channel
-    # is news whether or not this one has rows — and the arms that return early
-    # are precisely the ones #1881 was filed against. One `ps` feeds both.
+
+
+
     foreign = _foreign_poller_lines(census)
     for line in foreign:
         print(f"watches: {line}")
-    # #2509: the fleet's own projected GitHub API request rate, against the
-    # real budget one `gh api rate_limit` read reports -- built from the
-    # SAME census/scan this function already paid for above (`census`),
-    # never a second scan. Printed whether or not there are watcher rows:
-    # this is a fact about the *token*, which is shared by every channel on
-    # this machine and not scoped to this one's own watched rows.
+
+
+
+
+
+
     if census.get("scan_ok"):
-        # `interval_override()` (this module, #2509) wins over each source's
-        # own shipped default for every GH_SOURCES member -- the same value
-        # `_run_poll_loop` itself uses, so a fleet-wide override changes the
-        # projection this prints and not only the pollers' real behaviour.
+
+
+
+
         fleet_interval = interval_override()
         interval_by_source = ({source: fleet_interval for source in ratelimit.GH_SOURCES}
                               if fleet_interval else None)
-        # #2525 self-review: a cwd-derived `workflow_count` was wired in here
-        # to replace `CALLS_PER_TICK["gh-branch"]`'s flat `3`, and both
-        # spawned reviewers independently flagged it as unsound -- `watches`'
-        # own cwd at render time is not a reliable stand-in for "the repo
-        # every gh-branch poller in the fleet watches" (a poller resolves its
-        # own target via `SUPERTOOL_REPO` at spawn time, or the *spawning*
-        # process's cwd, either of which can differ from this one and from
-        # each other across pollers on different channels), so applying one
-        # repo's workflow count fleet-wide can undercount a different
-        # poller's real cost -- the exact failure this was meant to close.
-        # `ratelimit.gh_branch_calls_per_tick`/`workflow_file_count` are kept,
-        # tested, as building blocks for a caller that can resolve each
-        # poller's own repo; not wired in here until one can.
+
+
+
+
+
+
+
+
+
+
+
+
+
         projected, gh_counts = ratelimit.fleet_projected_requests_per_hour(
             census, interval_by_source=interval_by_source)
         rate_limit, rate_limit_why = ratelimit.read_rate_limit()
-        # #2525: the fleet's own currently-active rate-limit-shaped failures,
-        # read fresh off this channel's watcher state files -- what lets
-        # `render_budget_lines` say when a healthy-looking core reading is
-        # disagreeing with a poller that is presently being throttled by
-        # GitHub's secondary (abuse-detection) limit, which `/rate_limit`
-        # cannot show at all. `unreadable` is its own caveat, never folded
-        # silently into "no active error" (self-review finding).
+
+
+
+
+
+
+
         active_errors, unreadable = _active_gh_rate_limit_errors(rows)
         for line in ratelimit.render_budget_lines(rate_limit, rate_limit_why,
                                                    projected, gh_counts,
@@ -752,18 +752,18 @@ def cmd_list() -> int:
             print(f"watches: {line}")
     dir_state, dir_why = transport.state_dir_status()
     if dir_state == transport.STATE_DIR_UNREADABLE:
-        # Printed whether or not there are rows: the pid files are the primary
-        # population and this board is built from a listing that did not happen,
-        # so neither an empty board nor a short one is evidence of absence.
+
+
+
         print(f"WARNING — {dir_why}, so the poller slots recorded there could "
               f"not be enumerated. This board is built from what the process "
               f"scan found and nothing else; it is not evidence of absence.")
     if not rows:
         if dir_state == transport.STATE_DIR_ABSENT:
-            # A knowable state rather than a failure, and the crash it replaces
-            # took down every other op in the same call (#1502). Nothing is
-            # created here: only a spawn creates a derived state directory, and
-            # an operator-supplied one is never manufactured at all (#693).
+
+
+
+
             print(f"No watchers — the state directory "
                   f"{naming.flat_path(transport.STATE_DIR)} does "
                   f"not exist yet, so nothing has ever spawned on this channel "
@@ -774,11 +774,11 @@ def cmd_list() -> int:
                 print(_scan_unavailable_reason())
             return 0
         if dir_state == transport.STATE_DIR_UNREADABLE:
-            # The WARNING above is the whole answer about the directory. `No
-            # active watchers` would be a claim about the fleet made on the
-            # strength of a listing that never ran — but the process scan is a
-            # *second*, independent gap, and reporting one of two blindnesses is
-            # how a board starts lying quietly. Both arms disclose it.
+
+
+
+
+
             if not scan_ok:
                 print(_scan_unavailable_reason())
             return 0
@@ -788,12 +788,12 @@ def cmd_list() -> int:
             print(_scan_unavailable_reason())
             return 0
         if foreign:
-            # The unqualified sentence is a claim about the *fleet*, and the
-            # lines just above it counted pollers that are part of one. Printing
-            # both is how #1881's board managed to disclose 564 processes and
-            # deny them in consecutive lines. Two sentences, each true of what
-            # it is about: this one is scoped, and the clean case below keeps
-            # the strong wording it has earned.
+
+
+
+
+
+
             print("No watchers on this channel. None recorded as lost either.")
             return 0
         print("No active watchers. None recorded as lost either.")
@@ -801,44 +801,44 @@ def cmd_list() -> int:
     for r in rows:
         r["_pid"] = ("-" if r.get("dead") else
                      str(r["pid"]) + (f" (+{len(r['extra'])})" if r["extra"] else ""))
-        # Flattened here rather than in the rows, and rather than in
-        # `transport.read_state` (#1197). `source` and `id` are the rows'
-        # identity — `list_watchers` matches them against the process scan's
-        # keys — so mutating them upstream would change which slots the board
-        # believes are covered. `last_event` comes out of a state file that is
-        # read, mutated and written back six times over, so flattening at the
-        # read would put the mangled form on disk. This is the render, it is
-        # the only place these three become text, and it is where they stop
-        # being anybody else's words.
-        #
-        # Every one of them is somebody else's: `source` and `id` are parsed
-        # out of a *filename* in a world-writable directory, and a POSIX
-        # filename carries any byte but `/` and NUL. Before this, a state file
-        # whose `last_event` held two newlines printed a whole extra row —
-        # a plausible MR, watched, green — onto a fixed-width table.
-        #
-        # Before the widths, not after: `len()` of an unflattened value sizes
-        # the column against a string that will never be printed.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         r["_source"] = _untrusted.flat(r["source"])
         r["_id"] = _untrusted.flat(r["id"])
         r["_last_event"] = _untrusted.flat(r["last_event"] or "-")
         r["_note"] = _untrusted.flat(_row_note(r))
         r["_started"] = _untrusted.flat(r["started"] or "-")
-        # #1183: the column that stops a stranded fleet rendering as a quiet
-        # one. Four fixed labels out of `transport.delivery_of`, which reads
-        # `last_emit` and nothing else — so this board, `radar` and
-        # `channel:health` cannot disagree about the same field. The value is
-        # this repo's own vocabulary rather than anybody else's text, which is
-        # why it is not in the `_untrusted` note above.
+
+
+
+
+
+
         r["_delivery_state"] = transport.delivery_of(
             r.get("last_emit"), r.get("state_refusal") or "")
         r["_delivery"] = transport.DELIVERY_LABELS[r["_delivery_state"]]
-        # #2179: does this poller's own recorded fork-time source match what
-        # is on disk right now. Computed per row rather than once for the
-        # whole table because a dead row's `state_refusal` (or a pre-#2179
-        # row's absent fingerprint) has to reach `VERSION_UNKNOWN` the same
-        # way `_delivery_state` does above — a row this board could not read
-        # must not borrow another row's verdict.
+
+
+
+
+
+
         r["_version_state"], r["_version_why"] = transport.version_state_of(
             r.get("forked_fingerprint"), r.get("forked_fingerprint_error"),
             r.get("reloaded_at"), r.get("reloaded_fingerprint"),
@@ -865,12 +865,12 @@ def cmd_list() -> int:
     )
     if noted:
         header += "  NOTE"
-    # Above the table, not below it: the reader this protects is the one who
-    # acts on the first thing they read, which is the same reason
-    # `channel._health_note` sits above the stamps it is about. Unconditional
-    # once there are rows, because those three columns are always somebody
-    # else's words — a note printed only when a value turns out to be hostile
-    # would be a claim about the render rather than about the source.
+
+
+
+
+
+
     print(_untrusted.flat_note("the SOURCE, ID and LAST_EVENT columns",
                                "the pollers' own state files and filenames"))
     print(header)
@@ -898,13 +898,13 @@ def cmd_list() -> int:
               f"fact from a quiet watcher. A state file is written in place by "
               f"its own poller and lives in a directory anyone on this machine "
               f"can write to; inspect it before re-arming.")
-    # #1183. Two separate paragraphs because they are two separate facts, and
-    # collapsing them would be the trade this fix exists to refuse: NO LISTENER
-    # is a definite negative about delivery, `unknown` is the admission that
-    # nothing was established. Neither is a verdict about the *poller* — this
-    # board never proposes stopping, restarting or reaping one on the strength
-    # of the DELIVERY column, and says so, because a render that invited that
-    # reading is what cost two live watchers in #511.
+
+
+
+
+
+
+
     stranded = [r for r in rows if r["_delivery_state"] == transport.EMIT_NO_LISTENER]
     if stranded:
         print()
@@ -923,11 +923,11 @@ def cmd_list() -> int:
               f"last emit settled nothing either way — this platform has no AF_UNIX "
               f"socket, or the write failed for a reason that decides nothing, or "
               f"the state file itself could not be read. It is not a pass.")
-    # #2179: a poller running old code is not an error, it is old correct
-    # behaviour, so it produces well-formed events that are simply wrong and
-    # nothing else on this board can notice. Named here rather than left to
-    # the VERSION column alone, because a column is easy to skim past and
-    # this is exactly the render #2179 was filed against.
+
+
+
+
+
     stale = [r for r in rows if r["_version_state"] == transport.VERSION_STALE]
     if stale:
         print()
@@ -941,10 +941,10 @@ def cmd_list() -> int:
               f"automatically.")
         for r in stale:
             print(f"  {r['_source']}:{r['_id']} — {r['_version_why']}")
-    # #2694: a poller that already ran `:reload` and confirmed the swap must
-    # not fall back into the STALE block above and be told to run the same
-    # `:reload` again -- that is the exact loop the issue reports. Its own
-    # block names the remedy that can actually reach VERSION_CURRENT.
+
+
+
+
     reloaded = [r for r in rows if r["_version_state"] == transport.VERSION_RELOADED]
     if reloaded:
         print()
@@ -977,9 +977,9 @@ def cmd_list() -> int:
               f"`watch:SOURCE:ID` (radar heals them automatically up to "
               f"{transport.DEATH_RESPAWN_LIMIT} deaths), or acknowledge with "
               f"`unwatch:SOURCE:ID` to drop the row.")
-    # Gated on the multi-poller notes specifically, not on the NOTE column: a
-    # board whose only note is a LOST row would otherwise be told to go looking
-    # for a duplicate poller that is not there.
+
+
+
     if any(r.get("orphan") or r.get("extra") for r in rows):
         print()
         print("An id above has more than one live poller, or a poller with no "
@@ -995,74 +995,74 @@ def cmd_list() -> int:
 
 
 def reap_duplicate_pollers() -> list[str]:
-    """Stop every surplus poller on a slot that has more than one. Report it.
 
-    Returns the lines to print: one per slot reaped, plus a WARNING for any PID
-    that would not stop. An empty list means the scan ran and found no slot with
-    two pollers on it. A scan that could not run returns a `skipped` line and
-    kills nothing — see below.
 
-    What this may act on, and why that bound is where it is
-    ------------------------------------------------------
 
-    Only PIDs from `transport.scan_poller_pids`, which reads a process's *own*
-    argv (#511's `exec` labelling) and takes `source` and `watcher_id` as whole
-    tokens. That is the only thing a PID here proves about itself, and it is
-    exactly enough for the one judgement this makes: two pollers naming the same
-    slot are duplicates of each other, so stopping all but one provably leaves
-    the slot covered. No PID is ever killed for being unrecognised, for being
-    absent from a pidfile, or for belonging to a slot nobody asked about — the
-    #511 damage was three `ps` rows *inferred* to be duplicates, and two of them
-    were the watchers for two different MRs.
 
-    So three populations are deliberately not touched:
 
-      * A slot with one poller, tracked or not. A lone orphan is still the only
-        thing polling its slot; killing it trades a duplicate nobody has for a
-        blind spot, which is the trade #513 says is the wrong way round.
-      * A poller spawned before the labelling landed. It wears its parent's
-        argv, the scan cannot see it, and nothing can tell it from the process
-        that forked it. `pkill -f 'presets/watch/'` once, as docs/presets/watch.md
-        says — that judgement is an operator's, not this function's.
-      * A poller on another channel, or one whose argv predates the `chan=`
-        token and so names no channel at all (#1514). `scan_poller_pids`
-        returns neither, and that is where the bound lives rather than here.
-        Two channels each running one poller for the same `(source, id)` are
-        two slots — two pid files, in two state directories — and grouping
-        them as one made the reap stop the poller this channel's pid file did
-        not name. A cross-channel kill, reached through a listing bug.
-      * Anything at all, when `ps` could not be read.
 
-    The survivor is the pidfile's PID when it is one of the live ones, so the
-    slot keeps the poller `watches` and `unwatch` already name; otherwise the
-    lowest PID, which is arbitrary but deterministic — the pollers on one slot
-    are interchangeable, the choice being *stable* across runs is not.
 
-    Three states, not two
-    ---------------------
 
-    `ok` is silent, a finding names every PID it stopped, and a scan that could
-    not run says `skipped` out loud. A reaper that cannot see the fleet and
-    prints nothing renders byte-identically to one that looked and found it
-    clean — which is this repository's recurring defect with a body count
-    attached (docs/validators.md, "Declining instead of guessing").
 
-    One PID per signal, never a batch: a batched `kill $PID_LIST` against these
-    processes silently no-ops — exit 0, every process still alive, `-9`
-    included — while looking exactly like a reap that worked.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     found, scan_ok = transport.scan_poller_pids()
     if not scan_ok:
         if not transport.ps_scan_supported():
-            # A platform with no `ps` fails this scan on every run, forever. A
-            # line that prints unconditionally is not disclosure, it is
-            # furniture: a reader learns to skim it, and then it cannot do its
-            # job on the machine where `ps` was there and genuinely did not
-            # answer. The absence is permanent, so it is stated where someone
-            # asks about the fleet on purpose — `watches`, and the docs — and
-            # not on every board. Nothing is hidden that was ever knowable
-            # here: no scan means no duplicate was ever visible on this
-            # machine, with or without this line.
+
+
+
+
+
+
+
+
+
             return []
         return ["radar: reap skipped — the process scan was unavailable, so a "
                 "duplicate poller could not be ruled out. Nothing was stopped, "
@@ -1101,27 +1101,27 @@ def reap_duplicate_pollers() -> list[str]:
 
 
 def start_poller(source: str, watcher_id: str, only: list[str]) -> tuple[str, int]:
-    """Claim the (source, id) slot, then spawn its poller.
 
-    ("alive"|"spawned"|"failed"|"unclaimable", pid). `unclaimable` is the third
-    state (#693): the claim did not settle, so this process neither owns the
-    slot nor knows who does, and forking on that would be a spawn decided by an
-    absence of information.
 
-    The one door to a new poller, for every tier — `watch` and radar's feed
-    both come through here, because two spawn sites with two copies of the
-    "is one already running?" question is how they came to disagree (#476).
 
-    Ordering is #451's and is load-bearing: the slot is claimed *before* the
-    fork, so losing the race costs nothing — no detached child to reap, no
-    pidfile to unwind, nothing to clean up. The claim is written with this
-    process's PID and only repointed at the grandchild once that PID is known,
-    so the slot is never momentarily ownerless.
 
-    A spawn that fails gives the slot back. A claim left behind by a poller
-    that never started would refuse every future start for that id, and a
-    refusal nobody asked for renders as a watcher quietly not existing.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     owner = transport.claim_pidfile(source, watcher_id)
     if owner == transport.CLAIM_UNKNOWN:
         return "unclaimable", 0
@@ -1139,11 +1139,11 @@ def start_poller(source: str, watcher_id: str, only: list[str]) -> tuple[str, in
 
 
 def _spawn_poller(source: str, watcher_id: str, only: list[str]) -> int:
-    """Detach a poller child (double-fork) and return its PID to the parent."""
+
     r, w = os.pipe()
     pid = os.fork()
     if pid != 0:
-        # Parent: wait for child to report grandchild PID, then return.
+
         os.close(w)
         try:
             grand_pid = int(os.read(r, 32).decode().strip() or "0")
@@ -1152,7 +1152,7 @@ def _spawn_poller(source: str, watcher_id: str, only: list[str]) -> int:
         os.close(r)
         os.waitpid(pid, 0)
         return grand_pid
-    # First child: detach session, fork grandchild, report PID, exit.
+
     os.close(r)
     os.setsid()
     pid2 = os.fork()
@@ -1160,49 +1160,51 @@ def _spawn_poller(source: str, watcher_id: str, only: list[str]) -> int:
         os.write(w, str(pid2).encode())
         os.close(w)
         os._exit(0)
-    # Grandchild: close inherited fd, take an argv that names this watcher, run.
+
     os.close(w)
     _silence_stdio()
     _exec_labelled(source, watcher_id, only)
     _run_poll_loop(source, watcher_id, only)
     os._exit(0)
-    return 0  # unreachable
+    return 0  
 
 
 def _exec_labelled(source: str, watcher_id: str, only: list[str]) -> None:
-    """Replace this process image with one whose argv names this watcher.
 
-    A poller is forked, so until this call it wears the argv of whatever
-    spawned it — radar's, or the feed's. #511 is the bill for that: three `ps`
-    rows with byte-identical arguments were read as duplicate feed pollers and
-    two were killed, and they were the watchers for two different MRs, one of
-    them the MR that most needed watching.
 
-    exec, not `setproctitle`: no new dependency, and the command line it
-    produces is not a label *describing* the process, it **is** the process —
-    the same argv `transport.poller_argv` matches on, so what `ps` shows and
-    what `watches` shows cannot drift apart. The PID is unchanged by exec, so
-    the slot claimed before the fork and the PID already reported up the pipe
-    both stay correct, and #484's claim-before-fork ordering is untouched.
 
-    STATE_DIR travels in the environment because a fork inherits it and an exec
-    does not.
 
-    Returns on failure rather than raising: an unlabelled poller is a working
-    poller that is hard to see, which beats no poller at all.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not sys.executable:
         return
     try:
-        os.execve(sys.executable,
-                  transport.poller_argv(source, watcher_id, only),
-                  transport.poller_env())
+        argv = transport.poller_argv(source, watcher_id, only)
+
+
+        transport.pin_poller_env()
+        os.execv(sys.executable, argv)
     except OSError:
         return
 
 
 def _silence_stdio() -> None:
-    """Point stdio at /dev/null so a poller cannot write to its parent's terminal."""
+
     try:
         devnull = os.open(os.devnull, os.O_RDWR)
         os.dup2(devnull, 0)
@@ -1214,60 +1216,60 @@ def _silence_stdio() -> None:
         pass
 
 
-#: How many polls in a row may raise before a poller hands its slot back.
-#:
-#: Generous on purpose, and finite on purpose. The failure this bounds is not a
-#: blip -- it is an expired token, a deleted MR, a renamed project, a source
-#: module that no longer imports. Every one of those fails identically forever,
-#: and before #1852 the loop retried them until a reboot: 22 pollers alive at
-#: once on one machine, the oldest eight days into watching an MR that had
-#: stopped being interesting.
-#:
-#: A count rather than a wall-clock age, because a count is what the loop can
-#: observe without a clock it would then have to trust across a suspend. At the
-#: default 30s interval this is an hour of *uninterrupted* failure, which
-#: outlasts a VPN reconnect, a runner restart and a GitLab maintenance window
-#: and does not outlast a credential that is gone.
-#:
-#: A source that knows its own failure modes better overrides it by exposing
-#: `MAX_CONSECUTIVE_FAILURES`. Deliberately not an environment variable: the
-#: poller is reached through a fork and an exec, so an env var read here is one
-#: an operator has to have set in whatever shell spawned radar, and no source
-#: has asked for the knob. The per-source attribute is the narrower answer and
-#: is where the knowledge actually lives.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 MAX_CONSECUTIVE_POLL_FAILURES = 120
 
-#: What a poller says on its way out when the bound above is reached.
-#:
-#: The dispatcher's event, not a source's, and it is deliberately in no
-#: `events.json`: those files declare what a source can emit and what `only=`
-#: can select, and neither is true of this key. It bypasses `only` for the same
-#: reason -- a watcher that filtered away its own obituary would stop, release
-#: its slot and tell nobody, which is the silence this issue is about, one layer
-#: further in.
+
+
+
+
+
+
+
+
 GAVE_UP_EVENT = "watcher_gave_up"
 
-#: `unwatch` + `watch` picks up a merged `poller.py` change, but it forks a
-#: fresh process -- that new process reads `state` back from the state file
-#: on its first tick (`unwatch` never clears it, #2697), so nothing is
-#: re-announced as new unless the world actually changed while the old
-#: process was down. A signal reloads the SAME process's module in place
-#: instead, so `state`, which lives in that process's own memory and nowhere
-#: this dispatcher can reach or touch, is never replaced -- either way state
-#: is not lost.
-#:
-#: `None` on a platform with no SIGHUP (there is no fork/setsid poller model
-#: on such a platform either, so this never needs a second story). Not an
-#: env-configurable choice: this is a signal number, not a preset knob, and
-#: `getattr(signal, "SIGKILL", signal.SIGTERM)` just above is the same
-#: platform-optional idiom.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 RELOAD_SIGNAL = getattr(signal, "SIGHUP", None)
 
-#: Set from the SIGHUP handler below; consulted once per tick by
-#: `_run_poll_loop`, never from inside a signal handler itself beyond the
-#: single flag write (#2212's whole reason: the loop's own `state`, kept
-#: outside this dict entirely, must never be touched from a handler that can
-#: interrupt an arbitrary line of Python).
+
+
+
+
+
 _RELOAD_FLAG: dict[str, bool] = {"reload": False}
 
 
@@ -1275,35 +1277,35 @@ def _handle_reload_signal(*_a: object) -> None:
     _RELOAD_FLAG["reload"] = True
 
 
-#: The dispatcher's own events, in no source's `events.json` and bypassing
-#: `only` for the same reason `GAVE_UP_EVENT` does above: a reload that
-#: silently kept running old code, or one that quietly picked up nothing to
-#: change, would both look like nothing at all -- and #2212 names exactly
-#: that silence as the automatic-reload alternative's own hazard. This
-#: signal-driven shape is explicit rather than automatic, but a broken edit
-#: is exactly as broken either way, so it inherits the same duty: report,
-#: never crash the watcher that was trying to pick up a fix.
+
+
+
+
+
+
+
+
 RELOAD_EVENT = "watcher_reloaded"
 RELOAD_FAILED_EVENT = "watcher_reload_failed"
 
 
 def _reload_poller(source: str, watcher_id: str, current: Any) -> Any:
-    """Re-import SOURCE's poller.py in place. Returns the new module, or
-    `current` UNCHANGED on any failure.
 
-    Two failure shapes, one outcome: an import that raises (a genuinely
-    broken edit -- `_load_source` does not catch `exec_module`'s own
-    exceptions) and a source that no longer resolves at all (`_load_source`
-    returning None, e.g. the search path changed under it). Either way the
-    watcher keeps polling with the code it already had rather than dying on
-    its next tick, and exactly one event says which happened -- silence here
-    is indistinguishable from a reload that had nothing to pick up, which is
-    the same absence-read-as-presence shape this whole preset exists to
-    remove.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         reloaded = _load_source(source)
-    except Exception as e:  # noqa: BLE001 — a broken edit must not end the watcher
+    except Exception as e:  
         transport.emit_event(source, watcher_id, RELOAD_FAILED_EVENT,
                              {"error": f"{type(e).__name__}: {e}"})
         return current
@@ -1314,12 +1316,12 @@ def _reload_poller(source: str, watcher_id: str, current: Any) -> Any:
                                        f"where this searched"})
         return current
     transport.emit_event(source, watcher_id, RELOAD_EVENT, {})
-    # #2694: the event alone left the state file untouched, so `watches`
-    # kept comparing the fork-time fingerprint forever and stayed STALE no
-    # matter how many times this ran. Record the reload itself, read-modify-
-    # write like the fork-time write above (dispatcher.py ~1437) -- after
-    # `emit_event`, which does its own read/write of `last_event`/`last_emit`
-    # and would otherwise clobber this if written first.
+
+
+
+
+
+
     published = transport.read_state(source, watcher_id)
     reload_fingerprint, reload_fp_why = transport.source_fingerprint()
     published["reloaded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1329,30 +1331,32 @@ def _reload_poller(source: str, watcher_id: str, current: Any) -> Any:
     return reloaded
 
 
-#: Overrides every source's own `INTERVAL`, so a machine running several
-#: repos' channels is not implicitly committed to whatever each source's own
-#: module constant says (#2509). Unset, non-numeric or <= 0 all mean "use
-#: the source's own INTERVAL" -- a config key rather than a CLI flag, because
-#: the least invasive route to a value read at exactly the two places
-#: `interval` already is (fork and reload) is an environment variable read
-#: at those same two points, not a new argv shape threaded through
-#: `_parse_args` and the exec that labels every poller.
+
+
+
+
+
+
+
+
 SUPERTOOL_WATCH_INTERVAL_ENV = "SUPERTOOL_WATCH_INTERVAL"
 
-#: A `retry_after` this loop trusts is capped here rather than slept
-#: verbatim -- a malformed or far-future value must not park a poller
-#: silently for longer than GitHub's own rate-limit window ever runs.
+
+
+
 MAX_RETRY_AFTER_SECONDS = 3600
 
 
 def interval_override() -> int | None:
-    """The fleet-wide interval override, or `None` to use the source's own.
 
-    Read fresh at every call site rather than cached once: `_run_poll_loop`
-    reads it at fork and again on every `reload`, so a changed export is
-    picked up the same way a poller picks up a changed `INTERVAL` today.
-    """
-    raw = os.environ.get(SUPERTOOL_WATCH_INTERVAL_ENV)
+
+
+
+
+
+
+
+    raw = os.environ.get("SUPERTOOL_WATCH_INTERVAL")
     if not raw:
         return None
     try:
@@ -1363,16 +1367,16 @@ def interval_override() -> int | None:
 
 
 def _retry_after_seconds(retry_after: Any) -> int | None:
-    """Seconds from now until a poller's own `retry_after` (#2509), or
-    `None` when it cannot be trusted -- absent, unparseable, already past,
-    or implausibly far out.
 
-    `new_state["retry_after"]` is a plain ISO8601 UTC string
-    (`ratelimit.reset_iso`'s own format) written by a poller's error arm,
-    never re-derived here: this loop only turns that string into a sleep
-    duration, the same separation of "what happened" from "how long to
-    wait" the rest of this file keeps between `poll()` and its caller.
-    """
+
+
+
+
+
+
+
+
+
     if not retry_after or not isinstance(retry_after, str):
         return None
     try:
@@ -1386,24 +1390,24 @@ def _retry_after_seconds(retry_after: Any) -> int | None:
 
 
 def _wait_interruptible(seconds: int, stop_flag: dict[str, bool]) -> None:
-    """Wait `seconds`, in one-second steps, giving up early on a stop.
 
-    One call for both branches of the poll loop, because they disagreed. The
-    success branch already stepped a second at a time and checked the flag
-    between steps; the error branch was a single `time.sleep(interval)`, and
-    PEP 475 resumes an interrupted sleep for its remaining time rather than
-    returning early. So `unwatch` was honoured within a second by a poller that
-    was working and ignored for up to a full interval by one that was not --
-    which is exactly the poller an operator is most likely to be stopping.
 
-    Also gives up early on `_RELOAD_FLAG` (#2514): a #2509 rate-limit
-    back-off can sleep here for up to `MAX_RETRY_AFTER_SECONDS` (one hour),
-    and until this checked the flag too, a reload issued mid-back-off sat
-    unapplied for the whole hour -- this was the only place a long sleep
-    ran uninterrupted. The flag is only READ here, never cleared: the outer
-    loop clears it itself, at the top of its own `while`, the one moment it
-    is about to act on it, same as it always has.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     for _ in range(max(0, int(seconds))):
         if stop_flag["stop"] or _RELOAD_FLAG["reload"]:
             return
@@ -1412,17 +1416,17 @@ def _wait_interruptible(seconds: int, stop_flag: dict[str, bool]) -> None:
 
 def _record_give_up(source: str, watcher_id: str, failures: int,
                     message: str, repo: str = "") -> None:
-    """Write why coverage ended, then say so on the channel.
 
-    The state file is *kept*, unlike a terminal exit, and the two differ for a
-    reason. A terminal watcher has nothing left to explain -- the MR merged --
-    so its state file is only a way for a consumer that globs them to report a
-    merged MR as an active watch. A give-up is the opposite: `last_error` and
-    the count below are the entire record of why the slot went quiet, and
-    without them the board can render a stopped watcher but not a re-armable
-    one. `gave_up` is its own key rather than an inference from `last_error`,
-    because a poller that is failing and still trying writes `last_error` too.
-    """
+
+
+
+
+
+
+
+
+
+
     full = transport.read_state(source, watcher_id)
     full["gave_up"] = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1441,17 +1445,17 @@ def _record_give_up(source: str, watcher_id: str, failures: int,
 
 
 def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
-    """The poll loop. Writes PID file, runs until terminal or signal.
 
-    Two entry points, both the same process: the grandchild falls through to it
-    when the labelling exec could not run, and the exec'd image reaches it via
-    the `poll` sub-op in `main`. Nothing here may assume anything inherited
-    through the fork, because after an exec nothing was.
-    """
+
+
+
+
+
+
     _silence_stdio()
 
-    # The slot was already claimed by the caller in start_poller(); this only
-    # repoints it at the PID that is actually going to poll.
+
+
     transport.record_pid(source, watcher_id, os.getpid())
 
     poller = _load_source(source)
@@ -1459,59 +1463,59 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
         transport.release_pidfile(source, watcher_id, os.getpid())
         return
 
-    # Publish the event filter next to the state. `only` decides which of the
-    # source's events this poller will ever emit, and it otherwise lived only
-    # in this process's memory — so another tier could see the poller was alive
-    # and still have no way to tell one that will announce a merge from one
-    # filtered away from saying so. `gitlab-mr-feed` asks exactly that (#434),
-    # in a place where guessing wrong means a transition nobody reports.
+
+
+
+
+
+
     published = transport.read_state(source, watcher_id)
     published["only"] = list(only)
-    # A long-lived poller runs the code it was forked with, and nothing said
-    # which version that was (#2179): the fix landed in `8e9ac260`, five days
-    # before a still-running poller's fork, was released, and that poller
-    # never ran it. Recorded once, here, next to `only` — this is the one
-    # moment a poller's own source is *this* source rather than whatever a
-    # future `watches` render happens to find on disk.
+
+
+
+
+
+
     fingerprint, fp_why = transport.source_fingerprint()
     published["forked_fingerprint"] = fingerprint
     published["forked_fingerprint_error"] = fp_why
-    # #2694 self-review: `unwatch` never deletes the state file -- only a
-    # poller reaching a terminal state does (see the `finally` block below).
-    # A fresh fork therefore reads back whatever `reloaded_at`/
-    # `reloaded_fingerprint` an EARLIER process on this same slot recorded,
-    # and without this, `version_state_of` would read a brand-new, genuinely
-    # current process as still RELOADED -- quoting a stale timestamp and
-    # recommending `unwatch` + `watch` for a row that was just unwatched and
-    # watched. A fork is exactly the event that makes any earlier reload
-    # moot, so it is also the one place that must clear it.
+
+
+
+
+
+
+
+
+
     published.pop("reloaded_at", None)
     published.pop("reloaded_fingerprint", None)
     published.pop("reloaded_fingerprint_error", None)
     transport.write_state(source, watcher_id, published)
 
-    # Read once per process, not once per poll (#1952): the cwd's own remote
-    # cannot change under a running watcher, and re-shelling out to `git` on
-    # every 30s tick would pay for an answer that never differs.
+
+
+
     repo = transport.repo_slug()
 
     state: dict[str, Any] = transport.read_state(source, watcher_id).get("source_state", {}) or {}
-    # No prior state means this watcher knows nothing yet, so whatever its
-    # first poll emits describes what it found rather than what changed. That
-    # emission is deliberate — it is how a fresh watcher reports an already-red
-    # MR, and gitlab-mr-feed leans on it — but the consumer has to be able to
-    # tell it apart from a live transition (#464). Keyed on state, not on
-    # process age: a poller restarted with its state intact is not bootstrapping.
+
+
+
+
+
+
     first_tick = _is_bootstrap_state(state)
     ctx = {"source": source, "id": watcher_id, "only": only}
     interval = interval_override() or int(getattr(poller, "INTERVAL", 30))
     stop_flag = {"stop": False}
     reached_terminal = False
-    # The error branch's own bound (#1852). A failed poll produces no new state,
-    # so the terminal check below cannot be consulted from it — which is exactly
-    # why it retried forever. Counted here rather than inferred from the state
-    # file: the count has to reset on the first success, and a file another
-    # process may rewrite is not where a loop invariant belongs.
+
+
+
+
+
     max_failures = int(getattr(poller, "MAX_CONSECUTIVE_FAILURES",
                                MAX_CONSECUTIVE_POLL_FAILURES))
     consecutive_failures = 0
@@ -1521,10 +1525,10 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT, _handle_sigterm)
-    # `_RELOAD_FLAG` is module-level and this process may be a fork that
-    # inherited a set flag from before it existed as this watcher (#2212) --
-    # cleared here, at the one moment this loop starts owning it, same as
-    # `stop_flag` starting False every time.
+
+
+
+
     _RELOAD_FLAG["reload"] = False
     if RELOAD_SIGNAL is not None:
         signal.signal(RELOAD_SIGNAL, _handle_reload_signal)
@@ -1533,16 +1537,16 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
         while not stop_flag["stop"]:
             if _RELOAD_FLAG["reload"]:
                 _RELOAD_FLAG["reload"] = False
-                # `state` is untouched — it is not a parameter of this call,
-                # on purpose (#2212): only which module object `poller` names
-                # changes here, never what the loop already knows.
+
+
+
                 poller = _reload_poller(source, watcher_id, poller)
                 interval = interval_override() or int(getattr(poller, "INTERVAL", 30))
                 max_failures = int(getattr(poller, "MAX_CONSECUTIVE_FAILURES",
                                            MAX_CONSECUTIVE_POLL_FAILURES))
             try:
                 events, new_state = poller.poll(state, ctx)
-            except Exception as e:  # noqa: BLE001 — never crash, log to state
+            except Exception as e:  
                 consecutive_failures += 1
                 full = transport.read_state(source, watcher_id)
                 full["last_error"] = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1550,20 +1554,20 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                                        "consecutive": consecutive_failures}
                 transport.write_state(source, watcher_id, full)
                 if consecutive_failures >= max_failures:
-                    # Out through the same `finally` a terminal exit takes, so
-                    # the pidfile is released and the slot is handed back. Not
-                    # `reached_terminal`: that clears the state file, and the
-                    # state file is the only record of why this stopped.
+
+
+
+
                     _record_give_up(source, watcher_id,
                                     consecutive_failures, str(e), repo=repo)
                     break
                 _wait_interruptible(interval, stop_flag)
                 continue
 
-            # Whatever went wrong is over. The bound is on a *run* of failures,
-            # so a flaky forge that answers one poll in ten keeps its watcher —
-            # the guard is against a failure that will never clear, not against
-            # a failure rate.
+
+
+
+
             consecutive_failures = 0
 
             for ev in events:
@@ -1576,14 +1580,14 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                     notify_title=ev.get("notify_title"),
                     notify_message=ev.get("notify_message"),
                     first_tick=first_tick,
-                    # A source that already resolved its own repository
-                    # (gh-branch does, through gh's own base-repo resolution
-                    # -- #1963) wins over this process-level, git-config
-                    # read: the two can disagree inside a fork checkout, and
-                    # the source's answer is the one every call in its own
-                    # event actually ran against. Every other source has no
-                    # opinion here, so `ev.get("repo")` is None for them and
-                    # this falls back to exactly what it did before.
+
+
+
+
+
+
+
+
                     repo=ev.get("repo") or repo,
                 )
 
@@ -1592,22 +1596,22 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
             full.pop("last_error", None)
             transport.write_state(source, watcher_id, full)
             state = new_state
-            # Not an unconditional False: a cold start whose polls keep failing
-            # has produced state but no observation, so it is still bootstrapping
-            # and the first poll that succeeds is still describing what it found.
+
+
+
             first_tick = _is_bootstrap_state(new_state)
 
             if hasattr(poller, "is_terminal") and poller.is_terminal(new_state):
                 reached_terminal = True
                 break
 
-            # #2509: a rate-limit-marked poller wrote its own reset time into
-            # `retry_after` rather than sleeping the ordinary INTERVAL and
-            # hitting the same wall on the next tick. `new_state` -- not the
-            # `state` this loop already holds -- is what a poller wrote on
-            # *this* poll, so a poll that recovered (no `retry_after` in its
-            # fresh new_state) falls straight back to `interval` even though
-            # `retry_after` was present on the read before it.
+
+
+
+
+
+
+
             sleep_for = interval
             retry_seconds = _retry_after_seconds(
                 new_state.get("retry_after") if isinstance(new_state, dict) else None)
@@ -1615,30 +1619,30 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                 sleep_for = retry_seconds
             _wait_interruptible(sleep_for, stop_flag)
     finally:
-        # Only if this process still owns the slot. A poller shutting down
-        # slowly, whose slot was meanwhile reclaimed, must not unlink its
-        # successor's claim on the way out (#476).
+
+
+
         transport.release_pidfile(source, watcher_id, os.getpid())
-        # A terminal watcher leaves no live process, so its state file is not a
-        # record of anything current. Kept, it makes consumers that glob the
-        # state files report merged MRs as active watches.
+
+
+
         if reached_terminal:
             transport.clear_state(source, watcher_id)
 
 
 def main(argv: list[str]) -> int:
     use_utf8_stdout()
-    # `_RELOAD_FLAG` is module-level and this process may be a fork that
-    # inherited a set flag from before it existed as this watcher (#2212).
-    # `_run_poll_loop` clears it again, unconditionally, at the one moment it
-    # starts owning the flag -- the reset here is a second one, ahead of the
-    # `sub == transport.POLL_SUBOP` branch below, so it also holds for a
-    # harness that imports this module once and calls main() repeatedly
-    # (#686's own reason for this pattern). Neither reset can stand in for the
-    # other: this one never runs on the direct `_run_poll_loop` call
-    # `_spawn_poller` makes on a failed exec (never through main() at all),
-    # and that one never runs for the `watch`/`unwatch`/`list` sub-ops this
-    # function also dispatches to.
+
+
+
+
+
+
+
+
+
+
+
     _RELOAD_FLAG["reload"] = False
     if len(argv) < 2:
         print("ERROR: usage: dispatcher.py {watch|unwatch|list|poll} [ARG]")
@@ -1646,11 +1650,11 @@ def main(argv: list[str]) -> int:
     sub = argv[1]
     rest = argv[2:]
     if sub == transport.POLL_SUBOP:
-        # The poller itself, running under the argv `_exec_labelled` gave it.
-        # Not an operator-facing sub-op: `watch` spawns, this *is* the spawn.
-        # It has to exist and has to keep working — an argv naming a sub-op the
-        # dispatcher does not implement would exit every watcher on start, and
-        # the fleet would render as a quiet afternoon.
+
+
+
+
+
         try:
             source, watcher_id, only = _parse_args(rest)
         except ValueError as e:

@@ -1,58 +1,58 @@
 #!/usr/bin/env python3
-"""Create a GitHub issue from a JSON/TOML payload file.
 
-**A GraphQL-mutation-path outage falls back to REST, named as such (#1790).**
-`gh issue create` writes through GraphQL. Observed 2026-08-17, six attempts
-over ~10 minutes, all identical: `HTTP 503: No server is currently available
-to service your request. (https://api.github.com/graphql)` -- while
-`gh api rate_limit` answered normally and a raw `gh api -X POST
-repos/OWNER/REPO/issues` with the same title, body and labels succeeded on the
-first try, four times. So the outage was specific to the mutation transport,
-not to GitHub as a whole, and a REST POST is a real alternative route to the
-same write.
 
-`gh-pr-edit` (#195, #1739) already made this call for editing a published pull
-request: write through REST, read back what landed, and never hide which
-transport answered. The same three conditions apply here, and the third is
-the one with teeth:
 
-1. **The receipt names which transport answered** -- `transport=graphql` or
-   `transport=rest (fallback ...)`. This is not cosmetic: `gh issue create`
-   resolves label and milestone *names* through GraphQL, while a REST POST
-   needs a milestone *number* and takes label names largely as-is, so the two
-   paths can behave differently on a repo whose labels or milestones do not
-   all exist. `_resolve_milestone_number` below is the one place that
-   difference is bridged, and where it cannot be bridged (no such open
-   milestone by that title) the field is named NOT APPLIED rather than
-   silently dropped.
-2. **This is scoped to `gh-issue-create` alone.** Nothing here changes any
-   other writer; a blanket fallback would silently change what every op
-   means, which the issue explicitly calls worse than an outage.
-3. **A 503 does not prove the mutation did not land**, so a naive retry can
-   file the same issue twice -- expensive to unpick on a tracker. Before ever
-   POSTing through REST, `_find_open_issue_by_title` looks for an open issue
-   with the exact title this call is about to create. A match means the
-   earlier GraphQL attempt likely landed despite the 503, and this call
-   reports that issue rather than filing a second one. If the lookup itself
-   cannot answer (`_gh_json` erroring), this refuses to write blind rather
-   than guessing either way -- see `test_dedup_lookup_failure_refuses_to_write_blind`.
 
-**Deliberately not a version floor.** The issue raised the alternative that
-`gh` itself might already intend to fall back, the way #195 reasoned about
-`cli/cli#13069` (a stale Debian package, fixed by upgrading `gh`, not by this
-tool). Checked here: `cli/cli#13069` is unrelated (a `pr edit` deprecation
-error caused by an outdated build, closed as "upgrade `gh`"), and a GitHub
-code/issue search for a REST-fallback-on-GraphQL-outage feature in `gh`
-turned up nothing. There is no known version that fixes this, so a version
-floor is not an available fix and the fallback below is the right shape.
 
-**Deliberately narrow detection.** `_is_graphql_transport_failure` only
-matches the shape of error actually observed -- "no server is currently
-available", or "503" alongside "graphql" -- so an ordinary refusal (bad
-`--milestone`, no write access, an auth failure) falls straight through to
-the plain ERROR path and never triggers a second write attempt. Widening it
-needs its own outage evidence, not a guess at what else GitHub might say.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -67,36 +67,36 @@ try:
     import tomllib
 except ModuleNotFoundError:
     try:
-        import tomli as tomllib  # type: ignore[no-redef]
+        import tomli as tomllib  
     except ModuleNotFoundError:
-        tomllib = None  # type: ignore[assignment]
+        tomllib = None  
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
-import _remote_default as _rd  # noqa: E402
-import _repo_target  # noqa: E402  (repo: op precedence over payload's own field -- #1909)
-import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
-import _untrusted  # noqa: E402  (the GitHub API writes the failure body — #1606)
-import _publish_safety  # noqa: E402  (#2100 -- the forge-write disclosure marker)
+from _console import use_utf8_stdout  
+import _remote_default as _rd  
+import _repo_target  
+import _payload_keys  
+import _untrusted  
+import _publish_safety  
 
-# The transport that actually answered. Named in every receipt (#1790) so a
-# degraded write is never indistinguishable from an ordinary one.
+
+
 TRANSPORT_GRAPHQL = "graphql"
 TRANSPORT_REST_FALLBACK = "rest (fallback -- mutation transport unavailable)"
 
-# Every key this op reads from a payload. Checked against the payload before
-# anything is created (#2123) -- a key outside this set is refused rather
-# than silently dropped.
+
+
+
 ACCEPTED_KEYS = {
     "repo", "title", "body", "body_file", "labels", "assignees", "milestone",
     "dry_run",
 }
 
-# `description`/`description_file` -- what `gl-issue-create` and the GitLab
-# API itself call the field -- silently created an empty issue here on
-# 2026-09-01 (#2123): this op wants `body`/`body_file`. Accepted as an alias
-# in both directions rather than only documented, since a misfiled issue
-# from that slip is expensive to unpick on a live tracker.
+
+
+
+
+
 ALIASES = {
     "description": "body",
     "description_file": "body_file",
@@ -112,20 +112,20 @@ def _gh(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
 
 def _gh_json(args: list[str], stdin: str | None = None,
              timeout: int = 30) -> tuple[object, str]:
-    """`(parsed, error)` for a `gh api` call whose stdout is JSON.
 
-    Used only for the REST fallback path -- the dedup lookup, the milestone
-    lookup, and the POST itself. A non-empty error means `parsed` is not
-    usable; the caller decides what "could not tell" means for its own step
-    (#1790's condition 3 needs this to be a refusal, not a guess, when the
-    dedup lookup itself fails).
-    """
+
+
+
+
+
+
+
     try:
         result = subprocess.run(["gh"] + args, capture_output=True, text=True,
                                  input=stdin, timeout=timeout, encoding="utf-8",
                                  errors="replace")
     except FileNotFoundError:
-        return (None, "gh not found -- install from https://cli.github.com")
+        return (None, "gh not found -- install the GitHub CLI")
     except subprocess.TimeoutExpired:
         return (None, "gh timed out")
     except OSError as e:
@@ -141,13 +141,13 @@ def _gh_json(args: list[str], stdin: str | None = None,
 
 
 def _is_graphql_transport_failure(text: str) -> bool:
-    """Whether `text` (gh's stderr+stdout) looks like the #1790 outage.
 
-    Matched signatures, from the outage actually observed in one minute on
-    2026-08-17: "no server is currently available" (gh's own relay of the
-    GraphQL 503), or "503" alongside "graphql" (the endpoint named in the
-    same message). Deliberately narrow -- see the module docstring.
-    """
+
+
+
+
+
+
     low = text.lower()
     if "no server is currently available" in low:
         return True
@@ -157,40 +157,40 @@ def _is_graphql_transport_failure(text: str) -> bool:
 
 
 _DEDUP_PER_PAGE = 100
-# 50 pages of 100 -- 5,000 open issues -- is far beyond anything this repo or
-# any repo this tool manages has ever carried; past it this refuses rather
-# than paging forever against a repo (or a broken response) that always
-# reports a full page. See the refusal message below for what a caller sees.
+
+
+
+
 _DEDUP_MAX_PAGES = 50
 
 
 def _find_open_issue_by_title(repo: str, title: str,
                                timeout: int = 30) -> tuple[dict | None, str]:
-    """`(existing issue, error)` -- an open issue with this exact title, so a
-    REST fallback never files a duplicate of a mutation that actually landed
-    despite the 503 it reported (#1790 condition 3).
 
-    A non-empty error means the lookup itself could not answer; the caller
-    must refuse to write rather than treat that as "no match".
 
-    Pages through REST rather than reading one page (#2021): a page that
-    comes back exactly `per_page` items long is not proof the title is not
-    on the *next* page -- GitHub's REST default ordering is newest-first, so
-    the entries pushed off the first page are exactly the long-lived ones a
-    stalled maintainer loop is most likely to be re-filing after an outage.
-    A page shorter than `per_page` is proof there is no next page, so the
-    loop stops there rather than issuing a request it does not need.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
     for page in range(1, _DEDUP_MAX_PAGES + 1):
-        # `gh api` defaults to POST the instant a `-f`/`-F` parameter is
-        # added (its own --help: "adding request parameters will
-        # automatically switch the request method to POST"). Without an
-        # explicit `-X GET` this call silently becomes `POST
-        # repos/{repo}/issues` -- the *create* endpoint, with no `title` in
-        # the body -- so it 422s on every real invocation and the dedup
-        # guard refuses to write on every genuine transport outage, which is
-        # the opposite of what condition 3 asks for. Caught in review,
-        # before it ever reached a real `gh` binary (#1790).
+
+
+
+
+
+
+
+
+
         data, err = _gh_json(["api", "-X", "GET", f"repos/{repo}/issues",
                               "-f", "state=open",
                               "-f", f"per_page={_DEDUP_PER_PAGE}",
@@ -213,13 +213,13 @@ def _find_open_issue_by_title(repo: str, title: str,
 
 def _resolve_milestone_number(repo: str, name: str,
                                timeout: int = 30) -> tuple[int | None, str]:
-    """`(number, note)` -- REST issue creation needs a milestone *number*,
-    while the payload (and `gh issue create --milestone`) carries a *name*.
-    `note` is empty on success; on a miss it explains why, so the caller can
-    name the field NOT APPLIED rather than silently drop it.
-    """
-    # Same `-f` -> POST trap as `_find_open_issue_by_title` above -- an
-    # explicit `-X GET` is not optional here either (#1790).
+
+
+
+
+
+
+
     data, err = _gh_json(["api", "-X", "GET", f"repos/{repo}/milestones",
                           "-f", "state=all", "-f", "per_page=100"],
                          timeout=timeout)
@@ -253,22 +253,22 @@ def _load_payload(path: str) -> dict:
 
 
 def _validate_labels(payload: dict) -> str | None:
-    """`labels`, if present, must be a list of non-empty strings.
 
-    A comma-separated string (`labels = "A,B,C"`) is not caught by
-    `if labels:`, so it reaches whichever backend is chosen below: the
-    GraphQL path does `",".join(labels)`, which joins the string's own
-    *characters* with commas into one garbled `--label` value, and the REST
-    fallback sets the JSON `labels` field to the raw string itself. Neither
-    is the exact per-character `--label` shape `gl-issue-create` has (its
-    `for label in labels: cmd += ["--label", label]` sends one flag per
-    character, and silently created 30 junk labels on a sibling tracker
-    before anyone noticed -- #2173) -- but both are the same root cause, a
-    string treated as an iterable of characters rather than a single value,
-    and both are wrong the caller cannot see. This refuses before any
-    glab/gh call rather than after, since a wrong label write is expensive
-    to unpick.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if "labels" not in payload:
         return None
     labels = payload["labels"]
@@ -293,15 +293,15 @@ def _validate(payload: dict) -> str | None:
         return "ERROR: payload missing required field: title"
     if payload.get("body") and payload.get("body_file"):
         return "ERROR: payload has both body and body_file — use one"
-    # #2315: a payload whose `body` key parses as a TOML array-of-tables
-    # (`[[body]]`, a list of `{"value": ...}` dicts) reached
-    # `apply_forge_disclosure(body: str)` as a `list` with no type check
-    # here, three frames from where the crash actually surfaced.
-    # gh-issue-comment used to accept the same shape without crashing, but
-    # its own `_body_text` did not actually join it either --
-    # `str([{"value": "..."}])` published the Python repr of the list as
-    # the comment body. Fixed the same way there too (#2322): `body` must
-    # be a plain string in both ops.
+
+
+
+
+
+
+
+
+
     if "body" in payload and not isinstance(payload.get("body"), str):
         return (
             "ERROR: body must be a string, not "
@@ -309,9 +309,9 @@ def _validate(payload: dict) -> str | None:
             "not accept a TOML [[body]] table-array. Pass body as a "
             "single string, or use body_file to read one from a file."
         )
-    # #2415: `dry_run` gates whether the transport call below ever runs, so
-    # a non-boolean here would silently decide it via truthiness (a string
-    # "false" is truthy) rather than refusing the ambiguity up front.
+
+
+
     if "dry_run" in payload and not isinstance(payload.get("dry_run"), bool):
         return (
             "ERROR: dry_run must be a boolean (true/false), got "
@@ -325,10 +325,10 @@ def main() -> int:
     raw_arg = sys.argv[1] if len(sys.argv) > 1 else ""
     path = raw_arg[1:] if raw_arg.startswith("@") else raw_arg
     if not path:
-        # supertool's {arg} substitution never omits the placeholder — a
-        # missing @FILE arrives here as an empty string, not a missing
-        # argv slot, so this must be checked explicitly rather than relying
-        # on len(sys.argv). See #620.
+
+
+
+
         print(
             "ERROR: gh-issue-create needs a payload — "
             "gh-issue-create:@FILE, or gh-issue-create:@- to read it from "
@@ -336,13 +336,13 @@ def main() -> int:
         )
         return 1
 
-    # Decide *before* reading rather than catching whatever the OS raises:
-    # opening a directory for read raises IsADirectoryError on POSIX but
-    # PermissionError on Windows (CreateFileW succeeds, the subsequent read
-    # fails with ERROR_ACCESS_DENIED). Catching only IsADirectoryError left
-    # #620's traceback alive on Windows — an is_dir() check gives the same
-    # message on every platform without depending on which errno the OS
-    # happens to pick. See #627.
+
+
+
+
+
+
+
     if path != "-" and Path(path).is_dir():
         print(f"ERROR: payload path is a directory, not a file: {path}")
         return 1
@@ -353,16 +353,16 @@ def main() -> int:
         print(f"ERROR: payload file not found: {path}")
         return 1
     except IsADirectoryError:
-        # Belt-and-suspenders for the TOCTOU window between the is_dir()
-        # check above and this read (path became a directory in between).
+
+
         print(f"ERROR: payload path is a directory, not a file: {path}")
         return 1
     except PermissionError as e:
-        # Deliberately a distinct message from "is a directory": a locked
-        # or wrong-ownership file also raises PermissionError, and on
-        # Windows it's the *only* thing a directory read raises. Reporting
-        # it as "is a directory" would be a confidently wrong disclosure,
-        # not just an unhelpful one.
+
+
+
+
+
         print(f"ERROR: permission denied reading payload: {path} — {e}")
         return 1
     except (json.JSONDecodeError, ValueError) as e:
@@ -407,11 +407,11 @@ def main() -> int:
     milestone: str = payload.get("milestone", "")
 
     if body_file:
-        # Same is_dir()-before-read shape as the payload guard above: a
-        # directory read raises IsADirectoryError on POSIX but
-        # PermissionError on Windows, so the directory verdict must come
-        # from is_dir(), not from catching whichever OSError subtype the
-        # platform happens to raise. See #620/#627/#630.
+
+
+
+
+
         if Path(body_file).is_dir():
             print(f"ERROR: body_file is a directory, not a file: {body_file}")
             return 1
@@ -421,31 +421,31 @@ def main() -> int:
             print(f"ERROR: body_file not found: {body_file}")
             return 1
         except IsADirectoryError:
-            # Belt-and-suspenders for the TOCTOU window between the
-            # is_dir() check above and this read.
+
+
             print(f"ERROR: body_file is a directory, not a file: {body_file}")
             return 1
         except PermissionError as e:
-            # Deliberately distinct from "is a directory": a locked or
-            # wrong-ownership file also raises PermissionError, and it's
-            # the only thing a directory read raises on Windows.
+
+
+
             print(f"ERROR: permission denied reading body_file: {body_file} — {e}")
             return 1
     else:
         content = body
 
-    # #2100: applied once, before either write path (GraphQL create, or the
-    # REST fallback below) -- both send `content`, so both send the marker.
+
+
     content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
 
     if payload.get("dry_run"):
-        # #2415: stop here -- parse, key/alias resolution, repo resolution,
-        # field validation and the disclosure marker have all run exactly
-        # as a real call would, but neither the GraphQL `gh` subprocess nor
-        # the REST fallback (`_gh_json`) is ever invoked below this point.
-        # `gh-issue-create` had no way to verify a payload short of filing
-        # a real issue and closing it (#2407, #2410, #2413 -- three of them,
-        # one session).
+
+
+
+
+
+
+
         lines = [
             f"gh-issue-create DRY-RUN repo={repo} title={title!r}",
             f"  labels: {', '.join(labels) if labels else '(none)'}",
@@ -485,7 +485,7 @@ def main() -> int:
         try:
             result = _gh(cmd, timeout=30)
         except FileNotFoundError:
-            print("ERROR: gh not found — install from https://cli.github.com")
+            print("ERROR: gh not found — install the GitHub CLI")
             return 1
         except subprocess.TimeoutExpired:
             print("ERROR: gh timed out")
@@ -495,14 +495,14 @@ def main() -> int:
             combined = (result.stderr or "") + (result.stdout or "")
             if not _is_graphql_transport_failure(combined):
                 print(f"ERROR: gh issue create failed (exit {result.returncode})")
-                # Whatever gh echoed here was written by the GitHub API, and
-                # it prints at column 0 with nothing in front of it —
-                # flatten, never relay (#1606). Both arms: the stdout
-                # fallback is a second relay.
+
+
+
+
                 print(_untrusted.flat(result.stderr.strip() or result.stdout.strip()))
                 return 1
 
-            # ---- #1790: the mutation transport looks down, REST does not --
+
             detail = _untrusted.split_lines(combined.strip())
             print(f"NOTE: gh issue create (GraphQL) failed with a "
                   f"transport-shaped error — "
@@ -571,12 +571,12 @@ def main() -> int:
             url = match.group(0)
             number = match.group(1)
         else:
-            # The regex arm above cannot be forged — its `[^/\s]` classes
-            # reject U+2028, which Python's `\s` matches. This is the fallback,
-            # and it takes whatever `gh` last printed into an `OK` receipt at
-            # column 0: so the boundary is `split_lines`'s rather than
-            # `str.splitlines()`'s, and the segment it selects is flattened
-            # (#1648).
+
+
+
+
+
+
             printed = _untrusted.split_lines(result.stdout.strip())
             url = _untrusted.flat(printed[-1]) if printed else "?"
             number = url.rstrip("/").split("/")[-1] if "/" in url else "?"

@@ -1,60 +1,60 @@
 #!/usr/bin/env python3
-"""A PR's diff in the shape a reviewer walks it (#875).
 
-`gh pr diff N` returns the whole unified diff or nothing. That is the wrong
-granularity for the one read the merge gate cannot skip: an eighty-file
-mechanical sweep carries four files of judgment, and reading it whole is not a
-review, it is a context burn. So this renders the same two-step `gh-job`
-already models with `:fail` / `:raw:-N` / `:grep:PATTERN` —
 
-    gh-pr:N:diff        the file list, per-file +/-, heaviest first
-    gh-pr:N:diff:PATH   that one file's hunks
 
-**Heaviest first, not grouped by kind.** `git-diff` groups its file list by a
-path classifier (src/test/i18n/…). That classifier lives in `presets/git/diff.py`
-and is not shared; copying it here would create the second definition that lets
-the two drift, which is the failure `_checks` and `_board` exist to prevent. A
-review order that needs no shared vocabulary is churn-descending, and it is the
-order a reviewer actually takes — with `mechanical_note()` covering the case
-where the biggest file is also the emptiest.
 
-**The mechanical note is a note.** A file whose every hunk is byte-identical
-after stripping is flagged as a repeated edit so attention goes elsewhere. It
-never removes a file from the list and it never shortens one: a wrong
-"mechanical" verdict is an invitation to skim the file that needed reading, so
-the test is exact equality and under-flagging is the deliberate direction.
 
-**Three states, because this renders inside the merge gate.** A diff that could
-not be fetched (`files is None`) prints a named refusal and exits 1 — never an
-empty file list, which reads as "this PR changes nothing" at the moment someone
-is deciding whether to merge it. A path that is not in the diff is a refusal
-too, naming the paths that are, because "not in this PR" and "in this PR and
-unchanged" are the same silence otherwise. Both caps — files and bytes —
-disclose exactly what they withheld, in the render they truncated, and every
-sentence written *above* a body takes the truncation state as an argument: a
-note saying `all hunks follow` one line above the cap's own `this is NOT the
-whole file's diff` is two opposite claims in one output, so the complete-case
-wording exists only in the branch where it is true (#1078).
 
-**Net, not per commit (#1068).** The fetch is `gh pr diff N` without
-`--patch`: format-patch repeats a file once per commit, and the hunks route
-used to serve the first section and stop, silently, so superseded code read as
-current inside the merge gate. Records are coalesced by path here as well, so
-serving a first-of-N is structurally impossible rather than merely unlikely —
-and a path that does arrive more than once has every entry shown under a line
-naming the count and which end of it is current.
 
-**A line of the diff does not get to say where a file starts (#1081).** The
-parse splits with `_untrusted.split_lines` — LF, CR, CRLF — not
-`str.splitlines()`, which breaks on eight more separators a unified diff does
-not define. One of those inside an added line used to produce a fragment at
-column 0, `diff --git ` opened a file record from it, and the rest of the
-file's additions vanished behind a phantom second file. `flat()` neutralises
-the separator in a field it renders; it cannot protect a structural parse that
-already ran, which is why this is fixed at the split rather than at the
-render. The separator is still disclosed — `fence()` does that in the hunk
-body, so a `parse()` that announced it too would be repeating itself.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import os
@@ -62,20 +62,20 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import _untrusted  # noqa: E402  (hunk bodies are a stranger's text — #694)
-from _env import env_int  # noqa: E402  (the one knob reader — #654)
+import _untrusted  
+from _env import env_int  
 
-# The file list is one line per file; 60 matches git-diff's MAX_FILES so the
-# two review renders cut at the same place.
+
+
 MAX_FILES = 60
-# One file's hunks. Same budget as gh-job's grep emission — the point of the
-# per-file route is that it is small, and a file that blows this is itself the
-# finding.
+
+
+
 MAX_BYTES = 65536
 
 
 def _path_from_header(line: str) -> str:
-    """`diff --git a/x b/x` → `x`. Falls back to the raw remainder."""
+
     rest = line[len("diff --git "):].strip()
     half = len(rest) // 2
     if rest[half:half + 1] == " ":
@@ -95,12 +95,12 @@ def _strip_prefix(path: str) -> str:
 
 
 def parse(patch: str) -> list[dict]:
-    """A unified diff → one record per file.
 
-    Keys: path, old_path, status (A/M/D/R), added, removed, hunks, binary.
-    Counting `+`/`-` inside hunks only — the `+++`/`---` header lines are not
-    changed lines and counting them inflates every file by one each way.
-    """
+
+
+
+
+
     files: list[dict] = []
     current: dict | None = None
     hunk: list[str] | None = None
@@ -111,17 +111,17 @@ def parse(patch: str) -> list[dict]:
             current["hunks"].append("\n".join(hunk))
         hunk = None
 
-    # `_untrusted.split_lines`, never `str.splitlines()`: a patch is a byte
-    # protocol whose only line boundaries are LF, CR and CRLF, and the branch
-    # below opens a file record from any line at column 0. Splitting on the
-    # eight extra separators let a contributor's own added line forge that
-    # boundary and drop every added line after it (#1081).
-    #
-    # The `diff --git ` branch stays OUTSIDE the `hunk is None` gate on
-    # purpose. Git emits the next file's header immediately after the previous
-    # file's last hunk line with no terminator, so firing mid-hunk is the
-    # ordinary multi-file case, not the anomaly -- gating it would break every
-    # diff with two files in it. The forgery was the fragment, not the branch.
+
+
+
+
+
+
+
+
+
+
+
     for line in _untrusted.split_lines(patch or ""):
         if line.startswith("diff --git "):
             close_hunk()
@@ -183,12 +183,12 @@ def parse(patch: str) -> list[dict]:
 
 
 def _net_status(prev: str, nxt: str) -> str:
-    """The status of a file across several entries for it.
 
-    Added-then-modified is still an addition; whatever the last entry deletes
-    is deleted however it got there. A file deleted and re-added inside one PR
-    is neither, so it is called a modification rather than guessed either way.
-    """
+
+
+
+
+
     if nxt == "D":
         return "D"
     if prev == "D":
@@ -201,23 +201,23 @@ def _net_status(prev: str, nxt: str) -> str:
 
 
 def coalesce(files: list[dict]) -> list[dict]:
-    """One record per path, first-seen order, with an `entries` count (#1068).
 
-    A source that repeats a path — `gh pr diff --patch` is format-patch, one
-    section per commit — used to reach `_one_file`, which took `next(...)` and
-    rendered the FIRST entry as the whole file. Superseded code then read as
-    current, and a fix landed in a later commit was invisible, inside the merge
-    gate's own reading tool.
 
-    The fetch no longer asks for that shape, so in practice every path arrives
-    once. This is the belt: it makes serving a first-of-N structurally
-    impossible rather than merely unlikely, and it keeps the file list from
-    printing one file as two rows and calling it `2 files`.
 
-    Order is the source's own. For a per-commit patch that is oldest first, so
-    the LAST entry for a path is the current one — which is what `_one_file`
-    tells the reader when it discloses the count.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     merged: dict[str, dict] = {}
     order: list[str] = []
     for entry in files:
@@ -243,12 +243,12 @@ def coalesce(files: list[dict]) -> list[dict]:
 
 
 def _hunk_signature(hunk: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """A hunk reduced to what it actually changes, whitespace-normalised.
 
-    The `@@ -a,b +c,d @@` header and the context lines are excluded: the same
-    edit applied at line 3 and at line 40 has different headers and different
-    neighbours and is still the same edit.
-    """
+
+
+
+
+
     body = _untrusted.split_lines(hunk)[1:]
     removed = tuple(l[1:].strip() for l in body if l.startswith("-"))
     added = tuple(l[1:].strip() for l in body if l.startswith("+"))
@@ -256,13 +256,13 @@ def _hunk_signature(hunk: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def mechanical_note(entry: dict) -> str | None:
-    """`same edit ×N` when every hunk in the file is the identical change.
 
-    `None` for everything else. This is the heuristic the issue asked for and
-    it is deliberately the strictest reading of "mechanical": exact equality
-    after stripping. A looser rule would flag files that merely look alike, and
-    the cost of that is a reviewer skipping the hunk that mattered.
-    """
+
+
+
+
+
+
     hunks = entry.get("hunks") or []
     if len(hunks) < 2:
         return None
@@ -290,10 +290,10 @@ def _summary(files: list[dict], header: list[str], number: str | None,
     out = list(header)
     total = len(files)
     if total == 0:
-        # A real, reportable state — and worded so it can never be mistaken
-        # for the refusal below. A PR with no file changes is unusual and the
-        # reviewer should see it said plainly rather than inferred from blank
-        # output.
+
+
+
+
         out.append("No files changed in this PR (0 files) — "
                    "the diff was read and it is empty.")
         return "\n".join(out), 0
@@ -317,10 +317,10 @@ def _summary(files: list[dict], header: list[str], number: str | None,
                    f"{_stat_cell(entry):>{width}}  {path}{suffix}")
     dropped = total - len(shown)
     if dropped:
-        # The count is the real one and the cut names itself. A file list
-        # narrowed by the tool and rendered as complete is the defect this op
-        # sits inside — here it would be a reviewer certifying files they were
-        # never shown.
+
+
+
+
         out.append(f"  ... {dropped} more file(s) not shown "
                    f"(cap {max_files}) — raise with GH_PR_DIFF_MAX_FILES=N")
 
@@ -331,14 +331,14 @@ def _summary(files: list[dict], header: list[str], number: str | None,
 
 
 def _entries_sentence(entries: int, *, truncated: bool) -> str:
-    """The multi-entry disclosure (#1068), worded for what the reader can see.
 
-    Oldest-first assembly means the current version of a twice-changed line is
-    at the BOTTOM of the body — which is precisely the part the byte cap
-    removes. Pointing a reader at it in a render that does not contain it is
-    the same completeness claim `all hunks follow` was (#1078), so the
-    truncated branch names the assembly rather than the render.
-    """
+
+
+
+
+
+
+
     head = (f"Assembled from {entries} entries for this path in the fetched "
             f"diff — concatenated")
     if truncated:
@@ -354,15 +354,15 @@ def _entries_sentence(entries: int, *, truncated: bool) -> str:
 
 
 def _mechanical_sentence(note: str, *, truncated: bool) -> str:
-    """The `same edit xN` note, worded for whether the body below is whole.
 
-    `all hunks follow` exists only in the untruncated branch, and there is no
-    other route to that wording. The note describes every hunk that was
-    parsed; when the byte cap fires, the render holds fewer than that, and the
-    unconditional sentence sat one line above the cap's own statement that
-    this is not the whole file's diff — two opposite claims in one output,
-    with nothing telling the reader which to believe (#1078).
-    """
+
+
+
+
+
+
+
+
     if truncated:
         tail = ("the note covers every hunk parsed, but the byte cap below "
                 "withheld part of the body, so not all of them follow")
@@ -376,9 +376,9 @@ def _one_file(files: list[dict], path: str, header: list[str],
               max_bytes: int) -> tuple[str, int]:
     match = next((f for f in files if str(f.get("path", "")) == path), None)
     if match is None:
-        # Not a file with no changes. Almost always a typo or the wrong PR
-        # number, and printing nothing lets the reader conclude the file is
-        # clean in a PR that never touched it.
+
+
+
         out = list(header)
         out.append(f"Could not show {path!r}: it is not among the "
                    f"{len(files)} file(s) in this PR's diff.")
@@ -390,12 +390,12 @@ def _one_file(files: list[dict], path: str, header: list[str],
             out.append(f"  ... {len(files) - MAX_FILES} more")
         return "\n".join(out), 1
 
-    # The cap is decided before anything is said about the body. Every
-    # sentence below describes what the reader can see, and only this
-    # measurement knows what that is — computing it afterwards is how one
-    # render came to carry `all hunks follow` two lines above `this is NOT the
-    # whole file's diff` (#1078). `truncated` is the single flag both
-    # sentences take, and the complete-case wording lives nowhere else.
+
+
+
+
+
+
     renders_hunks = not match.get("binary") and bool(match.get("hunks"))
     body = "\n".join(match["hunks"]) if renders_hunks else ""
     total_bytes = len(body.encode("utf-8", errors="replace"))
@@ -411,10 +411,10 @@ def _one_file(files: list[dict], path: str, header: list[str],
                f"({match.get('status', '?')}, {_stat_cell(match)})")
     entries = int(match.get("entries", 1) or 1)
     if entries > 1:
-        # Never silence. A path with more than one entry means the fetched
-        # diff replayed the file per commit, and a reader shown the assembly
-        # without being told where the seams are cannot tell a superseded
-        # line from a current one (#1068).
+
+
+
+
         out.append(_entries_sentence(entries, truncated=truncated))
     note = mechanical_note(match)
     if note:
@@ -442,16 +442,16 @@ def render(files: list[dict] | None, *, header: list[str],
            number: str | None = None,
            max_files: int | None = None,
            max_bytes: int | None = None) -> tuple[str, int]:
-    """The whole render, as (text, exit code).
 
-    `files is None` means nobody read the diff. That is the one case where
-    printing a well-formed empty result would be a lie told inside a merge
-    decision, so it refuses and names the cause it was handed.
-    """
+
+
+
+
+
     if max_files is None:
-        max_files = env_int("GH_PR_DIFF_MAX_FILES", MAX_FILES, minimum=1)
+        max_files = env_int(os.environ.get("GH_PR_DIFF_MAX_FILES"), "GH_PR_DIFF_MAX_FILES", MAX_FILES, minimum=1)
     if max_bytes is None:
-        max_bytes = env_int("GH_PR_DIFF_MAX_BYTES", MAX_BYTES, minimum=1)
+        max_bytes = env_int(os.environ.get("GH_PR_DIFF_MAX_BYTES"), "GH_PR_DIFF_MAX_BYTES", MAX_BYTES, minimum=1)
 
     if files is None:
         out = list(header)

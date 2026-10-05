@@ -1,29 +1,29 @@
-"""Where is this branch checked out? — one answer for every op that asks (#850).
 
-Five ops printed the same hand-built line under their `Branch:` field:
 
-    You are on: master ⚠ MISMATCH — switch with: ./supertool 'git-checkout:fix/900'
 
-`⚠ MISMATCH` was true only of the current directory, and it reads as a claim
-about the repository. With `fix/900` held by a linked worktree one directory
-over, a reader concludes the branch is checked out nowhere — the opposite of the
-truth — and then runs a command `git` refuses outright:
 
-    fatal: 'fix/900' is already used by worktree at '/…/st-wt/900'
 
-`git-checkout` already knew this: it catches that stderr and answers
-`Switch with: cd <path>`. The knowledge existed one op over and the five call
-sites had not adopted it. This module is that adoption, in one place.
 
-**Three states, not two.** `here` / `elsewhere` / `nowhere` — plus `unknown`
-when the lookup did not answer. An unanswered `git worktree list` must never
-render as `nowhere`: "checked out nowhere" is a positive claim, and inferring it
-from a failed probe is the shape of defect this tracker keeps paying for.
 
-**The warning is not deleted.** Removing it would make the symptom vanish and
-would also drop a real signal for the ordinary single-worktree case, which is
-still the common one. `MISMATCH` survives untouched where it is true.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import os
@@ -31,12 +31,12 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _untrusted  # noqa: E402  (branch names and worktree paths are not our text — #851/#876)
-import _refname  # noqa: E402  (the ordinary-refname rule this line prints into — #694/#924)
-import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist — #905)
+import _untrusted  
+import _refname  
+import _st_hint  
 
-#: `git worktree list` is a local read of one file; a slow answer means
-#: something is wrong with the repo, not that we should wait longer.
+
+
 _TIMEOUT = 3
 
 
@@ -51,7 +51,7 @@ def _run(args: list[str]) -> subprocess.CompletedProcess | None:
 
 
 def current_branch() -> str | None:
-    """The cwd's branch, or None when detached / not a repo / git unavailable."""
+
     r = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
     if r is None or r.returncode != 0:
         return None
@@ -62,16 +62,16 @@ def current_branch() -> str | None:
 
 
 def holding_worktree(source: str) -> tuple[str, str]:
-    """Which worktree holds `source`, as `(path, detail)`.
 
-    - `("", "")`               — no worktree holds it (established).
-    - `(path, "")`             — that worktree holds it.
-    - `("", reason)`           — the question was not answered; `reason` says why.
 
-    Only the `branch` field counts. A *detached* worktree parked on the same
-    commit is a different fact, and folding it in here would recreate the
-    ambiguity this module exists to remove.
-    """
+
+
+
+
+
+
+
+
     r = _run(["git", "worktree", "list", "--porcelain"])
     if r is None:
         return "", "git worktree list could not be run"
@@ -96,19 +96,19 @@ def holding_worktree(source: str) -> tuple[str, str]:
 
 
 def check(source: str, actionable: bool = True) -> str:
-    """The one-line `You are on: …` field, in whichever of the states holds.
 
-    Empty string when there is no branch to compare against — not a git repo,
-    a detached HEAD, or an empty `source`. That silence predates this module and
-    is left alone: those callers print no `Branch:` field to hang a check under.
 
-    `actionable=False` withholds the `git-checkout` imperative on the read-only
-    sub-ops (#531) — a radar session must not be told to move HEAD. It is only
-    ever the imperative that is withheld; the state is always stated, so a
-    missing command can never be read as "you are on the right branch". The
-    `cd` suggestion is exempt: it moves you, not HEAD, which is exactly what a
-    session that must not move HEAD wants to hear.
-    """
+
+
+
+
+
+
+
+
+
+
+
     if not source or source == "?":
         return ""
     raw_local = current_branch()
@@ -117,10 +117,10 @@ def check(source: str, actionable: bool = True) -> str:
     if raw_local == source:
         return f"You are on: {_untrusted.flat(raw_local)} ✓"
 
-    # One line the reader takes as the tool's, built from two names the tool
-    # did not write: the branch comes off the API, the path off the filesystem.
-    # Both go through `flat` for the reason #851 gives — a newline in either
-    # forges a line here as readily as it did in the check header.
+
+
+
+
     local = _untrusted.flat(raw_local)
     named = _untrusted.flat(source)
 
@@ -137,26 +137,26 @@ def check(source: str, actionable: bool = True) -> str:
         return (f"You are on: {local} ⚠ MISMATCH — this is {named}; "
                 f"read-only op, HEAD left alone")
     if not _refname.ordinary(source):
-        # #924: `source` is the head branch of a pull/merge request, named by
-        # whoever opened it — a fork PR needs no permission here. Below, it is
-        # interpolated between two single quotes in a line whose whole form is
-        # the tool saying what to run next, and `flat()` above removes line
-        # separators, not `'`. A partial sanitiser reads as a complete one.
-        #
-        # Not quoted, refused — the third state, same vocabulary as the UNKNOWN
-        # branch above. Quoting is what `_refname.shell_ref` is for and it is
-        # right where the command is the deliverable (`mr.py`'s conflict
-        # recipe). Here the command is a convenience, and for a name outside
-        # the set it would be wrong as well as unsafe: this suggestion is read
-        # back through supertool's colon CLI, which splits `git-checkout:REF`
-        # on `:`, so a ref holding one cannot be delivered by any quoting; and
-        # `flat()` has already rewritten the name, so the quoted command would
-        # faithfully name a ref that does not exist. A safe command that
-        # silently does the wrong thing is the trade this repo does not make.
-        #
-        # The name is still stated, and so is the reason — a suggestion that
-        # simply vanished would read as "you are on the right branch", which is
-        # the #531 failure at this same line.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         return (f"You are on: {local} ⚠ MISMATCH — this is {named}, a name "
                 f"outside the ordinary-refname set (letters, digits, "
                 f"`. _ / -`, no leading `-`), so no switch command is "
@@ -166,34 +166,34 @@ def check(source: str, actionable: bool = True) -> str:
 
 
 def describe(source: str) -> str:
-    """The same field, stated rather than prescribed — for `gh-run` (#1056).
 
-    `check()` above answers "you are not where you should be, here is how to
-    get there". That premise holds for `gh-pr`: you often read a pull request
-    *because* you are about to work on it. It is the opposite of true for a CI
-    run. Runs are read when something is red, and the run you most need to read
-    is routinely one you are not on and must not switch to — the report came
-    from an agent in a branch worktree with uncommitted work in it, being told
-    to move `HEAD`.
 
-    Three faults were stacked in that one line and all three are premise, not
-    phrasing: `⚠ MISMATCH` frames the ordinary case as an error; the prescribed
-    action is destructive exactly where it is most often printed; and it names
-    `./supertool`, a relative path that need not exist in the cwd (#905).
 
-    So this renders no imperative at all, and therefore needs no
-    `holding_worktree` lookup and no `_refname` gate — there is no command for
-    a hostile branch name to escape out of. What survives is the pair of facts:
-    where you are, and where the run is from.
 
-    **Not deleted.** A field that simply vanished would read as "you are on the
-    right branch", which is #531's failure at this same function. And the
-    branch a run came from is genuinely useful context when the run is red.
 
-    Deliberately not applied to the other four sites of #850. That issue
-    governs all five together and is still open; this is the one op where the
-    premise itself is wrong.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not source or source == "?":
         return ""
     raw_local = current_branch()
@@ -201,8 +201,8 @@ def describe(source: str) -> str:
         return ""
     if raw_local == source:
         return f"You are on: {_untrusted.flat(raw_local)} ✓"
-    # Both names come off the API or the filesystem, not from us — `flat` for
-    # the reason #851 gives, and it is sufficient here precisely because the
-    # line contains no command for a quote glyph to close.
+
+
+
     return (f"You are on: {_untrusted.flat(raw_local)} — this run is from "
             f"{_untrusted.flat(source)}; reading a run needs no checkout")

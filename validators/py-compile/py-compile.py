@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""py-compile validator adapter — Python syntax check via py_compile.
 
-Stdlib only. Reference implementation per validators/SCHEMA.md.
-Usage:  py-compile.py <file>
-"""
+
+
+
+
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def main() -> None:
     try:
         py_compile.compile(file, doraise=True)
     except py_compile.PyCompileError as e:
-        # exc_value is the underlying SyntaxError
+
         sx = e.exc_value
         line = getattr(sx, "lineno", None)
         col = getattr(sx, "offset", None)

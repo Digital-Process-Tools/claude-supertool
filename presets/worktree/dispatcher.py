@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Dispatcher for `worktree:setup[:PATH]` / `worktree:teardown[:PATH]` (#532).
 
-Kept deliberately thin: argument parsing and target resolution live here,
-everything else is `_common.py`, `setup_op.py`, `teardown_op.py`.
-"""
+
+
+
+
 from __future__ import annotations
 
 import os
@@ -16,11 +16,11 @@ if _HERE not in sys.path:
 if os.path.dirname(_HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(_HERE))
 
-from _console import use_utf8_stdout  # noqa: E402
+from _console import use_utf8_stdout  
 
-import _common  # noqa: E402
-import setup_op  # noqa: E402
-import teardown_op  # noqa: E402
+import _common  
+import setup_op  
+import teardown_op  
 
 MODES = {"setup": setup_op, "teardown": teardown_op}
 
@@ -51,13 +51,13 @@ def main(argv: list) -> int:
         print(f"ERROR: {exc}")
         return 1
 
-    # This op's PATH argument is exempt from the generic cwd/repo containment
-    # gate (worktree.json declares "paths": {"args": []}) because pointing
-    # outside cwd is the documented use case, not an edge case — provisioning
-    # a SIBLING worktree, or running from inside one to read the PRIMARY
-    # checkout. What is enforced instead: PATH must resolve to a worktree of
-    # the SAME repository this call was invoked from, never an arbitrary
-    # directory (see `_common.common_dir`'s docstring).
+
+
+
+
+
+
+
     if path_arg:
         this_repo = _common.common_dir(Path(invocation_cwd))
         target_repo = _common.common_dir(target)

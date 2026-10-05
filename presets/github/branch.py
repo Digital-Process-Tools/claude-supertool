@@ -1,75 +1,75 @@
 #!/usr/bin/env python3
-"""Is this branch green? — answered per workflow, at a named commit (#615).
 
-`gh-pr:N` answers for a pull request. After a squash merge the ref that matters
-is the default branch, which has no PR — `gh-pr:master:status` returns *no PR
-found for branch 'master'* — so the post-merge check was hand-rolled every time:
 
-    gh run list --branch master --limit 1
 
-**That line cannot answer the question it is asked.** A repo with more than one
-`push` workflow has several runs per commit, and `--limit 1` returns whichever
-*workflow* started most recently. On 2026-08-05 that was CodeQL, `completed
-success`, while the `tests` matrix on the same SHA was still `queued`. The
-statement "master is green" was true that morning and its method could not have
-told anyone if it hadn't been.
 
-So this op selects **every run on the head commit**, never by recency, and its
-summary is **conjunctive**: green only when every run on the head commit
-concluded and every leg of every one of them passed. One run's conclusion is
-never allowed to stand in for the commit's.
 
-The unit of that conjunction is the **run**, not the workflow name (#1640).
-GitHub's default code-scanning setup emits two distinct runs per push that
-share a `workflow_id`, a `path` and the name `gh` renders — so a dedupe keyed
-on any of those three drops one of them. On `d1bb0837` it dropped the run
-carrying `Analyze (actions)`, a leg no other run on that commit performed, and
-reported 18 legs where 21 existed. Attempts are a different axis and still
-collapse: `gh run rerun` reuses the run id and bumps `run_attempt`, so a
-superseded attempt is not a second run and never was.
 
-Four states, because collapsing any pair of them is this repository's house
-defect (`docs/validators.md` §"Declining instead of guessing"):
 
-* ``GREEN`` — every *run* on the head SHA concluded, every leg ``SUCCESS``.
-* ``NOT GREEN`` — a finding. Something failed, or something has not finished.
-  Both are findings and they are worded differently, because "a leg failed" and
-  "a leg has not started" are opposite next actions.
-* ``NO RUN`` — nothing exists for this SHA, *with the reason*. Zero renders
-  exactly like "not yet" and has been read that way; the grace window
-  (`_checks.CHECK_CREATION_GRACE_SECS`, measured in #585) is what separates the
-  two, and past it the cause is declined rather than guessed.
-* ``UNKNOWN`` — something could not be read. An unread job list is never
-  counted as zero passing legs.
 
-A fifth, sharpened reading of the third state: ``NO_RUN_STALE`` (#2362). A
-squash merge into `master` was observed with **zero workflow runs of any
-status, ever** — not pending, not cancelled — confirmed ~20 minutes after
-the merge, with path filters, the cancel-in-progress trade-off and rate
-limiting all ruled out. Past `_GRACE` (#585's ~15min creation window)
-`no_run_verdict` already declines rather than guesses — but it declined the
-same way at 20 minutes and would decline the same way at 20 hours, so a
-commit that will never see a run read identically to one still plausibly
-waiting on a slow listing. `NO_RUN_STALE_SECS` is the second, longer
-threshold past which that ambiguity has had long enough to resolve itself
-were it going to, so what is left standing is escalated into its own state
-— a distinct token, not a reworded sentence under the same one, so a caller
-comparing states rather than scanning prose still sees the difference. The
-clock starts at the commit's own age (`age_secs`, the same clock `_GRACE`
-already uses), not at the moment any particular caller happened to check —
-`gh-pr-merge`'s post-merge report reads it via `_default_branch_report`'s
-existing `Branch <ref>: <STATE>` line, unchanged, so the escalation reaches
-it for free.
 
-The leg arithmetic is `presets/_checks.summarize`, the same module `gh-pr` and
-`gh-run` render through — deliberately, because #615's own argument for the op
-existing is that reusing one renderer keeps one place where a `CANCELLED` can be
-mis-tallied. What is *not* reused is the render: `gh-pr` is handed a flat rollup
-on one commit, and this is the set of runs on one commit with a conjunction over
-them, which is a different shape and would have arrived as a second data model
-inside one function. Grouped by workflow until #1640, which is the axis two runs
-of one workflow collapse on.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -81,125 +81,125 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
+from _console import use_utf8_stdout  
 
-import _checks  # noqa: E402
-import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-pr)
-import _declared_workflows  # noqa: E402  (the second *workflow* count — #846)
-import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
-import _untrusted  # noqa: E402  (workflow and job names are remote text — #851)
-import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
-import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
+import _checks  
+import _declared_legs  
+import _declared_workflows  
+import _repo_target  
+import _untrusted  
+import _auth_probe  
+import _status_probe  
 
-# The four states. Spelled as constants because the tests, the exit code and
-# the header all have to mean the same thing by them, and because `NOT GREEN`
-# contains `GREEN` — anything comparing these as substrings cannot tell a
-# verdict from its negation.
+
+
+
+
 GREEN = "GREEN"
 NOT_GREEN = "NOT GREEN"
 NO_RUN = "NO RUN"
 UNKNOWN = "UNKNOWN"
 
-# The escalated reading of NO_RUN (#2362) -- a distinct token, never a
-# suffix appended to NO_RUN's own string, so `state == NO_RUN` stays false
-# for it exactly as it would for any other state. Everything that renders
-# `Branch <ref>: <STATE>` (this module's own `main`, `gh-pr-merge`'s
-# `_default_branch_report`) prints whichever token `no_run_verdict` hands
-# back, unchanged -- there is no second place that has to learn this state
-# exists for it to show up in a post-merge report.
+
+
+
+
+
+
+
 NO_RUN_STALE = "NO RUN — STALE"
 
-# A run's lifecycle phase, in this module's own words. #615 comment 1 is a
-# worked case of a bare column (`[time]`) being read as a possible `TIMED_OUT`
-# and costing a second call to disambiguate, so every row states its phase in a
-# word that cannot be mistaken for a leg state.
+
+
+
+
 PHASE_CONCLUDED = "concluded"
 PHASE_RUNNING = "running"
 PHASE_UNESTABLISHED = "unestablished"
 
-# GitHub never transitions a run out of `completed` — same reading as
-# `gh-run`'s `_TERMINAL_RUN_STATUS`, and right for the same reason: this is a
-# run-*lifecycle* field, which has one terminal value GitHub owns, unlike the
-# set of leg states, which grows.
+
+
+
+
 _TERMINAL_RUN_STATUS = "completed"
 
-# How far back the run list reaches. Enough to cover the head commit *and* the
-# one before it — the previous head is what makes "this workflow ran last time
-# and not this time" observable at all — with room for a repo running several
-# workflows per push. Not a page of history: nothing older than the previous
-# head is read.
+
+
+
+
+
 RUN_LIST_LIMIT = 60
 
-# Job lists are fetched one call per *run*, in parallel — per workflow until
-# #1640, and the two differ by one on any repo with GitHub's default code
-# scanning turned on. Small on purpose: the realistic run count per SHA is three
-# or four, and a wide pool would only buy latency on a repo that does not exist
-# yet.
+
+
+
+
+
 JOB_WORKERS = 4
 
 _GRACE = _checks.CHECK_CREATION_GRACE_SECS
 
-# The second, longer threshold (#2362). 45 minutes -- three times `_GRACE` --
-# chosen from a single, unreproduced observation (the issue's own author
-# declined to force a second merge to test it further), so it is set wide
-# enough that ordinary listing lag or a slow-to-dispatch push event has every
-# realistic chance to have already resolved itself by the time this fires.
-# Past it, "still expected" is no longer a plausible reading and the finding
-# is escalated to `NO_RUN_STALE` rather than repeating the same declined
-# `NO_RUN` sentence a second, third and hundredth time.
+
+
+
+
+
+
+
+
 NO_RUN_STALE_SECS = 2700
 
 
-# ---------------------------------------------------------------------------
-# selection — every run on the head commit, never by recency
-# ---------------------------------------------------------------------------
+
+
+
 
 def runs_on_sha(runs: object, sha: str) -> dict:
-    """Every run **on this SHA**, keyed by a label unique to the run (#1640).
 
-    *By SHA*, because "the branch is green" is a claim about a commit, and a
-    run on the previous head is a true statement about a commit the reader has
-    already moved past. That filter is unchanged and load-bearing.
 
-    What is gone is the second one. This used to keep the newest run *per
-    workflow name*, justified as "a re-run supersedes the run it replaces" —
-    and that justification was wrong about the mechanism it named. A re-run is
-    a further **attempt on the same run object**: `gh run rerun` reuses the id
-    and bumps `run_attempt`, which is why `run_id_note()` already tells the
-    reader the tally counts the latest attempt only. Attempts and runs are two
-    axes, and collapsing the second in the name of the first silently dropped
-    real coverage: GitHub's default code-scanning setup emits **two runs per
-    push** sharing one `workflow_id`, one `path` and one rendered name, and on
-    `d1bb0837` the dropped one held `Analyze (actions)`, which no other run on
-    that commit performed.
 
-    So the population is enumerated rather than deduped, and the only
-    collapsing left is the one the old docstring claimed: entries sharing a run
-    id are attempts of one run, and the highest `run_attempt` wins.
 
-    The key is a **label**, not the raw id, because it is what the verdict
-    sentence, the shortfall lines and the table all name the row by, and
-    `31749711130` is not an answer to "what failed". A name with one run keeps
-    its bare name — every ordinary render and every name-keyed consumer is
-    unchanged on the ordinary commit, the one exception being a name that
-    itself contains this module's `(run <id>)` shape (see
-    `_neutralise_run_tag`). A name with two gets `NAME (run ID)` on both, so the
-    second row is visible and the reader can check the verdict against it.
-    Callers wanting the workflow names go through `workflow_names()`, which
-    reads them off the run objects rather than parsing them back out.
 
-    A run whose `databaseId` cannot be read is kept as its own entry rather
-    than merged into another: two runs that cannot be told apart are counted
-    twice and the conjunction gets stricter, which is the recoverable
-    direction. An unreadable id is `?` in the label and disambiguated by a
-    trailing ` #N` only if that collides too — a label collision must never be
-    the thing that drops a run.
 
-    The name half of every label goes through `_neutralise_run_tag` first, so
-    the ` (run ID)` this function appends is the only one in it (#1687). The
-    key stops being the workflow name verbatim in that case; `workflow_names()`
-    is where the *name* question is asked, and it reads the run object.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not isinstance(runs, list) or not sha:
         return {}
     by_id: dict = {}
@@ -208,8 +208,8 @@ def runs_on_sha(runs: object, sha: str) -> dict:
         if not isinstance(r, dict) or r.get("headSha") != sha:
             continue
         rid = _run_id(r)
-        # An unreadable id cannot stand for identity — `-1` would merge every
-        # such run into one. Position makes each its own entry.
+
+
         key = rid if rid >= 0 else ("unreadable", i)
         prev = by_id.get(key)
         if prev is None:
@@ -248,94 +248,94 @@ def _workflow_name(run: object) -> str:
     return str(run.get("workflowName") or "?")
 
 
-#: Supertool's own annotation, as a pattern — what `runs_on_sha` appends to a
-#: name with two runs on the commit, and `?` for an id it could not read.
+
+
 _RUN_TAG = re.compile(r"\(run (?:[0-9]+|\?)\)")
 
-#: What that shape becomes when it arrives *inside* a workflow name. ASCII on
-#: purpose: this lands in a fixed-width table printed on every console this repo
-#: supports, and `_untrusted`'s own glyphs do not encode in cp1252 (#863). It
-#: cannot match `_RUN_TAG` itself, so the substitution is idempotent.
+
+
+
+
 RUN_TAG_NEUTRALISED = "(run-tag in name, neutralised)"
 
 
 def _neutralise_run_tag(name: str) -> str:
-    """A workflow name that cannot forge this module's `(run ID)` (#1687).
 
-    `workflowName` is remote text — whoever controls the repo's
-    `.github/workflows` chooses it — and a workflow literally named
-    `Analyze (run 12345)` used to render byte for byte as this module's
-    annotation of a workflow named `Analyze`, in the first column of the table
-    the merge gate and the release gate are read off. `_untrusted.flat` does
-    not reach it: every character is printable, and what was missing is a
-    *boundary*, not a control-character strip.
 
-    So the tool's structural shape is neutralised where it appears in content,
-    which is what `_untrusted.scrub` already does for the fence markers. After
-    this, the only `(run <digits>)` in a label is the one this module wrote.
 
-    Declined, not censored: the rest of the name survives, so the reader still
-    learns what the workflow is called. Applied to a name with *one* run too —
-    a bare row that looks annotated is the same forgery with a shorter reach.
 
-    **The label only.** `workflow_names()` reads the name off the run object,
-    so the declared-set check and the previous-head comparison still see the
-    real name; rewriting it there would invent a missing workflow out of a
-    spelling, which is the trap `missing_workflows` exists to avoid.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     return _RUN_TAG.sub(RUN_TAG_NEUTRALISED, name)
 
 
 def _attempt(run: object) -> int:
-    """`run_attempt`, or ``-1`` when it cannot be read.
 
-    ``-1`` rather than a defaulted ``1``: an unreadable attempt must lose to a
-    readable one, so the entry that survives is the one whose supersession can
-    be established.
-    """
+
+
+
+
+
     try:
-        return int(run.get("attempt"))  # type: ignore[union-attr]
+        return int(run.get("attempt"))  
     except (AttributeError, TypeError, ValueError):
         return -1
 
 
 def workflow_names(selected: dict) -> set:
-    """The distinct workflow names behind a selection, read off the runs.
 
-    The selection is keyed per run since #1640, so its keys are labels and a
-    name with two runs appears in neither key verbatim. Everything asking the
-    *workflow* question — the declared-set check, the previous-head comparison
-    — asks it here instead, and gets an answer that does not depend on how a
-    label was spelled.
-    """
+
+
+
+
+
+
+
     return {_workflow_name(r) for r in (selected or {}).values()}
 
 
 def missing_workflows(prev_names, selected: dict,
                        declared: list | None = None) -> list:
-    """Workflow names that ran on the previous head and produced no run here.
 
-    A seam rather than `set(prev_names) - set(selected)` at each call site,
-    because that subtraction was written against name keys in three places and
-    two of them are in other files. Against labels it would report every
-    two-run workflow as absent — a NOT GREEN invented out of a spelling.
 
-    `declared` is the `_declared_workflows.declared_at` list, optional and
-    keyword-shaped so every existing caller keeps its old behaviour unless it
-    opts in. Passed, a name is dropped from the result when the declared set
-    says it definitely has no push trigger (#1959) — "ran on the previous
-    head and has no run here" is only evidence of a missing run for a
-    workflow a push could have produced a run from. `slow tests`
-    (`schedule`/`workflow_dispatch`) failing to run on a pushed commit is
-    exactly what its trigger declaration predicts, not a gap.
 
-    Kept, never dropped, when `is_push_triggered` answers anything other than
-    `False` — a push-triggered workflow (`is_push_triggered` is `True`) and a
-    workflow whose triggers could not be read (`None`, unknown) both stay in
-    the result, because this is the branch that decides whether a fresh
-    commit is still owed a run, and only a *provably* excluded trigger may
-    remove that obligation.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     missing = sorted(set(prev_names or ()) - workflow_names(selected))
     if not declared:
         return missing
@@ -347,41 +347,41 @@ def missing_workflows(prev_names, selected: dict,
 
 def _run_id(run: object) -> int:
     try:
-        return int(run.get("databaseId"))  # type: ignore[union-attr]
+        return int(run.get("databaseId"))  
     except (AttributeError, TypeError, ValueError):
         return -1
 
 
-# A ref that could abbreviate an object name. Seven is git's own floor for an
-# abbreviation and the length every tool prints; below it `gh api commits/<x>`
-# refuses anyway. Upper bound is a full name.
-_HEX_REF = re.compile(r"^[0-9a-fA-F]{7,40}\Z")  # \Z, not $ — #1188
+
+
+
+_HEX_REF = re.compile(r"^[0-9a-fA-F]{7,40}\Z")  
 
 MODE_BRANCH = "branch"
 MODE_COMMIT = "commit"
 
 
 def ref_mode(ref: str, resolved_sha: str) -> str:
-    """`commit` or `branch` — decided by the resolution, not by the spelling.
 
-    `gh-branch` has always taken a ref, and `gh api commits/<ref>` resolves a
-    branch name and an object name alike. So the op *accepted* a SHA and then
-    asked `gh run list --branch <sha>`, which matches no branch and answers
-    `[]` with exit 0 — and zero runs rendered as `NO RUN — zero workflow runs
-    on 412375a` for a commit carrying two runs and eighteen legs (#1083). An
-    absence produced by the tool, printed as an absence in the world, inside
-    the op written to stop exactly that.
 
-    The discriminator is free. Anything hex-shaped *might* abbreviate an object
-    name, but `deadbee` is also a legal branch name — so the question is
-    whether what the ref resolved to **starts with the ref**. A branch answers
-    no; an abbreviation answers yes; and a branch that happens to be named
-    after the commit it points at answers yes and is right either way, because
-    both readings describe the same commit. No second API call, and no
-    ambiguity refusal invented for a case the resolution already decided:
-    GitHub 422s an abbreviation it cannot resolve, and that is an error, not a
-    guess.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     ref = str(ref or "").strip()
     sha = str(resolved_sha or "").strip().lower()
     if not ref or not _HEX_REF.match(ref):
@@ -393,11 +393,11 @@ _ISO = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def _created(run: object):
-    """A run's creation time, or ``None`` when the field cannot be read.
 
-    ``None`` is a third answer and stays one: a run with no readable timestamp
-    is not a run created at the epoch, and must not sort as though it were.
-    """
+
+
+
+
     if not isinstance(run, dict):
         return None
     try:
@@ -409,12 +409,12 @@ def _created(run: object):
 
 
 def _prev_candidates(runs: object, sha: str) -> list:
-    """The runs that could be the previous head — every run on some other SHA.
 
-    One reader for the population, because `previous_head` ranks it and
-    `previous_head_basis` reports on it, and a disclosure computed over a
-    second, drifting definition of "candidate" would be worse than none.
-    """
+
+
+
+
+
     if not isinstance(runs, list):
         return []
     return [r for r in runs if isinstance(r, dict)
@@ -422,29 +422,29 @@ def _prev_candidates(runs: object, sha: str) -> list:
 
 
 def previous_head(runs: object, sha: str) -> tuple[str, set]:
-    """`(sha, workflow names)` of the newest run set that is *not* this SHA.
 
-    The only evidence available for "a workflow that normally runs here did not
-    run on this commit". It is evidence, not a rule: a path filter makes the
-    absence legitimate, so nothing here ever concludes on its own — see
-    `verdict()`, which only lets it block green inside the creation window.
 
-    **Newest by `createdAt`, not by list position** (#1618). This read the
-    first entry with a different SHA, which is the newest only if GitHub hands
-    back the list in the order this op assumed. On 2026-08-13 it did not: the
-    op named `d7e67ee` as master's previous head — a commit 527 commits and 17
-    days behind, carrying one run — and then reported that run's workflow as
-    absent from the head. A newest-60 window on that branch cannot contain a
-    17-day-old run, so the order was not descending, and nothing here checked.
-    Ordering by the field GitHub stamps is free and does not care.
 
-    A list where no entry has a readable timestamp falls back to position,
-    which is the old behaviour and the only one left: refusing to name a
-    previous head would delete the evidence rather than qualify it. That
-    fallback, and the partial case where only *some* candidates parse, are
-    both disclosed by `previous_head_lines` — see `previous_head_basis` for
-    why the answer is qualified rather than widened or withheld (#1644).
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     others = _prev_candidates(runs, sha)
     if not others:
         return "", set()
@@ -457,29 +457,29 @@ def previous_head(runs: object, sha: str) -> tuple[str, set]:
     return prev, names
 
 
-#: What `previous_head` ranked by. `time` is the claim the docstring makes;
-#: `position` is the fallback #1618 was written to remove and which survives
-#: only for a listing nothing in it can date; `none` is no candidate at all.
+
+
+
 BASIS_TIME = "time"
 BASIS_POSITION = "position"
 BASIS_NONE = "none"
 
 
 def previous_head_basis(runs: object, sha: str) -> tuple[str, int, int]:
-    """`(basis, undated, candidates)` — how the previous head was chosen (#1644).
 
-    `previous_head` promises "newest", and delivers it only for runs whose
-    `createdAt` is spelled the one way `_created` reads. A run in any other
-    spelling — `+00:00` is the same instant in legal RFC3339 — is dropped from
-    the ranking, and a listing where none parses is ranked by list position,
-    which is exactly what #1618 removed. Neither shows in the output: the
-    previous-head line reads identically whichever happened.
 
-    So this reports the basis rather than widening the parser. A wider
-    `strptime` would make the assumption invisible again instead of declared,
-    and this repo's contract is three states — the third one here is "I could
-    not date these N runs", not a quietly larger accept set.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
     others = _prev_candidates(runs, sha)
     if not others:
         return BASIS_NONE, 0, 0
@@ -489,17 +489,17 @@ def previous_head_basis(runs: object, sha: str) -> tuple[str, int, int]:
 
 
 def previous_head_lines(runs: object, sha: str, prev_sha: str) -> list:
-    """The sentence a previous head that could not be ranked by time needs.
 
-    Empty for the ordinary case, which is every call where every candidate
-    carried a readable timestamp. A hedge printed on every call forever is a
-    disclosure that gets tuned out, which is worse than not writing it — the
-    same reason `stale_listing_lines` is gated on the creation window.
 
-    Printed whether or not any workflow turns out to be missing: an empty
-    `missing` list derived from the wrong previous head is a false negative,
-    and it is the one that prints nothing at all.
-    """
+
+
+
+
+
+
+
+
+
     basis, undated, candidates = previous_head_basis(runs, sha)
     if basis == BASIS_NONE or not undated:
         return []
@@ -522,12 +522,12 @@ def previous_head_lines(runs: object, sha: str, prev_sha: str) -> list:
 
 
 def run_phase(run: object) -> str:
-    """`concluded` | `running` | `unestablished` for one run.
 
-    A concluded run and one still moving must be unmistakably distinct (#615
-    comment 1), and an unreadable lifecycle field is a third thing again — it
-    is not evidence that the run is still going.
-    """
+
+
+
+
+
     if not isinstance(run, dict):
         return PHASE_UNESTABLISHED
     raw = str(run.get("status") or "").strip().lower()
@@ -537,40 +537,40 @@ def run_phase(run: object) -> str:
 
 
 def orphaned_legs(run: object, states) -> int:
-    """Legs still pending on a run GitHub has already closed (#1408).
 
-    GitHub does not guarantee that a run object outlives its own jobs. Twice on
-    2026-08-11 — run 31501780284 with `pytest (windows-latest, 3.11)` and
-    31507113066 with `pytest (macos-latest, 3.12)` — the run read `completed /
-    success` while one of its legs sat `in_progress`, and neither leg would ever
-    have reported, because the run that would have carried its result was
-    already closed. Both cleared only with `gh run rerun --job`.
 
-    So the two fields are not two views of one fact and must not be rendered as
-    though they were. `verdict()` already refuses such a commit, through the
-    leg half of its `moving` test; this is the same predicate named, so the
-    table can be marked from the same reading the verdict used rather than from
-    a second derivation of it that could drift.
 
-    Zero for a run still moving: a pending leg under an open run is an ordinary
-    wait, and marking it would put a warning on every in-flight commit.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if run_phase(run) != PHASE_CONCLUDED:
         return 0
     return sum(1 for s in (states or []) if _checks.bucket(s) == "pending")
 
 
 def orphan_lines(selected: dict, fetched: dict) -> list:
-    """One sentence per run that closed without one of its legs.
 
-    Per *run*, not per workflow (#1640): a workflow with two runs on the commit
-    is two entries here, and the sentence names the row label — `NAME (run ID)`
-    in that case — so the reader can tell which of the two it is about.
 
-    A bare marker in the `Outcome` cell would say only that something is odd,
-    which is a second lookup rather than an answer. These lines say which two
-    sources disagree and which one the verdict acted on.
-    """
+
+
+
+
+
+
+
+
     lines = []
     for name in sorted(selected):
         jobs = fetched.get(name)
@@ -580,12 +580,12 @@ def orphan_lines(selected: dict, fetched: dict) -> list:
         n = orphaned_legs(selected[name], states)
         if not n:
             continue
-        # Flattened for the same reason the workflow name beside it is: this
-        # sentence is two-space indented, so a newline in the field emits at
-        # column 0 and reads as the tool's own line (#851/#981). `conclusion`
-        # is an enum in practice; the convention is not conditioned on that,
-        # because both of those issues were filed after somebody reasoned that
-        # way about the field next door.
+
+
+
+
+
+
         conclusion = _untrusted.flat(
             str(selected[name].get("conclusion") or "no conclusion"))
         legword = _agrees(n, "leg", "legs")
@@ -601,17 +601,17 @@ def orphan_lines(selected: dict, fetched: dict) -> list:
 
 
 def leg_summary(states) -> str:
-    """The shared tally, not a second derivation of it.
 
-    Exists as a named seam so a test can assert this op and `_checks` agree by
-    identity rather than by two renderings that happen to match today.
-    """
+
+
+
+
     return _checks.summarize(states)
 
 
-# ---------------------------------------------------------------------------
-# the conjunction
-# ---------------------------------------------------------------------------
+
+
+
 
 def _duration(secs: object) -> str:
     if secs is None:
@@ -632,23 +632,23 @@ def _window(grace: int) -> str:
 
 def no_run_verdict(sha: str, age_secs: object, grace: int = _GRACE,
                     stale_grace: int = NO_RUN_STALE_SECS) -> tuple:
-    """Zero runs on this SHA, rendered as *why* rather than as a zero.
 
-    Four readings, and none of them is green. The first window is the one
-    measured in #585 for GitHub's own run-creation latency; past it the cause
-    is declined rather than guessed, because a workflow can legitimately not
-    fire for a ref (path filters) and inferring that from
-    `.github/workflows/*` would be inferring it from files that need not be
-    the ones on this ref.
 
-    Declining does not mean declining forever (#2362): past `stale_grace` --
-    a second, longer threshold -- the same zero-runs reading is escalated
-    to `NO_RUN_STALE` rather than repeating the identical "could be a path
-    filter" sentence at 20 minutes and at 20 hours alike. `age_secs` is the
-    one clock this function has (the commit's own age, not the moment any
-    particular caller happened to check), so that is the clock both
-    thresholds share.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     short = sha[:7] if sha else "an unestablished commit"
     if age_secs is None:
         return (NO_RUN, f"{NO_RUN} — zero workflow runs on {short}, and when "
@@ -681,17 +681,17 @@ def no_run_verdict(sha: str, age_secs: object, grace: int = _GRACE,
 
 
 def listing_behind_secs(runs: object, age_secs: object):
-    """How far the newest run in the listing predates the head commit itself.
 
-    `None` when either side is unreadable; the value may be negative, which
-    means the listing is level with the head and nothing needs saying.
 
-    The number is what separates the two readings. A listing whose newest
-    entry is 23s older than the head is one that has plainly not caught up
-    yet; one whose newest entry is 17 days older — #1618's — is a listing that
-    answered about some other slice of history entirely, and a reader shown
-    only "zero runs" cannot tell those apart.
-    """
+
+
+
+
+
+
+
+
+
     if age_secs is None:
         return None
     stamps = [t for t in
@@ -705,19 +705,19 @@ def listing_behind_secs(runs: object, age_secs: object):
 
 def stale_listing_lines(runs: object, selected: dict, sha: str,
                         age_secs: object, grace: int = _GRACE) -> list:
-    """The doubt the previous-head block inherits when nothing came back (#1618).
 
-    That block is built from the same `gh run list` answer as the verdict. When
-    the answer contains no run at all on the head, every sentence in it rests
-    on the listing having caught up — and it need not have: at the v0.41.0
-    release gate the listing omitted two runs that had existed on the head for
-    twelve minutes, and returned them three minutes later, unchanged.
 
-    Only inside the creation window. Past it, a commit with no runs is an
-    ordinary and legitimate state — a path filter, a disabled workflow — and a
-    hedge printed on every such call forever is a disclosure that gets tuned
-    out, which is worse than not writing it.
-    """
+
+
+
+
+
+
+
+
+
+
+
     if selected or age_secs is None or int(age_secs) > grace:
         return []
     lines = [f"  This listing did not see the head commit at all: it returned "
@@ -735,41 +735,41 @@ def stale_listing_lines(runs: object, selected: dict, sha: str,
 
 def scope_clause(undispatched: list, unestablished: str, n_wf: int, *,
                  waiting: int = 0, grace: int = _GRACE) -> str:
-    """The sentence a GREEN needs so it stops over-claiming (#846).
 
-    `gh-branch`'s green has always meant *every workflow that produced a run on
-    this commit passed*. Nothing said so, and the missing half is not visible
-    from inside the arithmetic: a workflow with no run is absent from both sides
-    of it and cancels out exactly. On the v0.27.0 tag that green covered three
-    of four declared workflows and read as covering all of them.
 
-    The verdict itself is not downgraded — see the module docstring of
-    `_declared_workflows` for why a shortfall concluded from an absence is a
-    false alarm on a merge gate. What changes is that the clearance states its
-    own scope, on the line people actually read.
 
-    Empty when everything declared produced a run: a qualifier printed on every
-    render is one nobody reads on the render where it matters, and this repo has
-    paid for that twice.
 
-    `waiting` is #2117's own gap, caught reviewing #2117 itself: `scope_for`
-    already knows some of the "NOT covered" names below are only inside their
-    creation window (`unresolved` excludes them, and `undispatched_lines`
-    reads them as "still expected"), but this sentence — the one glued
-    directly onto the `Verdict:` line both `main()` and the dashboard print
-    unconditionally — named every not-covered workflow with no such
-    qualifier, so a reader who only reads the headline saw the pre-#2117
-    wording regardless. `waiting` states how many of `n` are merely early,
-    without pretending the scope claim itself is any different: the GREEN
-    genuinely does not cover a workflow with no run yet, window or not.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if unestablished:
-        # `these {n_wf} are` was a bare plural over a count that is routinely 1
-        # — one workflow producing a run on a commit is ordinary — so this read
-        # "whether these 1 are all of them" (#841, found reviewing #841's own
-        # fix). The noun is named as well as counted, because "whether this 1
-        # is" fixes the agreement and still leaves the reader guessing what is
-        # being counted.
+
+
+
+
+
+
         subject = _agrees(n_wf, "this 1 workflow is",
                           f"these {n_wf} workflows are")
         return (f" The set of workflows declared at this commit is "
@@ -778,20 +778,20 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int, *,
     if not undispatched:
         return ""
     n = len(undispatched)
-    # The names ride on the sentence, not on the block under it. Every surface
-    # that republishes this verdict quotes lines, and not always the same ones:
-    # `pr_merge._default_branch_report` filters for four prefixes, so a clause
-    # ending "named below" arrived on the merge gate with nothing below it.
-    # Fixing that one caller would have left the next one, and #846's own
-    # reproduction was a Verdict line read on its own.
+
+
+
+
+
+
     shown = [_untrusted.flat(str(w.get("name")))
              for w in undispatched[:_checks.NAMED_CAP]]
     names = ", ".join(f"`{s}`" for s in shown)
     if n > _checks.NAMED_CAP:
         names += f", +{n - _checks.NAMED_CAP} more"
-    # These two were written correctly and are routed through `_agrees` anyway:
-    # this clause is appended onto the same rendered line as the verdict, and a
-    # count word that agrees by hand today is the shape #841 was.
+
+
+
     tail = ""
     if waiting:
         tail = (f" {waiting} of {n} {_agrees(waiting, 'is', 'are')} still "
@@ -807,57 +807,57 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int, *,
 def scope_for(repo: str, sha: str, selected: dict, *,
               declared_pair: tuple | None = None,
               age_secs: object = None, grace: int = _GRACE) -> tuple[str, list[str], str]:
-    """`(clause, lines, unresolved)` — #846's scope check, for every caller.
 
-    Exists as a seam rather than as four lines inlined in `main()` because
-    `main()` is not the only surface that publishes this verdict.
-    `presets/dashboard/dashboard.py` and `presets/watch/tiers/gh_prs.py` both
-    call `verdict()` directly, and both printed "GREEN — every workflow on X
-    concluded and every leg passed" with no scope at all — the dashboard being
-    the board a human reads immediately before tagging, which is where the
-    v0.27.0 mis-cut happened. A caller that has to remember to compute this
-    will not — and #1077 is that sentence coming true: the tier was left
-    unwired by the same PR that wrote it. So `verdict()` no longer has a
-    default for `scope`; a caller that forgets gets a `TypeError` on its first
-    run rather than a green that quietly over-claims.
 
-    `unresolved` is the third element because a caller deciding *whether to
-    speak* must not have to parse the clause to find out. It names why this
-    green cannot account for itself, and is empty when it can:
 
-      * the declared set could not be established, so the green covers a
-        universe of unknown size;
-      * a workflow declaring a **push** trigger produced no run on a pushed
-        commit — the open question #846 exists for.
 
-    A `schedule` / `workflow_dispatch` / `pull_request`-only workflow producing
-    no run on a push is *expected* and leaves `unresolved` empty. That is not a
-    softening: on this repo `slow tests` and `changelog` are permanently in
-    that state, so a surface that spoke whenever the clause was non-empty would
-    say the same thing on every tick forever, which is precisely the
-    habituation `scope_clause`'s own docstring says this repo has paid for
-    twice. The loud/quiet split is `_declared_workflows.is_push_triggered`,
-    the same predicate `undispatched_lines` renders on, so the two cannot
-    drift — and `None` (an `on:` block that could not be read) counts as loud
-    on both sides.
 
-    `age_secs`/`grace` add a third split inside "loud" (#2117): a push-triggered
-    workflow with no run yet, on a commit still inside `grace` seconds old, is
-    not the same open question as one well past it — GitHub creates workflow
-    runs asynchronously, the same latency `_checks.absence()` already accounts
-    for on the check-run side, and `verdict()`'s own `missing`-workflow branch
-    two functions up already uses this exact window for the sibling case ("ran
-    on the previous head, absent here"). A caller that does not pass `age_secs`
-    gets exactly today's behaviour — nothing here is inside-the-window by
-    default. `unresolved` only ever names the still-open ones: a workflow that
-    is merely waiting on its own creation latency is not a question for a
-    caller deciding whether to speak.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not selected:
         return "", [], ""
     if declared_pair is not None:
-        # Reuses a fetch `main()` already made for `missing_workflows` (#1959)
-        # -- the same declared-at-this-sha call, made once rather than twice.
+
+
         declared, why = declared_pair
     else:
         owner, name = _declared_legs.owner_repo(repo)
@@ -880,47 +880,47 @@ def scope_for(repo: str, sha: str, selected: dict, *,
     if still_open:
         unresolved = (f"{len(still_open)} declared workflow(s) a push should reach "
                       f"produced no run on {sha[:7]}")
-    # Counted in workflows, not in runs: this clause says "this covers the N
-    # workflows that produced a run" and is compared by the reader against a
-    # declared *workflow* set. `len(selected)` is a run count since #1640, and
-    # the two differ on exactly the commit that issue is about.
+
+
+
+
     return (scope_clause(undispatched, "", len(present),
                          waiting=len(loud) - len(still_open), grace=grace),
             undispatched_lines(undispatched, age_secs, grace), unresolved)
 
 
 def _waiting_on_first_run(wf: dict, age_secs: object, grace: int) -> bool:
-    """Is this declared, push-triggered, no-run-yet workflow still inside the
-    window in which GitHub has always created the run (#2117)?
 
-    Never true for a workflow whose `on:` block could not be read at all —
-    that is a different unknown, about whether the file could be parsed, and
-    a young commit says nothing about that.
-    """
+
+
+
+
+
+
     return (wf.get("triggers") is not None
             and age_secs is not None and int(age_secs) <= grace)
 
 
 def undispatched_lines(undispatched: list, age_secs: object = None,
                        grace: int = _GRACE) -> list[str]:
-    """Name what the verdict does not cover, loudest case on its own line.
 
-    Split by trigger, because the two absences are different questions. A
-    `schedule`/`workflow_dispatch`/`pull_request` workflow producing no run on a
-    pushed commit is expected — naming those one per line, forever, on every
-    call, is how a disclosure gets tuned out — so they collapse into a single
-    summary. A workflow declaring a **push** trigger and producing no run is a
-    real open question, and gets its own line saying the question is open rather
-    than answering it.
 
-    A commit still inside the creation window (`age_secs <= grace`, #2117) is a
-    third case rather than a caveat on the second: "declared, should have run,
-    and produced none" is the state a release gate blocks on, and a run GitHub
-    simply has not created yet is not that state. `age_secs=None` — the
-    default, and what every caller written before #2117 still passes —
-    reproduces exactly today's wording, so this is additive rather than a
-    reinterpretation of an existing call.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not undispatched:
         return []
     loud: list[dict] = []
@@ -961,34 +961,34 @@ def undispatched_lines(undispatched: list, age_secs: object = None,
 
 
 def _unread_workflows(legs: dict) -> list:
-    """Names of the runs `verdict()` reads as UNKNOWN because their job list
-    did not come back -- pulled out of `verdict()` (mirroring `_red_workflows`
-    below, #2355) so `gh-branch`'s watch poller can ask "did any job list
-    simply not come back" without re-deriving the check from a rendered
-    sentence (the same substring-scan trap `_red_workflows`'s own docstring
-    warns about) and without conflating it with the *other* UNKNOWN cause in
-    `verdict()` -- an unreconciled tally, where every job list already came
-    back and the doubt is about the reconciliation, not the fetch (#2537).
-    """
+
+
+
+
+
+
+
+
+
     return sorted(n for n, v in legs.items() if v is None)
 
 
 def _red_workflows(selected: dict, legs: dict) -> list:
-    """Names of the runs `verdict()` reads as failed -- a leg gone red, or the
-    run's own conclusion gone red with no leg to blame it on.
 
-    Pulled out of `verdict()` (#2355) so `gh-branch`'s watch poller can ask
-    this exact question -- "did anything actually fail" -- without a second,
-    independent copy of the red-leg arithmetic, and without scanning
-    `verdict()`'s rendered *sentence* for a marker substring: that sentence
-    also interpolates workflow names GitHub lets a repo author spell however
-    they like (`_names(moving)`, `_names(missing)` in the pending branches
-    below), so a workflow literally named after the marker text would forge a
-    false failed reading on a genuinely pending commit. This function reads
-    the same structured `legs`/`selected` data `verdict()` reads, never a
-    rendered string, so nothing a workflow's own name says can change its
-    answer.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     return sorted(n for n, states in legs.items()
                   if any(_checks.is_red(s) for s in (states or []))
                   or _checks.is_red(_run_conclusion(selected[n])))
@@ -997,40 +997,40 @@ def _red_workflows(selected: dict, legs: dict) -> list:
 def verdict(selected: dict, legs: dict, missing, sha: str,
             age_secs: object, grace: int = _GRACE,
             unreconciled: str = "", *, scope: str) -> tuple:
-    """`(state, sentence)` for the whole commit. Conjunctive, and ordered.
 
-    `scope` is keyword-only and has **no default** (#1077). It had one, and the
-    seam that computes it (`scope_for`) says in its own docstring that "a
-    caller that has to remember to compute this will not" — then the same PR
-    wired one of the two callers it names and left `presets/watch/tiers/
-    gh_prs.py` publishing an unscoped green on every radar tick. A default is a
-    reminder; a required argument is a mechanism. Pass `scope_for(...)[0]`, or
-    `""` if you have decided the scope does not apply here — but decide it.
 
-    `legs` maps a **run label** to its leg states, or to ``None`` when the job
-    list did not come back. ``None`` is not zero: a run whose legs were never
-    read cannot contribute to a green, so it decides the whole answer.
 
-    A label rather than a workflow name since #1640 — the bare name where that
-    name has one run on the commit (neutralised where the name forges this
-    module's own tag, #1687), `NAME (run ID)` where it has two. The keys
-    are used here only as the subject of a sentence, so this function is
-    unchanged by that; what changed is that two runs of one workflow are now two
-    keys and both have to pass.
 
-    The order the findings are tested in is the order a reader acts on them —
-    unread beats failed beats unfinished beats not-yet-created — and every
-    branch names what it is talking about, because a verdict that says "not
-    green" without naming the workflow sends the reader back to the web UI,
-    which is the cost this op exists to remove.
 
-    `unreconciled` is `_checks.shortfall`'s marker when the legs read could not
-    be squared with the legs the runs declare (#837). It is tested last, and
-    only against the green: every branch above it is a finding about the legs
-    that *were* read, and a finding beats a doubt. But a green is a claim about
-    all of them, and "every leg I managed to read passed" is not that claim —
-    on a merge gate the difference is the whole point of the op.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if not selected:
         return no_run_verdict(sha, age_secs, grace)
 
@@ -1084,13 +1084,13 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
                          f"with what the runs declare ({unreconciled}), so "
                          "whether these are all of the legs is UNKNOWN. "
                          "Detailed below. Nothing here has failed.")
-    # `scope` rides on the green and only on the green (#846). Every branch
-    # above is a finding, and a reader looking at a finding is not clearing
-    # anything — the scope of a clearance is what was over-claimed.
-    # Runs, not workflow names (#1640). The count on this line is the size of
-    # the population the conjunction actually covered, and naming it in
-    # workflows was how a commit carrying three runs cleared as "2 workflows"
-    # with one of them never read.
+
+
+
+
+
+
+
     return (GREEN, f"{GREEN} — every run on {short} concluded and every "
                    f"leg passed ({n_legs} legs across {n_runs} "
                    f"{_agrees(n_runs, 'run', 'runs')}).{scope}")
@@ -1102,32 +1102,32 @@ def _run_conclusion(run: object) -> str:
     raw = str(run.get("conclusion") or "").strip()
     if raw:
         return _checks.normalize(raw)
-    # Not concluded yet — that is the `moving` branch's business, not a red.
+
     return "PENDING"
 
 
 def _names(names) -> str:
-    """The workflow names as an English list — the last separator is `and`.
 
-    A comma-separated list with no conjunction is the shape a **truncated**
-    list has, and this one is interpolated into the sentence whose whole job is
-    to say whether the commit is cleared (#1374). The reader's question at that
-    moment is "is that all of them"; `` `CodeQL`, `changelog`, `tests` ``
-    answers it wrong for free, and it costs nothing to answer it right.
 
-    **Not capped**, deliberately, and this is the second half of #1374's
-    question. `scope_clause` caps at `_checks.NAMED_CAP` and discloses the
-    remainder, because the names there are a *supplementary* list under a
-    verdict the reader has already got. These names are the verdict's own
-    subject — they are what the reader has to act on — and a shortened subject
-    inside a not-concluded sentence is exactly the absence-produced-by-the-tool
-    defect this repository keeps filing. Eight backticked names on one line is
-    ugly; eight workflows of which three are named is wrong.
-    """
-    # Flattened here rather than at the four call sites, so the fifth is
-    # right too. These names reach the *verdict sentence*, which `pr_merge`
-    # republishes on the merge gate — the highest-authority line this op
-    # writes, and the one a forged newline would be worth landing in (#851).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     items = [f"`{_untrusted.flat(str(n))}`" for n in names]
     if not items:
         return ""
@@ -1137,25 +1137,25 @@ def _names(names) -> str:
 
 
 def _agrees(n: int, singular: str, plural: str) -> str:
-    """The form of a word agreeing with the count it is talking about.
 
-    Every count-dependent word in the rendered verdict line comes from here
-    rather than from its own inline conditional — including `scope_clause`'s,
-    which is appended onto that same line and is therefore part of the same
-    sentence, not a neighbour of it. That is the whole mechanism of #841. The
-    pronoun half of the not-concluded sentence was already count-aware —
-    `'it is' if len(moving) == 1 else 'they are'` — and the verb half next to it
-    was left at a hardcoded `has`, so a two-workflow commit rendered
-    "`CodeQL`, `tests` has not concluded ... so they are neither a pass nor a
-    fail": one sentence, one subject, two different numbers. Two independent
-    conditionals over the same count is a disagreement waiting to be written.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
     return singular if n == 1 else plural
 
 
-# ---------------------------------------------------------------------------
-# gh plumbing
-# ---------------------------------------------------------------------------
+
+
+
 
 def _gh(argv: list, timeout: int = 20):
     return subprocess.run(argv, capture_output=True, text=True,
@@ -1166,28 +1166,28 @@ def _format_error(stderr: str, what: str, commit: bool = False) -> str:
     s = (stderr or "").lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
         return _repo_target.no_repo_error("gh-branch:master")
-    # 422 + "no commit found for sha" is what the commits endpoint returns for
-    # a ref that does not exist — not a 404. Left unclassified it echoed gh's
-    # own sentence, which names a SHA for something the caller typed as a
-    # branch name and reads as an API fault rather than a typo.
+
+
+
+
     if (_status_probe.says_not_found(s)
             or "422" in s or "no commit found" in s):
-        # Scope is shared; the hint is not. `_repo_target.not_found_hint()`
-        # says "Check the number", which is right for the issue/PR ops it was
-        # written for and wrong for a ref the caller typed as a name.
+
+
+
         target = _repo_target.target()
         where = f" (gh repo view {target})" if target else ""
-        # A hex-shaped ref that does not resolve is a different mistake from a
-        # misspelled branch, and 422 `No commit found for SHA` is the same
-        # response for an unknown name and one too short to be unambiguous
-        # (#1083). Naming the branch hint at it sends the reader to check a
-        # spelling that was never the problem.
-        #
-        # Flagged by the caller rather than sniffed out of `what`: sniffing is
-        # what the first version did, and `_run_list`'s "workflow runs for X"
-        # never started with `commit `, so commit mode reached the branch hint
-        # anyway — the leak this whole change exists to close, reintroduced one
-        # function along.
+
+
+
+
+
+
+
+
+
+
+
         if commit:
             return (f"ERROR: {what} not found "
                     f"{_repo_target.not_found_scope()}. GitHub answers the "
@@ -1198,36 +1198,36 @@ def _format_error(stderr: str, what: str, commit: bool = False) -> str:
         return (f"ERROR: {what} not found {_repo_target.not_found_scope()}. "
                 f"Check the spelling, or that the branch is pushed"
                 f"{where}.")
-    # A status, never a number (#1846). `401` sits inside a GitHub user id
-    # (`API rate limit exceeded for user ID 44012345`) and inside a request id,
-    # and this arm is above the rate-limit and permission arms -- so a throttle
-    # printed `gh auth login`, a remedy for a cause nothing established, and
-    # never reached the arm that says "retry".
+
+
+
+
+
     if _auth_probe.says_not_authenticated(s):
         return "ERROR: gh CLI not authenticated. Run: gh auth login"
     if "rate limit" in s or "429" in s:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes."
     if _status_probe.says_forbidden(s):
         return f"ERROR: permission denied for {what}. Check repo access."
-    # The remote host wrote this text — flattened, never relayed raw (#1606).
+
     return (f"ERROR: gh failed for {what}: "
             f"{_untrusted.flat((stderr or '').strip())}")
 
 
 def _repo_identity():
-    """`(nameWithOwner, defaultBranchRef, error)`.
 
-    Read on every call, not only the no-argument one: the head SHA and the
-    verdict are claims about a specific repository, and a call carrying a
-    `repo:` target reads as being about the cwd's repo unless it says otherwise.
-    """
+
+
+
+
+
     target = _repo_target.target()
     argv = ["gh", "repo", "view"] + ([target] if target else []) + \
         ["--json", "nameWithOwner,defaultBranchRef"]
     try:
         r = _gh(argv)
     except FileNotFoundError:
-        return "", "", "ERROR: gh not found — install from https://cli.github.com"
+        return "", "", "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return "", "", "ERROR: gh timed out resolving the repository"
     if r.returncode != 0:
@@ -1242,28 +1242,28 @@ def _repo_identity():
 
 
 def _head_commit(ref: str):
-    """`(sha, age_secs, error)` for the commit this ref names.
 
-    A branch's head, or — since #1083 — the commit itself, because `gh api
-    commits/<ref>` resolves both and the *mode* is decided from what comes
-    back. So this runs before anything knows which question was asked, and its
-    answer is what decides.
 
-    Resolved from the *ref*, never from the run list. Deriving the SHA from the
-    newest run would make "no run exists for this commit" — the state #615's
-    second comment is most concerned with — structurally unreachable: the
-    answer would always be the SHA of a commit that had a run.
-    """
+
+
+
+
+
+
+
+
+
+
     try:
         r = _gh(["gh", "api", _repo_target.api_path(f"commits/{ref}")])
     except FileNotFoundError:
-        return "", None, "ERROR: gh not found — install from https://cli.github.com"
+        return "", None, "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return "", None, f"ERROR: gh timed out resolving ref {ref!r}"
     if r.returncode != 0:
-        # The mode is not established yet — that needs the resolved SHA this
-        # call is failing to produce. The *shape* is all there is, and it is
-        # enough to pick the right hint.
+
+
+
         is_commit = bool(_HEX_REF.match(str(ref or "")))
         kind = "commit" if is_commit else "branch"
         return "", None, _format_error(r.stderr, f"{kind} {ref!r}",
@@ -1291,15 +1291,15 @@ def _age_secs(committer: dict):
 
 
 def _run_list(ref: str, sha: str = ""):
-    """The runs to select from, asked for by whichever key can answer.
 
-    `sha` switches the selector to `--commit`, and the caller passes the
-    **resolved 40-hex name**, never the ref it was typed as. `gh run list
-    --commit 412375a` returns `[]` with exit 0; `--commit 412375ae98…` returns
-    the two runs on it (measured 2026-08-08). That silent empty is the failure
-    the maintainer hit by hand in #1083, and passing an abbreviation here would
-    reproduce it inside the op meant to insulate against it.
-    """
+
+
+
+
+
+
+
+
     selector = ["--commit", sha] if sha else ["--branch", ref]
     try:
         r = _gh(["gh", "run", "list", *selector, "--limit",
@@ -1307,7 +1307,7 @@ def _run_list(ref: str, sha: str = ""):
                  "workflowName,headSha,databaseId,status,conclusion,event,"
                  "createdAt,attempt"] + _repo_target.gh_args())
     except FileNotFoundError:
-        return None, "ERROR: gh not found — install from https://cli.github.com"
+        return None, "ERROR: gh not found — install the GitHub CLI"
     except subprocess.TimeoutExpired:
         return None, f"ERROR: gh timed out listing runs for {ref!r}"
     if r.returncode != 0:
@@ -1321,13 +1321,13 @@ def _run_list(ref: str, sha: str = ""):
 
 
 def _jobs_for(run_id: int):
-    """The job list for one run, or ``None`` when it did not come back.
 
-    ``None`` and ``[]`` are different answers and stay different all the way to
-    the verdict. An empty list is an established fact; a missing one is an
-    absence in the tool, and counting it as zero passing legs is the guess this
-    repository keeps re-filing.
-    """
+
+
+
+
+
+
     try:
         r = _gh(["gh", "run", "view", str(run_id), "--json", "jobs"]
                 + _repo_target.gh_args())
@@ -1344,24 +1344,24 @@ def _jobs_for(run_id: int):
 
 
 def _reconcile(repo: str, selected: dict, fetched: dict) -> tuple:
-    """`(marker, lines)` squaring the legs read against the legs declared (#837).
 
-    The second source is `jobs?filter=all`, per run, and the reasoning is in
-    `presets/_declared_legs`. Branch scope adds one thing over `gh-pr`'s: the
-    run ids come from the run *list*, so a workflow is reconciled whether or
-    not anything it produced reached a check rollup.
 
-    Runs whose job list never came back are skipped rather than reconciled —
-    `verdict()` already answers UNKNOWN for those, and a second, differently
-    worded doubt about the same absence is noise.
 
-    The two sides are summed across workflows before `shortfall()` sees them,
-    so the `Legs:` line and the marker beside it are the same arithmetic. Any
-    single run that cannot be reconciled makes the whole answer unverified: a
-    declared total summed over only the readable runs is smaller than the
-    truth, and a smaller declared total is exactly what makes a short tally
-    look complete.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     owner, name = _declared_legs.owner_repo(repo)
     found_total = 0
     declared_total: int | None = 0
@@ -1383,11 +1383,11 @@ def _reconcile(repo: str, selected: dict, fetched: dict) -> tuple:
             continue
         if declared_total is not None:
             declared_total += len(names)
-        # Both halves are remote — the workflow name from the run list, the leg
-        # name from the workflow file on the ref — and this string is printed
-        # raw inside `_checks.shortfall`'s line. The identical `wf / job` pair
-        # in `main()` is already flattened; this one was the fourth #851 site
-        # in this file and the one the sweep missed.
+
+
+
+
+
         missing.extend(_untrusted.flat(f"{wf} / {n}") for n in
                        _declared_legs.missing_names(names, found))
     if not found_total and declared_total == 0:
@@ -1395,63 +1395,63 @@ def _reconcile(repo: str, selected: dict, fetched: dict) -> tuple:
     return _checks.shortfall(found_total, declared_total, missing)
 
 
-# ---------------------------------------------------------------------------
-# render
-# ---------------------------------------------------------------------------
 
-#: Width of the `Run` column — the id plus ` attempt N`. Run ids are 11 digits
-#: today and GitHub allocates them monotonically, so the slack is for the digit
-#: it will grow, not decoration. A column narrower than its content does not
-#: truncate here, it pushes the next one right and un-aligns the table.
+
+
+
+
+
+
+
 RUN_COL = 26
 PHASE_COL = 14
 
 
 def run_cell(run: object) -> str:
-    """`<id> attempt <n>` — the run this row is about, named so it can be used.
 
-    Until #1409 the table named workflows and never named runs, so there was no
-    route from this render to `gh-run:<id>` or to a re-run without a raw API
-    call. Both fields were already fetched by `_run_list`; only the render was
-    missing.
 
-    `attempt` is printed **always**, including on attempt 1. A number that
-    appears only when it is interesting cannot be told from a number the tool
-    failed to read, and that pair is the defect this repository keeps filing.
-    An unreadable id or attempt is `?` — never `-1` (what `_run_id` answers for
-    an absence) and never a defaulted `1`.
-    """
+
+
+
+
+
+
+
+
+
+
+
     rid = _run_id(run)
     ident = str(rid) if rid >= 0 else "id ?"
     attempt = "?"
     if isinstance(run, dict):
         try:
-            attempt = str(int(run.get("attempt")))  # type: ignore[arg-type]
+            attempt = str(int(run.get("attempt")))  
         except (TypeError, ValueError):
             attempt = "?"
     return f"{ident} attempt {attempt}"
 
 
 def table_header() -> str:
-    """The column names. `Run` names the run; `Phase` is what `Run` used to hold.
 
-    Split rather than crammed: the lifecycle word is the answer to "is this
-    still moving" (#615 comment 1) and the id is the answer to "what do I call
-    it next", and one column cannot carry both without a reader parsing it.
-    """
+
+
+
+
+
     return (f"{'Workflow':<32} {'Run':<{RUN_COL}} {'Phase':<{PHASE_COL}} "
             f"{'Outcome':<14} Legs")
 
 
 def run_id_note() -> str:
-    """What the two new numbers are for, said once under the table.
 
-    The `attempt` half is stated carefully because the issue that asked for it
-    got it wrong: a re-run is a further **attempt on the same run object**, not
-    a second run object on the same SHA — which is why
-    `_declared_legs.reconcilable` pays for a second source exactly when the
-    attempt is not 1, and why the tally on the row is the latest attempt only.
-    """
+
+
+
+
+
+
+
     return ("Run ids: `gh-run:<id>` for one run's legs, `gh run rerun <id>` to "
             "retry it. `attempt N` is GitHub's `run_attempt` — N > 1 means the "
             "run was re-run and the tally beside it counts the latest attempt "
@@ -1467,13 +1467,13 @@ def run_id_note() -> str:
 
 
 def _row(name: str, run: dict, jobs) -> str:
-    """One workflow's row. The name is flattened because it is not ours (#851).
 
-    Weaker than the check-run half of #851 — renaming a workflow needs write
-    access to the base repo, so a fork PR does not reach it — and the same
-    missing boundary, in a fixed-width table where one extra line is one extra
-    workflow that a reader will count as having run.
-    """
+
+
+
+
+
+
     name = _untrusted.flat(name)
     phase = run_phase(run)
     if jobs is None:
@@ -1485,10 +1485,10 @@ def _row(name: str, run: dict, jobs) -> str:
     if phase == PHASE_CONCLUDED:
         outcome = _untrusted.flat(
             str(run.get("conclusion") or "no conclusion"))
-        # #1408: the cell may not assert a conclusion the verdict has refused.
-        # Marked rather than rewritten — `success` is what the run object says
-        # and suppressing it would trade one silent disagreement for another —
-        # and spelled out in `orphan_lines()` under the table.
+
+
+
+
         if orphaned_legs(run, states):
             outcome += " ⚠"
     elif phase == PHASE_RUNNING:
@@ -1513,24 +1513,24 @@ def main() -> int:
         print("ERROR: no branch given and the repository's default branch "
               "could not be resolved. Name one: gh-branch:BRANCH")
         return 1
-    # #852: the same guard as `git/checkout.py:80`, `git/merge.py:140`,
-    # `_git_common.py:142` and `mr.py`'s `_ORDINARY_REF` — the invariant
-    # `fix/818-git-arg-injection` established, which this file dropped. `ref`
-    # reaches `gh run list --branch <ref>` below, where `--output` or `-b` is a
-    # flag and not a branch, and quoting does not stop a shell word from being
-    # read as one.
-    #
-    # There was no exploit: `_head_commit` runs first and puts the ref in a URL
-    # path, where a leading dash is not a flag, so it 404s and returns 1 before
-    # the run list is reached. That is the reason for the guard rather than an
-    # argument against it — the safety was a property of the *call order*,
-    # invisible at the sink, and any refactor that hoisted the run list or made
-    # the head lookup lazy would have removed it without touching anything that
-    # looked security-relevant.
-    #
-    # Bare `-` is refused too, unlike in `checkout.py` where it means "the
-    # previous branch". There is no previous branch here: this op asks GitHub
-    # about a named ref, and `-` names nothing it could answer for.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if ref.startswith("-"):
         print(f"ERROR: ref starts with '-' (refusing for safety): {ref!r}. "
               f"A leading dash is read as a flag by the commands this op "
@@ -1551,20 +1551,20 @@ def main() -> int:
 
     selected = runs_on_sha(runs, sha)
     if mode == MODE_COMMIT:
-        # `--commit` returns one commit's runs, so there is no second commit in
-        # the list to be the previous head. Branch mode's "ran last time and
-        # not this time" evidence is simply not available here — and silence
-        # about a check that did not run reads as the check passing, which is
-        # the defect this op exists for. Said out loud, below the table.
+
+
+
+
+
         prev_sha, prev_names = "", set()
     else:
         prev_sha, prev_names = previous_head(runs, sha)
-    # #1959: fetched once and handed to both `missing_workflows` (which uses
-    # it to drop a workflow the trigger set proves could not have produced a
-    # run here) and `scope_for` below, rather than asking twice for the
-    # declared set at the same commit. Only worth fetching when there is a
-    # selection to reconcile against -- on an empty selection `verdict()`
-    # short-circuits before `missing` is read at all (`no_run_verdict`).
+
+
+
+
+
+
     declared_pair = (None, "")
     if selected and mode != MODE_COMMIT:
         owner, repo_name = _declared_legs.owner_repo(repo)
@@ -1594,9 +1594,9 @@ def main() -> int:
 
     marker, shortfall_lines = _reconcile(repo, selected, fetched)
 
-    # #846: the second source one scope out. Bought only when there is a run
-    # set to be short of — on a commit with no runs at all `no_run_verdict`
-    # already declines, and two more API calls would buy nothing.
+
+
+
     scope, scope_lines, _unresolved = scope_for(
         repo, sha, selected,
         declared_pair=declared_pair if mode != MODE_COMMIT else None,
@@ -1624,11 +1624,11 @@ def main() -> int:
             print(line)
 
         print()
-        # `flat_note` rather than `banner()` (#819): this render fences nothing,
-        # and a banner promising markers it never prints is a disclosure that
-        # teaches a reader to skip the next one. Placed here because everything
-        # below it — the table and the previous-head list — carries names, and
-        # everything above it is this op's own arithmetic.
+
+
+
+
+
         print(_untrusted.flat_note("workflow and job names"))
         print(table_header())
         print("-" * 110)
@@ -1657,9 +1657,9 @@ def main() -> int:
               f"declared set at {sha[:7]}, above, which is the stronger of the "
               "two and does not depend on history.")
 
-    # Before the `missing` block, not inside it: that block is one of the
-    # things this qualifies, and an empty `missing` derived from the wrong
-    # previous head is the reading that prints nothing at all (#1644).
+
+
+
     basis_lines = ([] if mode == MODE_COMMIT
                    else previous_head_lines(runs, sha, prev_sha))
     if basis_lines:
@@ -1682,15 +1682,15 @@ def main() -> int:
         for line in stale_listing_lines(runs, selected, sha, age):
             print(line)
 
-    # Zero for every *established* verdict, green or not. Nonzero is reserved
-    # for "this op could not answer" — the family's convention (`gh-run` exits
-    # 0 on a run that concluded `failure`), and load-bearing here: supertool
-    # renders a nonzero exit as `FAIL`, which would print the same banner for a
-    # branch whose tests are merely still running as for a gh that is not
-    # authenticated. Two different things rendering alike is the defect this op
-    # exists to remove; it does not get to reintroduce it in its own exit code.
-    # The verdict is the `Branch <name>: <STATE>` line, which a caller can
-    # match on and a reader cannot miss.
+
+
+
+
+
+
+
+
+
     return 0
 
 

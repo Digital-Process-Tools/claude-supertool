@@ -1,4 +1,4 @@
-"""Shared helpers for the xml preset. Stdlib-only."""
+
 from __future__ import annotations
 
 import re
@@ -8,20 +8,20 @@ import xml.parsers.expat as expat
 from typing import Optional
 
 
-# ---------------------------------------------------------------------------
-# Element subclass that accepts dynamic attributes (e.g. _start_line)
-# ---------------------------------------------------------------------------
+
+
+
 
 class LineElement(ET.Element):
-    """ET.Element subclass with a __dict__ so we can set _start_line."""
+    pass
 
 
-# ---------------------------------------------------------------------------
-# Expat-based tree builder with per-element line tracking
-# ---------------------------------------------------------------------------
+
+
+
 
 class _LineTrackingBuilder:
-    """Build an ET tree from expat events, stamping _start_line on each element."""
+
 
     def __init__(self) -> None:
         self._stack: list[LineElement] = []
@@ -30,10 +30,10 @@ class _LineTrackingBuilder:
         self._parser.StartElementHandler = self._start
         self._parser.EndElementHandler = self._end
         self._parser.CharacterDataHandler = self._text
-        # Security: refuse all entity declarations (internal and external).
-        # This blocks XXE (SYSTEM entities) and billion-laughs (recursive
-        # internal entities). EntityDeclHandler fires before any expansion
-        # attempt, so raising here prevents the DoS entirely.
+
+
+
+
         self._parser.EntityDeclHandler = self._entity_decl
 
     def _entity_decl(self, *args: object) -> None:
@@ -73,9 +73,9 @@ class _LineTrackingBuilder:
         return self.root
 
 
-# ---------------------------------------------------------------------------
-# contains() shim — ElementTree doesn't support it; we emulate it
-# ---------------------------------------------------------------------------
+
+
+
 
 _CONTAINS_RE = re.compile(
     r"contains\(\s*(@[\w:.-]+)\s*,\s*'([^']*)'\s*\)"
@@ -85,15 +85,15 @@ _CONTAINS_RE = re.compile(
 def _apply_contains_filter(
     elems: list[ET.Element], xpath: str
 ) -> list[ET.Element]:
-    """Post-filter a result list for any contains() predicates in the xpath.
 
-    ElementTree only supports a limited XPath subset that excludes contains().
-    We strip contains() predicates from the xpath before passing to findall(),
-    then re-apply them here as a Python filter.
 
-    Only handles the pattern: contains(@attr, 'value').
-    Multiple contains() predicates in the same expression are all applied.
-    """
+
+
+
+
+
+
+
     for m in _CONTAINS_RE.finditer(xpath):
         attr = m.group(1).lstrip("@")
         substring = m.group(2)
@@ -102,14 +102,14 @@ def _apply_contains_filter(
 
 
 def _strip_contains(xpath: str) -> str:
-    """Remove contains() predicates from xpath so ET.findall() accepts it."""
-    # Replace [...contains(...)...] predicates — remove just the contains() call
-    # inside [...]; if it's the only predicate, remove the whole [...] block.
+
+
+
     def _repl_bracket(m: re.Match) -> str:
         inner = m.group(1)
-        # Remove all contains(...) calls from inside the bracket
+
         cleaned = _CONTAINS_RE.sub("", inner).strip()
-        # Remove leftover boolean operators
+
         cleaned = re.sub(r"^\s*(and|or)\s*", "", cleaned).strip()
         cleaned = re.sub(r"\s*(and|or)\s*$", "", cleaned).strip()
         if cleaned:
@@ -119,12 +119,12 @@ def _strip_contains(xpath: str) -> str:
     return re.sub(r"\[([^\]]*contains\([^\]]*)\]", _repl_bracket, xpath)
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+
+
+
 
 def load_xml(path: str) -> LineElement:
-    """Parse an XML file with line tracking. Exits on error."""
+
     try:
         builder = _LineTrackingBuilder()
         return builder.parse_file(path)
@@ -140,32 +140,32 @@ def load_xml(path: str) -> LineElement:
 
 
 def split_arg(arg: str, n: int) -> list[str]:
-    """Split arg into exactly n parts.
 
-    Two modes:
 
-    1. **Triple-colon separator mode** (when ':::' is present):
-       ':::' is the field delimiter. Split on ':::' to get raw_parts; field[0]
-       is raw_parts[0], field[n-1] is raw_parts[-1], and any middle raw_parts
-       are joined with ':' to form the middle field(s). This lets a literal
-       colon inside an XPath string (e.g. 'foo:::bar' becomes 'foo:bar') survive
-       field splitting when ':::' is used as the separator between fields.
 
-    2. **Single-colon mode** (no ':::' present):
-       For n=2: split on first ':'.
-       For n>=3: field[0] = text before first ':', field[n-1] = text after
-       last ':', middle field = everything between. This keeps XPath expressions
-       like './/ns:tag' intact in the middle field without mis-splitting.
 
-    Missing fields are padded with empty strings.
-    """
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     if ":::" in arg:
         raw = arg.split(":::")
         if n == 1:
             return [":".join(raw)]
         if n == 2:
             return [raw[0], ":".join(raw[1:])]
-        # n >= 3: first raw_part, middle joined with ':', last raw_part
+
         if len(raw) >= 3:
             result = [raw[0], ":".join(raw[1:-1]), raw[-1]]
         elif len(raw) == 2:
@@ -176,7 +176,7 @@ def split_arg(arg: str, n: int) -> list[str]:
             result.append("")
         return result[:n]
 
-    # No triple-colon — plain single-colon splitting
+
     if ":" not in arg:
         result: list[str] = [arg]
         while len(result) < n:
@@ -184,9 +184,9 @@ def split_arg(arg: str, n: int) -> list[str]:
         return result
     if n == 1:
         return [arg]
-    # Skip a leading Windows drive letter (`C:/...` or `C:\...`) when computing
-    # split boundaries so the drive-letter colon is not mistaken for a field
-    # separator. Detect: arg[0] alpha + arg[1] == ':' + arg[2] in '/\\'.
+
+
+
     _start = (
         2
         if len(arg) > 2 and arg[1] == ":" and arg[0].isalpha() and arg[2] in ("/", "\\")
@@ -195,7 +195,7 @@ def split_arg(arg: str, n: int) -> list[str]:
     if n == 2:
         idx = arg.index(":", _start)
         return [arg[:idx], arg[idx + 1:]]
-    # n >= 3: first ':' left boundary, last ':' right boundary
+
     left = arg.index(":", _start)
     right = arg.rindex(":")
     if left == right:
@@ -213,7 +213,7 @@ def split_arg(arg: str, n: int) -> list[str]:
 
 
 def element_summary(elem: ET.Element) -> str:
-    """One-line summary: 'LINE:TAG @k=v …'"""
+
     line = getattr(elem, "_start_line", "?")
     attrs = " ".join(f"@{k}={v}" for k, v in elem.attrib.items())
     parts = [f"{line}:{elem.tag}"]
@@ -226,12 +226,12 @@ def element_summary(elem: ET.Element) -> str:
 
 
 def _split_xpath_steps(xpath: str) -> list[str]:
-    """Split an xpath into steps on '/' boundaries that are NOT inside [..].
 
-    Examples:
-      ".//file[contains(@name,'X')]/line[@count='0']"
-      -> [".", "/file[contains(@name,'X')]", "/line[@count='0']"]
-    """
+
+
+
+
+
     steps: list[str] = []
     buf = ""
     depth = 0
@@ -248,7 +248,7 @@ def _split_xpath_steps(xpath: str) -> list[str]:
             if buf:
                 steps.append(buf)
                 buf = ""
-            # Detect '//' descendant
+
             if i + 1 < len(xpath) and xpath[i + 1] == "/":
                 buf = "//"
                 i += 2
@@ -263,17 +263,17 @@ def _split_xpath_steps(xpath: str) -> list[str]:
 
 
 def safe_xpath(root: ET.Element, xpath: str) -> list[ET.Element]:
-    """Run XPath, exit with a human-readable error on bad syntax.
 
-    Applies a contains() shim: ElementTree's XPath subset doesn't support
-    contains(). When the xpath has contains() in a non-terminal step, we
-    walk the steps in order: for each step we strip contains() so ET can
-    parse it, find matches against the current node set, then post-filter
-    each level with the contains() predicates that belonged to that step.
 
-    iterparse-optimized fast paths are NOT applied here — this is the
-    full-parse fallback used by the xml, xml_attr, xml_count ops.
-    """
+
+
+
+
+
+
+
+
+
     if not xpath:
         sys.stderr.write("ERROR: XPath expression is empty\n")
         sys.exit(2)
@@ -287,8 +287,8 @@ def safe_xpath(root: ET.Element, xpath: str) -> list[ET.Element]:
             if not step or step in (".",):
                 continue
             stripped_step = _strip_contains(step)
-            # ET.findall on a step needs a valid path — leading '/' means
-            # absolute, which findall doesn't accept; convert to relative.
+
+
             query = stripped_step
             if query.startswith("//"):
                 query = ".//" + query[2:]
@@ -306,7 +306,7 @@ def safe_xpath(root: ET.Element, xpath: str) -> list[ET.Element]:
             nodes = next_nodes
             if not nodes:
                 break
-        # Drop the synthetic root if it slipped through
+
         return [n for n in nodes if n is not root]
     except (SyntaxError, ET.ParseError, TypeError, KeyError) as exc:
         sys.stderr.write(f"ERROR: invalid XPath '{xpath}': {exc}\n")

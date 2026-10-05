@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""PHPMD validator via warm MCP daemon.
 
-Usage: phpmd-mcp.py FILE
 
-Connects to the long-lived mcp-phpmd-warm daemon over UDS. Auto-spawns on first call.
-Daemon name + working dir + rulesets are read from $MCP_PHPMD_* env vars (set by the
-`cmd` template in .supertool.json), with sensible fallbacks.
 
-Output: SCHEMA.md-compliant JSON on stdout (single line). PHPMD findings are emitted as
-`severity: "warning"` — this validator is non-blocking by design (rollback_on_fail: false),
-so smells surface at edit time without reverting the edit.
-"""
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -20,9 +20,9 @@ import socket
 import sys
 import time
 
-# Reuse the shared 5-line source-context helper (same one the cold phpmd adapter uses).
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "common"))
-from source_context import context_fields  # noqa: E402
+from source_context import context_fields  
 
 DAEMON_NAME = os.environ.get("MCP_PHPMD_DAEMON_NAME", "phpmd-warm")
 DAEMON_PROC = os.environ.get("MCP_PHPMD_BIN", "mcp-phpmd-warm")
@@ -30,19 +30,19 @@ WORKING_DIR = os.environ.get("MCP_PHPMD_WORKING_DIR", os.getcwd())
 SPAWN_TIMEOUT_SEC = 30
 CALL_TIMEOUT_SEC = 120
 
-# #148: use the shared presets/mcp/_paths helper so client + daemon agree on the
-# runtime dir ($XDG_RUNTIME_DIR/supertool/mcp/ etc.).
+
+
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "presets", "mcp",
 ))
-from _paths import socket_pid_paths as _shared_socket_pid_paths  # noqa: E402
-import _spawn  # noqa: E402  (#451: one daemon per (kind, config fingerprint))
+from _paths import socket_pid_paths as _shared_socket_pid_paths  
+import _spawn  
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "common"))
-import refusal as _refusal  # noqa: E402
-import ndjson_scan as _ndjson_scan  # noqa: E402  (#1924: a response glued to noise)
+import refusal as _refusal  
+import ndjson_scan as _ndjson_scan  
 
 SKIP_PATTERNS_ENV = "PHPMD_MCP_SKIP_PATTERNS"
 
@@ -52,13 +52,13 @@ def sock_paths(cwd: str, name: str) -> tuple[str, str]:
 
 
 def resolve_bin(cwd: str) -> str:
-    """Resolve the mcp-phpmd-warm binary.
 
-    Abs path used as-is. A relative path WITH a separator (e.g.
-    "Dvsi/dvsi-private/libs/bin/mcp-phpmd-warm") is resolved against cwd (the
-    project root) — this keeps a committed/shared .supertool.json portable
-    across machines. A bare name falls back to $PATH lookup. Spawn-path only.
-    """
+
+
+
+
+
+
     bin_path = DAEMON_PROC
     if not os.path.isabs(bin_path):
         if "/" in bin_path or os.sep in bin_path:
@@ -81,20 +81,20 @@ def resolve_bin(cwd: str) -> str:
 
 
 def ensure_daemon(cwd: str) -> str:
-    """The socket of *the* warm phpmd daemon — started, reused, or replaced.
 
-    Delegates to presets/mcp/_spawn (#451): the check-and-spawn runs under an
-    exclusive lock, and a daemon holding a config that no longer matches disk
-    is retired rather than asked for an answer.
-    """
+
+
+
+
+
     no_transport = _refusal.daemon_transport_reason()
     if no_transport:
-        # Checked in this body and not at the top of `main`: the suites that
-        # stub the daemon layer replace this whole function, and a check any
-        # earlier short-circuits before the stub takes effect. The binary
-        # lookup runs first because both outcomes are skips and "install it" is
-        # the more actionable of the two. See refusal.daemon_transport_reason
-        # for the full argument (#544).
+
+
+
+
+
+
         resolve_bin(cwd)
         raise _refusal.DaemonUnavailable(no_transport)
     try:
@@ -104,24 +104,24 @@ def ensure_daemon(cwd: str) -> str:
             spawn_timeout=SPAWN_TIMEOUT_SEC,
         )
     except _spawn.AutospawnSuppressed:
-        # The binary lookup runs here for the same reason it runs in the
-        # no-transport arm above: both outcomes are skips, and "install it" is
-        # the more actionable of the two. `_spawn` declines before its own
-        # `preflight` deliberately -- a caller that may not spawn should spend
-        # nothing on the spawn path -- so without this the lookup never happens
-        # and the receipt advises warming a daemon for a binary that is not on
-        # the machine. That is the normal case for any `cwd:` pointed at a git
-        # worktree where `composer install` never ran, and it is the row
-        # docs/validators.md #531 documents (#1743).
+
+
+
+
+
+
+
+
+
         resolve_bin(cwd)
         raise
 
 
 def ndjson_call(sock_path: str, file_path: str) -> dict:
-    """Initialize + tools/call(phpmd_analyse), with one retry against a fresh
-    daemon if the pipe turns out to be desynchronised (#2449) -- see
-    `ndjson_scan.call_with_retry` for what that does and does not cover.
-    """
+
+
+
+
     box = {"sock": sock_path}
 
     def attempt() -> dict:
@@ -129,19 +129,19 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
             s.settimeout(CALL_TIMEOUT_SEC)
             s.connect(box["sock"])
 
-            # #1935: an unpredictable per-call id, not the fixed literal `2` --
-            # see ndjson_scan.py's module docstring for what that closes.
-            # #2449 (review round 2): the `initialize` frame's own id is now
-            # ALSO drawn at random rather than the literal `1` every client
-            # used to share -- a hardcoded id every caller sends cannot tell
-            # "my own initialize reply" from a foreign client's leftover one,
-            # which defeats desync detection in exactly that interleaving.
-            # req_id is drawn first so a test pinning `random.randrange` to
-            # one fixed value still gets it on the *call* frame, matching
-            # every fixture built around that value; init_id is nudged by one
-            # on the rare (or, under such a pinned mock, guaranteed) collision
-            # so the two ids are never equal.
-            req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 was the old shared initialize id
+
+
+
+
+
+
+
+
+
+
+
+
+            req_id = random.randrange(2, 2**32)  
             init_id = random.randrange(2, 2**32)
             if init_id == req_id:
                 init_id = init_id + 1 if init_id < 2**32 - 1 else init_id - 1
@@ -156,13 +156,13 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
             ]
             s.sendall(("\n".join(json.dumps(m) for m in msgs) + "\n").encode())
 
-            # #1924: scans the whole buffer, not one LF-delimited line at a
-            # time — a fatal analysis run's HTML error page can glue the real
-            # response to the end of the last HTML line with no separator, and a
-            # line-anchored parser never sees it. #1927: gives up on idle
-            # silence rather than waiting out the whole call budget, and names
-            # what was received (or the daemon's own log) on a timeout instead
-            # of only that one happened.
+
+
+
+
+
+
+
             return _ndjson_scan.receive_until(s, req_id, CALL_TIMEOUT_SEC, box["sock"],
                                                own_ids=frozenset((init_id,)))
 
@@ -172,35 +172,35 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
             spawn_timeout=SPAWN_TIMEOUT_SEC)
 
     def pid_probe():
-        # #2449 (review round 2): a plain RuntimeError whose daemon pid
-        # changed underneath this call is very likely collateral damage from
-        # a DIFFERENT caller's force_respawn() on this same shared daemon --
-        # see ndjson_scan.call_with_retry's own docstring for the mechanism.
-        #
-        # Derived from the socket path in hand, never re-resolved through
-        # _paths.socket_pid_paths(): that route calls runtime_dir(), which
-        # sys.exit()s wherever ownership is uncheckable (#544), and reaching
-        # it from here broke the invariant that no warm adapter ever does --
-        # 56 red tests on every windows-latest leg of #2497.
-        #
-        # Read off box["sock"] rather than off the sock_path parameter only
-        # so this closure cannot go stale if call_with_retry ever probes
-        # after a respawn. It does not today, and an earlier draft of this
-        # comment claimed it did -- caught in review. respawn() lives in
-        # call_with_retry's DesyncDetected arm, which returns do_call()
-        # without probing again, and the pid_after probe sits in a mutually
-        # exclusive except arm, so no pid_probe() call ever observes a
-        # mutated box. It would read the same string even if one did:
-        # force_respawn returns socket_pid_paths(cwd, name)[0], a
-        # deterministic sha1(cwd::name), so a respawn under the same
-        # (cwd, name) reassigns the identical path.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         return _spawn.daemon_pid(_spawn.pid_path(box["sock"]))
 
     return _ndjson_scan.call_with_retry(attempt, respawn, pid_probe=pid_probe)
 
 
 def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
-    """Convert MCP response to SCHEMA.md validator JSON. PHPMD violations → warnings."""
+
     base = {"tool": "phpmd-mcp", "file": file_path,
             "ok": True, "count": 0, "errors": [], "duration_ms": duration_ms}
 
@@ -218,10 +218,10 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
     try:
         report = json.loads(output) if output else {}
     except json.JSONDecodeError:
-        # Deliberately not an early return: the error key below is the better
-        # message when both arrived, and it used to win because it was read
-        # first. Reordering the parse ahead of it must not silently demote a
-        # named runtime error to "could not parse".
+
+
+
+
         report = {}
         unreadable = True
     if unreadable and not structured.get("error"):
@@ -231,35 +231,35 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
                            "code": "phpmd.parse", "msg": "could not parse PHPMD JSON output"}]
         return base
 
-    # The tool returns a SecurityError / runtime error as an extra key. It used
-    # to `return` here, discarding `structured["output"]` unread — so if the
-    # daemon ever set both, a report it produced was replaced by a message about
-    # it (#1547). Whether it can set both is not answerable from this repo: the
-    # server is `mcp-phpmd-warm` and lives elsewhere. So the adapter is made not
-    # to depend on the answer — the report is parsed first and is never dropped.
+
+
+
+
+
+
     if structured.get("error"):
-        # A PHPMD report has TWO bodies and both are rendered below: the
-        # violations under `files[]`, and `report["errors"]` — the processing
-        # failures (an unparseable PHP file, a broken ruleset). Reading only the
-        # first half would throw the second half away for the refusal, which is
-        # this same discard one key over.
+
+
+
+
+
         has_report = bool(report.get("errors")) or any(
             (f or {}).get("violations") for f in (report.get("files", []) or []))
-        # A scope refusal is not a runtime error — it is an absence of analysis,
-        # and counting it as one error inflates the delta by +1 (#406). But a
-        # refusal beside a report is two mutually exclusive claims, and only one
-        # of them carries evidence: the same rule #1527 applied to the cold
-        # phpstan adapter. The report wins, and the refusal is dropped rather
-        # than counted, because a declination that did not happen is not a
-        # finding about the file either.
-        if _refusal.is_refusal(str(structured["error"]), SKIP_PATTERNS_ENV):
+
+
+
+
+
+
+
+        if _refusal.is_refusal(str(structured["error"]), extra_patterns=os.environ.get("PHPMD_MCP_SKIP_PATTERNS", "")):
             if not has_report:
                 return _refusal.skipped("phpmd-mcp", file_path,
                                         str(structured["error"]), duration_ms)
         else:
-            # A genuine runtime error stays one error whether or not a report
-            # arrived with it — the same accounting as the error-alone arm, so
-            # the count `_validator_regressed` reads is never a guess.
+
+
+
             base["ok"] = False
             base["count"] = 1
             base["errors"] = [{"line": None, "col": None, "severity": "error",
@@ -280,7 +280,7 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
                 **context_fields(file_path, line),
             })
 
-    # PHPMD-level processing errors (parse failures etc.).
+
     for e in report.get("errors", []) or []:
         base["ok"] = False
         base["count"] += 1
@@ -303,18 +303,18 @@ def main(argv: list[str]) -> int:
         sock = ensure_daemon(WORKING_DIR)
         resp = ndjson_call(sock, os.path.abspath(file_path))
     except (_refusal.DaemonUnavailable, _spawn.AutospawnSuppressed) as e:
-        # Two ways to have nothing to say, one receipt. Either the analyser is
-        # not installed for this working directory — every `cwd:` into a git
-        # worktree lands here — or there is no warm daemon and
-        # `$SUPERTOOL_MCP_AUTOSPAWN` forbids raising a cold one (#1743). The
-        # second used to be neither: the flag was stamped into this process's
-        # environment and read by nothing here, so the adapter spent its whole
-        # spawn budget disobeying it and the receipt never mentioned it.
-        #
-        # Nothing was analysed in either case, so nothing is reported — unless
-        # this validator is named in `$SUPERTOOL_REQUIRE_VALIDATORS`, in which
-        # case a gate that did not run says so loudly (#1202). `absent`, not
-        # `skipped`, is what makes that reachable.
+
+
+
+
+
+
+
+
+
+
+
+
         print(json.dumps(_refusal.absent(
             "phpmd-mcp", file_path, str(e),
             int((time.monotonic() - t0) * 1000))))
@@ -325,10 +325,10 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    # The net used to be a nine-line `except Exception` inside `main`, wrapped
-    # around `ensure_daemon` + `ndjson_call` only -- so the
-    # `print(json.dumps(format_response(...)))` two lines below it was outside
-    # every handler this adapter had, and an exception there left stdout empty
-    # exactly as if there were no net at all. Four copies of it, one per MCP
-    # adapter, differing only in the name they wrote into the payload (#1697).
+
+
+
+
+
+
     sys.exit(_refusal.guard_main("phpmd-mcp", main, sys.argv))

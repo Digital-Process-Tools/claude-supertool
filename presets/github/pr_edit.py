@@ -1,48 +1,48 @@
 #!/usr/bin/env python3
-"""Update a published pull request's body from the payload that wrote it (#1739).
 
-Correcting a published record is the one publishing action the maintainer loop
-asks for and had no op behind. What the loop did instead, on 2026-08-15:
 
-    $ gh pr edit 1737 --repo … --body-file <path>
-    GraphQL: Projects (classic) is being deprecated … (repository.pullRequest.projectCards)
 
-`gh pr edit` fetches the PR through GraphQL before it writes anything, and the
-field set it asks for includes `projectCards`, which GitHub has sunset. So on a
-repository with Projects classic enabled the documented raw fallback fails
-outright — re-derived on 2026-08-15 against PR #1746, exit 1, nothing written.
-The REST route (`PATCH /repos/{owner}/{repo}/pulls/{n}`) does not touch projects
-and does work.
 
-**A separate op rather than `gh-pr-create` taking a number.** Both were on the
-table in #1739. The deciding argument is what a *missing* field does: fold the
-update into `gh-pr-create` and the number becomes optional, so a payload that
-loses it does not fail — it opens a second pull request. One op whose verb is
-chosen by the presence of a field has no refusal available for the case where
-the field went missing, and the two verbs here are create-a-thing and
-overwrite-a-published-thing. They also disagree on `base`, which `gh-pr-create`
-refuses to default and this op cannot use at all.
 
-Three things this carries that `gh api -X PATCH` does not:
 
-* **The closing-reference gate, at update time.** `gh-pr-create` parses
-  `Closes #N` with `_checks.closing_issue_refs`, the same reader `gh-pr` and
-  `gh-pr-merge` use. Replacing a body by hand bypasses it, and replacing a body
-  is exactly when a closing line is lost, because the new text is pasted from
-  somewhere else. Three states: the references survived, one was dropped, or
-  the old body could not be read — and the third is not the first. Both of the
-  latter two REFUSE, and `unlink` is the one token that says the caller means
-  it. Refusing costs a deliberate re-scope one token; not refusing costs an
-  issue that silently stops being closed by the PR that closes it.
-* **The payload shape.** The file the agent already handed back, unchanged.
-  `base`, `head`, `draft`, `labels`, `assignees`, `reviewers` and `milestone`
-  are not applicable to a body update, so they are NAMED as not applied rather
-  than dropped in silence.
-* **The receipt.** The PATCH response carries the stored body, so this op
-  compares what the server holds against what it sent, byte for byte, in the
-  same call. `gh api -X PATCH` printed one timestamp, which says a write
-  happened and not which bytes are on the server.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -55,52 +55,52 @@ try:
     import tomllib
 except ModuleNotFoundError:
     try:
-        import tomli as tomllib  # type: ignore[no-redef]
+        import tomli as tomllib  
     except ModuleNotFoundError:
-        tomllib = None  # type: ignore[assignment]
+        tomllib = None  
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
-import _checks  # noqa: E402
-import _remote_default as _rd  # noqa: E402
-import _repo_target  # noqa: E402
-import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
-import _untrusted  # noqa: E402
-import _digits  # noqa: E402
-import _publish_safety  # noqa: E402  (#2100 -- the forge-write disclosure marker)
+from _console import use_utf8_stdout  
+import _checks  
+import _remote_default as _rd  
+import _repo_target  
+import _payload_keys  
+import _untrusted  
+import _digits  
+import _publish_safety  
 
-# The closing-reference gate.
+
 REF_OK = "ok"
 REF_DROPPED = "dropped"
 REF_UNKNOWN = "unknown"
 
-# What the server holds, against what was sent.
+
 LANDED_EXACT = "exact"
 LANDED_NORMALISED = "normalised"
 LANDED_MISMATCH = "mismatch"
 LANDED_UNKNOWN = "unknown"
 
-# The title, verified separately from the body. A title that did not land is
-# not a body that did not land: conflating them made the `[result]` line say
-# "body on the server is NOT what was sent" about a body that was byte-perfect.
+
+
+
 TITLE_NOT_SENT = "not sent"
 TITLE_EXACT = "exact"
 TITLE_MISMATCH = "mismatch"
 
 UNLINK = "unlink"
 
-# Fields a `gh-pr-create` payload legitimately carries that a body update has no
-# way to apply. Named in the receipt; never silently dropped.
+
+
 NOT_APPLIED = ("base", "head", "draft", "labels", "assignees", "reviewers",
                "milestone")
 
-# Every key this op reads from a payload, plus NOT_APPLIED above and the two
-# `gh-pr-create`-only flags -- `literal_backslashes` and `no_close` (#1967,
-# #1838) -- that never apply to an edit either. A `gh-pr-edit` payload is
-# routinely a `gh-pr-create` payload reused verbatim to correct a published
-# pull request, so every key that op accepts must stay accepted here too
-# (#2123) -- refusing them would break a working call for a shape this
-# op was designed to take.
+
+
+
+
+
+
+
 ACCEPTED_KEYS = set(NOT_APPLIED) | {
     "repo", "title", "body", "body_file", "literal_backslashes", "no_close",
 }
@@ -111,16 +111,16 @@ CR = chr(13)
 LF = chr(10)
 
 
-# ---------------------------------------------------------------------------
-# arguments
-# ---------------------------------------------------------------------------
+
+
+
 
 def parse_args(argv: List[str]) -> Tuple[str, str, bool, str]:
-    """`(number, payload_path, unlink, error)` — a non-empty error means stop.
 
-    A trailing token this op does not have is REFUSED rather than ignored. An
-    ignored mode word on a writing op runs a call nobody typed, at exit 0.
-    """
+
+
+
+
     tokens = [t for t in argv if t != ""]
     if not tokens:
         return ("", "", False, (
@@ -145,11 +145,11 @@ def parse_args(argv: List[str]) -> Tuple[str, str, bool, str]:
         return ("", "", False, (
             "ERROR: gh-pr-edit needs a payload file — gh-pr-edit:NUMBER:@FILE, "
             "or @- to read it from stdin."))
-    # A Windows drive letter is reassembled, the same way the builtin ops
-    # reassemble one: supertool splits the op argument on ':', so
-    # `gh-pr-edit:12:@C:\repo\pr.toml` arrives as `@C` plus the rest. Refusing
-    # that as an unknown trailing token would name `unlink` at a caller whose
-    # only mistake was standing on Windows.
+
+
+
+
+
     if len(rest) > 1 and len(rest[0]) == 2 and rest[0][1:].isalpha():
         rest = [":".join(rest)]
     if len(rest) > 1:
@@ -162,12 +162,12 @@ def parse_args(argv: List[str]) -> Tuple[str, str, bool, str]:
     return (number, rest[0], unlink, "")
 
 
-# ---------------------------------------------------------------------------
-# payload
-# ---------------------------------------------------------------------------
+
+
+
 
 def validate(payload: dict) -> str | None:
-    """The refusals, before anything is published. None means the payload is fine."""
+
     if not payload.get("repo"):
         return ("ERROR: payload missing required field: repo — and it could not "
                 "be resolved from the origin remote either.")
@@ -181,22 +181,22 @@ def validate(payload: dict) -> str | None:
 
 
 def ignored_fields(payload: dict) -> List[str]:
-    """Which `gh-pr-create` fields this payload carries that an update cannot apply."""
+
     return [key for key in NOT_APPLIED
             if payload.get(key) not in (None, "", [], {})]
 
 
 def title_change(payload: dict, published: str) -> Tuple[dict, List[str]]:
-    """`(fields to PATCH, receipt lines)` for the title.
 
-    A payload with no `title` leaves the published one alone: the create payload
-    always has one, but a hand-written update payload need not, and inventing an
-    empty title would be the worst possible silent write. A title that matches
-    what is published is not sent, so the receipt can say `unchanged` and mean
-    it. A title that differs IS sent, with both sides printed — the payload is a
-    statement of what the pull request should say, and a caller who edited only
-    the body sees the title line and can put it back in one more call.
-    """
+
+
+
+
+
+
+
+
+
     if "title" not in payload:
         return ({}, ["  title: not touched — the payload carries no title field"])
     new = str(payload.get("title") or "")
@@ -208,25 +208,25 @@ def title_change(payload: dict, published: str) -> Tuple[dict, List[str]]:
     ])
 
 
-# ---------------------------------------------------------------------------
-# the closing-reference gate
-# ---------------------------------------------------------------------------
+
+
+
 
 def closing_ref_verdict(old_body: object, new_body: str,
                         old_read_error: str) -> Tuple[str, List[str], str]:
-    """`(state, lost refs, message)` — and `unknown` is never `ok`.
 
-    Read with `_checks.closing_issue_refs`, so a `Closes` line that moved into a
-    code fence or an HTML comment counts as lost: GitHub does not honour one
-    there either, and a gate matching raw text would call that update clean.
 
-    Three **gate** states, four messages under `ok`. The gate asks only whether
-    anything was lost; the message describes the transition, and those are not
-    the same question. Reporting the pre-edit set for all four is #1834/#1788 —
-    `main` prints this message and `linked_issue_line(new refs)` directly under
-    it, so an edit that *added* the first reference printed an absence above the
-    line naming what it had just bound.
-    """
+
+
+
+
+
+
+
+
+
+
+
     new_refs = _checks.closing_issue_refs(new_body)
 
     if old_body is None:
@@ -234,26 +234,26 @@ def closing_ref_verdict(old_body: object, new_body: str,
             f"the published body could not be read "
             f"({old_read_error or 'no detail'}), so whether this update drops a "
             f"closing reference is UNKNOWN. That is not 'nothing was dropped'. "
-            f"Re-run, or pass `{UNLINK}` to write anyway and take the risk "
+            f"Re-run, or add `{UNLINK}` to write anyway and take the risk "
             f"deliberately."))
 
     old_refs = _checks.closing_issue_refs(old_body)
     lost = [ref for ref in old_refs if ref not in new_refs]
     if not lost:
-        # Nothing was lost, so every old ref survived and `old_refs` is the
-        # carried set. What it is NOT is a description of the body being
-        # written: the additions live only in `new_refs`, and reporting the
-        # pre-edit set as if it were the post-edit one is #1834/#1788 — an
-        # edit that added the first `Closes` line printed "the published body
-        # linked no issue, and neither does this one" directly above the
-        # `Issue: #321` line that disproved it. Four answers, because
-        # `carried` and `added` are independent and both can be non-empty.
-        # Both halves are ordered by the body being WRITTEN, not by the one
-        # being replaced. `lost` is empty here, so `carried` is `old_refs` as a
-        # set either way; taking the new body's order means this line and the
-        # `Issue:` line under it list the same references in the same sequence,
-        # and a body that only reorders its own `Closes` lines does not produce
-        # two lines that have to be read as sets before they agree.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         carried = [ref for ref in new_refs if ref in old_refs]
         added = [ref for ref in new_refs if ref not in old_refs]
         if carried and added:
@@ -276,27 +276,27 @@ def closing_ref_verdict(old_body: object, new_body: str,
 
 
 def may_write(ref_state: str, unlink: bool) -> bool:
-    """Only `ok`, or an explicit `unlink`, permits the write."""
+
     return ref_state == REF_OK or unlink
 
 
-# ---------------------------------------------------------------------------
-# the receipt
-# ---------------------------------------------------------------------------
+
+
+
 
 def _newlines_only(text: str) -> str:
     return text.replace(CRLF, LF).replace(CR, LF)
 
 
 def _first_difference(sent: str, stored: str) -> str:
-    """Which line first disagrees — split on LF/CR/CRLF, never `splitlines()`.
 
-    `str.splitlines()` breaks on eight more separators, so a U+2028 the server
-    stored inside a line would end that line here and the reported difference
-    would be a fragment the *body* chose the boundary of. `split_lines` decides
-    the boundary and `flat()` spells whatever exotic character is inside it —
-    the pair #1648 settled on, and neither half is sufficient alone.
-    """
+
+
+
+
+
+
+
     sent_lines = _untrusted.split_lines(sent)
     stored_lines = _untrusted.split_lines(stored)
     for i in range(max(len(sent_lines), len(stored_lines))):
@@ -310,12 +310,12 @@ def _first_difference(sent: str, stored: str) -> str:
 
 
 def landed_verdict(sent: str, stored: object) -> Tuple[str, str]:
-    """`(state, message)` — what the server holds, against what was sent.
 
-    Four states. `unknown` is the one that matters: a response with no `body`
-    field says the write was accepted and says nothing about the bytes, and
-    rendering that as success is the receipt failure this op exists to close.
-    """
+
+
+
+
+
     if not isinstance(stored, str):
         return (LANDED_UNKNOWN, (
             "the PATCH response carried no body field, so what the server now "
@@ -335,12 +335,12 @@ def landed_verdict(sent: str, stored: object) -> Tuple[str, str]:
 
 
 def title_verdict(sent_title: object, stored_title: object) -> Tuple[str, str]:
-    """`(state, message)` for the title, on its own axis.
 
-    `TITLE_NOT_SENT` is not a pass and not a failure — it is the state where no
-    title was submitted, which is the ordinary case and must not be reported as
-    a verification that happened.
-    """
+
+
+
+
+
     if sent_title is None:
         return (TITLE_NOT_SENT, "")
     if isinstance(stored_title, str) and stored_title == sent_title:
@@ -352,7 +352,7 @@ def title_verdict(sent_title: object, stored_title: object) -> Tuple[str, str]:
 
 def result_line(number: str, ref_state: str, landed_state: str,
                 note: str, title_state: str = TITLE_NOT_SENT) -> str:
-    """One line, no newline, that survives `| tail -1`."""
+
     if landed_state == LANDED_EXACT:
         landed = "body verified byte-identical on the server"
     elif landed_state == LANDED_NORMALISED:
@@ -376,7 +376,7 @@ def result_line(number: str, ref_state: str, landed_state: str,
 
 
 def refusal_line(number: str, ref_state: str, lost: List[str]) -> str:
-    """The one line a refused update leaves, and it never reads as a write."""
+
     if ref_state == REF_DROPPED:
         why = f"closing reference {', '.join(lost)} would be dropped"
     else:
@@ -384,9 +384,9 @@ def refusal_line(number: str, ref_state: str, lost: List[str]) -> str:
     return f"[result] PR #{number} NOT updated; {why} — nothing was written"
 
 
-# ---------------------------------------------------------------------------
-# gh plumbing
-# ---------------------------------------------------------------------------
+
+
+
 
 def _gh_json(args: List[str], stdin: str | None = None,
              timeout: int = 30) -> Tuple[object, str]:
@@ -395,14 +395,14 @@ def _gh_json(args: List[str], stdin: str | None = None,
                                 input=stdin, timeout=timeout, encoding="utf-8",
                                 errors="replace")
     except FileNotFoundError:
-        return (None, "gh not found — install from https://cli.github.com")
+        return (None, "gh not found — install the GitHub CLI")
     except subprocess.TimeoutExpired:
         return (None, "gh timed out")
     except OSError as e:
         return (None, f"gh could not be run: {e}")
     if result.returncode != 0:
-        # `split_lines` decides the boundary so the server cannot pick which
-        # segment is the error; `flat()` keeps that segment to one line (#1648).
+
+
         tail = _untrusted.split_lines((result.stderr or result.stdout).strip())
         return (None, _untrusted.flat(tail[-1]) if tail
                 else f"gh exited {result.returncode}")
@@ -427,15 +427,15 @@ def _load_payload(path: str) -> dict:
 
 
 def _body_text(payload: dict) -> Tuple[str, str]:
-    """`(content, error)` — the bytes to publish, from `body` or `body_file`.
 
-    `read_text` is universal-newlines, so a CRLF `body_file` — the ordinary
-    state of a file on a Windows checkout — arrives here as LF and is sent as
-    LF. That is what GitHub stores anyway; it means the byte comparison in
-    `landed_verdict` is against what was actually sent rather than against what
-    is on the author's disk, which is the honest comparison and the reason
-    `LANDED_NORMALISED` is about the server's rewrite, not this one.
-    """
+
+
+
+
+
+
+
+
     body_file = payload.get("body_file")
     if not body_file:
         return (str(payload.get("body") or ""), "")
@@ -450,11 +450,11 @@ def _body_text(payload: dict) -> Tuple[str, str]:
                 f"ERROR: permission denied reading body_file: {body_file} — {e}")
 
 
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
 
-def main() -> int:  # noqa: C901
+
+
+
+def main() -> int:  
     use_utf8_stdout()
     number, raw_arg, unlink, err = parse_args(sys.argv[1:])
     if err:
@@ -513,7 +513,7 @@ def main() -> int:  # noqa: C901
     repo = str(payload["repo"])
     endpoint = f"repos/{repo}/pulls/{number}"
 
-    # ---- what is published now -------------------------------------------
+
     current, read_err = _gh_json(["api", endpoint], timeout=30)
     old_body: object = None
     old_title = ""
@@ -523,12 +523,12 @@ def main() -> int:  # noqa: C901
         published_state = "merged" if current.get("merged") else str(
             current.get("state") or "?")
         state_line = f"state: {_untrusted.flat(published_state)}"
-        # `body` PRESENT and null is a pull request with no body — there is
-        # nothing to lose and the gate should pass. `body` ABSENT is a response
-        # that is not the object this op asked for, and reading that as an
-        # empty body would turn "could not look" into "looked and found
-        # nothing" one call before a publish. Keyed on the key, not on
-        # truthiness (audit of the first commits).
+
+
+
+
+
+
         if "body" in current:
             old_body = current.get("body") or ""
         else:
@@ -542,7 +542,7 @@ def main() -> int:  # noqa: C901
     print(f"# gh-pr-edit — {repo}#{number}{repo_note}")
     print(f"  {state_line}")
 
-    # ---- would this update unlink an issue? ------------------------------
+
     ref_state, lost, ref_msg = closing_ref_verdict(old_body, content, read_err)
     print()
     print("## Closing references")
@@ -555,19 +555,19 @@ def main() -> int:  # noqa: C901
         print(refusal_line(number, ref_state, lost))
         return 1
 
-    # #2100: applied AFTER the closing-reference gate above, on the same
-    # `content` that gate already looked at -- and idempotent, since an
-    # update payload routinely starts from the published body (which may
-    # already carry the marker) and corrects it. A body that already carries
-    # the configured marker is reported "already-present" rather than
-    # stacking a second copy.
+
+
+
+
+
+
     content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
 
-    # ---- what this op cannot apply ---------------------------------------
+
     ignored = ignored_fields(payload)
     title_fields, title_lines = title_change(payload, old_title)
 
-    # ---- write ------------------------------------------------------------
+
     fields = {"body": content}
     fields.update(title_fields)
     response, write_err = _gh_json(

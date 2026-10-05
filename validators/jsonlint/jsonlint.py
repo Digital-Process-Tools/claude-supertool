@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""jsonlint validator adapter — JSON syntax check via stdlib json.load().
 
-Stdlib only. Reference implementation per validators/SCHEMA.md.
-Usage:  jsonlint.py <file>
-"""
+
+
+
+
 
 from __future__ import annotations
 

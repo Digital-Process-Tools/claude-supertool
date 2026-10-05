@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""phpcs PSR-12 validator adapter. Emits SCHEMA.md JSON.
 
-Usage: psr.py <file>
 
-Env vars:
-  PSR_BIN        phpcs binary (default: phpcs)
-  PSR_STANDARD   coding standard (default: PSR12)
-  PSR_EXCLUDE    comma-separated exclude paths (optional)
-  PSR_SEVERITY   warning severity threshold (default: 9)
-  PSR_EXTENSIONS file extensions to check (default: php)
-"""
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 import json
@@ -30,15 +30,15 @@ def emit(obj: dict) -> None:
 
 
 def contained_target(file: str) -> str:
-    """`file`, spelled so phpcs cannot read it as an option (#2438).
 
-    Whether phpcs honours a `--` terminator was never measured against a
-    real binary in this pass (unavailable). Containment sidesteps the
-    question: a relative target starting with `-` is prefixed with
-    `os.curdir`, so phpcs's own parser sees a string that cannot start
-    with `-` at all — the same shape `validators/xmllint/xmllint.py`
-    (#2412) uses for a tool measured NOT to honour `--`.
-    """
+
+
+
+
+
+
+
+
     if not file or os.path.isabs(file) or not file.startswith("-"):
         return file
     return os.path.join(os.curdir, file)
@@ -62,7 +62,7 @@ def main() -> None:
     psr_severity = os.environ.get("PSR_SEVERITY", "9")
     psr_extensions = os.environ.get("PSR_EXTENSIONS", "php")
 
-    # Guard: binary must exist
+
     if not spawnable(psr_bin) and not already_a_path(psr_bin):
         emit({
             "tool": "psr", "file": file, "ok": False, "count": 1,

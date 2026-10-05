@@ -1,56 +1,56 @@
 #!/usr/bin/env python3
-"""eslint validator adapter — JavaScript semantics via `eslint -f json` (#667).
 
-JS/TS coverage before this was `node-check` (syntax), `tsc-check` (types, TS
-only), `prettier-check` (formatting) and `stylelint` (CSS). No linter — so for
-a plain `.js` file nothing checked for unused variables, `==` vs `===`,
-unreachable code, shadowed declarations or accidental globals.
 
-**Three absences, and each one arrives looking like a clean file.**
 
-1. *eslint not installed.* `skipped`, with the install hint. On the machine
-   this actually happens on — a laptop with node — `spawnable("eslint")` is
-   false and `spawnable("npx")` is true (#2579; `shutil.which()` directly
-   until then), so the fallback below resolves and
-   the install-hint branch is never reached at all. npx then exits **1 with
-   empty stdout** and `Unknown command: "eslint"` (npm 11) or `could not
-   determine executable to run` (npm 8-10) on stderr, which is neither a
-   config problem nor a finding, and landed on `_adapter_error`: the reader
-   was told eslint *failed* and sent to debug a linter that is not installed.
-   `npx_absent.is_npx_absent()` (shared with stylelint, #1949) catches this
-   and every other spelling seen live -- three as of #1948, npm 10.9.4's
-   `npx canceled due to missing packages` among them -- and only on the
-   npx route.
-2. *eslint installed, no resolvable config.* eslint exits **2 with empty
-   stdout** and puts "couldn't find an eslint.config.(js|mjs|cjs) file" on
-   stderr. An adapter that only counts findings publishes `ok: true,
-   count: 0` — #263's shape exactly. `skipped`.
-3. *the file matched an ignore pattern.* eslint exits **0** and returns a
-   single `ruleId: null, fatal: false` message saying the file was ignored.
-   This is the worst of the three because the exit code is clean, and it is
-   not in the issue. `skipped`.
 
-**No fallback config is shipped, and that is the judgment call.** Inventing one
-would have this validator report rules the project never adopted — the
-argument already written into `validators/ruff/ruff.py`, and the first thing
-anyone does about findings they did not opt into is switch the validator off,
-which costs the coverage the fallback was meant to buy. It would also be
-misleading in the case that motivated the issue: DVSI's `no-var` rule mostly
-governs JS embedded in XML templates and inline handlers, which eslint cannot
-reach at all, so a fallback config would produce a green that says nothing
-about the rule it was configured for. A repo that wants JS linted adds
-`eslint.config.js`; until then the honest answer is that nobody checked, and
-the row says so on every edit rather than going quiet.
 
-Where a skip is not acceptable — CI — name this validator in
-`$SUPERTOOL_REQUIRE_VALIDATORS` and every absence above becomes a loud
-`adapter` error naming the variable. It only ever turns quiet into loud.
 
-`rollback_on_fail` is false in every registration: a lint finding is not a
-broken file.
 
-Usage:  eslint.py <file>
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 from __future__ import annotations
 
@@ -71,18 +71,18 @@ TOOL = "eslint"
 
 
 def contained_target(file: str) -> str:
-    """`file`, spelled so eslint cannot read it as an option (#2412).
 
-    eslint's own CLI parsing was not measured against a real binary in
-    this pass (none was installed to test against) -- so rather than
-    assume `--` is honoured, this uses the same containment
-    `validators/pyright/pyright.py` (#2379) and
-    `validators/tsc-check/tsc-check.py` (#1519) already use for the
-    identical problem: a relative target starting with `-` is prefixed
-    with `os.curdir`, so eslint's argv parser sees a string that cannot
-    start with `-` regardless of what its own option grammar does with
-    `--`. An absolute path is already unambiguous and is left alone.
-    """
+
+
+
+
+
+
+
+
+
+
+
     if not file or os.path.isabs(file) or not file.startswith("-"):
         return file
     return os.path.join(os.curdir, file)
@@ -95,18 +95,18 @@ RC_FINDINGS = 1
 INSTALL_HINT = ("eslint not found (neither on PATH nor resolvable through "
                 "`npx --no-install`) — `npm install --save-dev eslint`")
 
-#: How eslint 9/10 announce that no flat config resolved. Matched on stderr,
-#: deliberately narrow: any other exit-2 stays a loud fault, because
-#: swallowing an unknown failure is the same category mistake pointing the
-#: other way.
+
+
+
+
 _NO_CONFIG = (
     "couldn't find an eslint.config",
     "couldn't find a configuration file",
     "no eslint configuration found",
 )
 
-#: How eslint says it declined to lint a file it was handed. `ruleId` is null,
-#: `fatal` is false, there is no location, and the exit code is 0.
+
+
 _IGNORED = "file ignored"
 
 
@@ -122,7 +122,7 @@ def _adapter_error(file: str, msg: str, dur_ms: int) -> None:
 
 
 def _decline(file: str, reason: str, dur_ms: int) -> None:
-    """`skipped`, unless this validator is required — then a loud error."""
+
     if required(TOOL):
         _adapter_error(file, required_but_absent(TOOL, reason), dur_ms)
     else:
@@ -130,22 +130,22 @@ def _decline(file: str, reason: str, dur_ms: int) -> None:
 
 
 def _resolve_cmd() -> list:
-    """argv prefix for eslint: global first, then a project-local install."""
+
     if spawnable(TOOL):
         return [argv0(TOOL)]
     if spawnable("npx"):
-        # `--no-install` so a missing eslint stays a missing eslint rather
-        # than becoming a silent network fetch inside a post-edit validator.
+
+
         return [argv0("npx"), "--no-install", TOOL]
     return []
 
 
 def _ignored_reason(messages: list) -> str | None:
-    """The file eslint refused to lint, or None.
 
-    Only when *every* message is the ignore notice: a file with real findings
-    plus an unrelated null-rule row is still a verdict.
-    """
+
+
+
+
     if not messages:
         return None
     for m in messages:
@@ -216,9 +216,9 @@ def main() -> None:
     if not body:
         lowered = stderr.lower()
         if via_npx and is_npx_absent(lowered, TOOL):
-            # An absent eslint, reached one layer further out. The same third
-            # state as `not base`, with the same hint — the reader's next
-            # action is `npm install`, not reading an npx traceback.
+
+
+
             _decline(file, INSTALL_HINT, dur)
             return
         if any(p in lowered for p in _NO_CONFIG):
