@@ -1101,7 +1101,8 @@ only for a container-level exit code — never for a real test failure.
 
 **The config walk stops at the nearest `.git` ancestor and skips a
 group/world-writable or not-caller-owned `.supertool.json`** — the same
-trust boundary `_supertool._load_config` enforces for every other op
+trust boundary `_supertool._load_config` enforces for every other op — and
+the one `host_resolver` (below) relies on before it executes anything
 ([#695](https://github.com/Digital-Process-Tools/claude-supertool/issues/695)),
 reproduced here because a preset script cannot import the core module. A
 stray ancestor config outside the current project is never picked up for a
@@ -1139,7 +1140,8 @@ in your project, so the project supplies the lookup:
 
 `host_resolver` is an argv list — a shell string is refused. It runs from
 the current directory with the runner's GitLab `description` appended as the
-last argument, and answers:
+last argument — GitLab-hosted text, so the resolver must treat it as data and
+never as a flag — and answers:
 
 | Exit | stdout | Meaning |
 |------|--------|---------|
@@ -1156,6 +1158,16 @@ when there is no password). `host`, `user` and `port` are checked against
 narrow patterns before they reach `ssh`, because a host spelled
 `-oProxyCommand=...` is an ssh option, argv or not.
 
+**`host_resolver` executes code, so it rides the same trust check as the
+maintenance windows above** — a `.supertool.json` that is group/world-writable
+or not owned by you is skipped. That is no new class of exposure: a custom op's
+`cmd` in the same file already runs. On Windows the ownership check is a no-op
+(`st_uid` means nothing there), as it already is for the core loader.
+
+Host keys use `StrictHostKeyChecking=accept-new`, matching DVSI's
+`server-diag`, so a first contact writes your local `~/.ssh/known_hosts`
+(OpenSSH 7.6+). That is the only write anywhere, and it is local.
+
 **One SSH call per host, one fixed command string.** Nothing — not the
 description, not the target — is interpolated into what runs remotely. It is
 read-only: `free -b`, `/proc/loadavg`, `nproc`, `df -P` once for `/` and once
@@ -1169,7 +1181,10 @@ attributed by `[[runners]]` section, so a `name =` under
 `[[runners.docker.services]]` is not mistaken for a runner. The remote login
 shell must be POSIX `sh`-compatible.
 
-Hosts are probed in parallel. Exit `1` when any host could not be resolved
+Hosts are probed in parallel (8 at a time; resolver 15s, ssh 30s, inside
+the op's 120s ceiling — that ceiling is shared with the other modes, which
+finish long before it). Runners sharing one `description` are probed once,
+with a note. Exit `1` when any host could not be resolved
 or reached, or when `:host:DESCRIPTION` names a runner the resolver has no
 entry for; with no `host_resolver` configured the op refuses rather than
 printing an empty board.

@@ -1052,7 +1052,10 @@ def _host_mode(only: str | None) -> int:
         selected = listed
         descriptions = sorted({r.get("description") or "" for r in listed} - {""})
     by_description: dict = {}
+    shared: dict = {}
     for runner in selected:
+        if runner.get("description") in by_description:
+            shared[runner.get("description")] = shared.get(runner.get("description"), 0) + 1
         by_description.setdefault(runner.get("description"), runner)
     details = _fetch_details(list(by_description.values())) if by_description else {}
     for description, runner in by_description.items():
@@ -1072,11 +1075,17 @@ def _host_mode(only: str | None) -> int:
     cfg = _maintenance.load_config()
 
     def one(description: str):
-        resolution = _host_probe.resolve_target(description, cfg)
-        if resolution.state != "ok":
-            return description, resolution, None, None
-        output, failure = _host_probe.probe(resolution.target)
-        return description, resolution, output, failure
+        # One host's surprise must not discard every other host's answer.
+        # The class only: an exception message here can carry a target value.
+        try:
+            resolution = _host_probe.resolve_target(description, cfg)
+            if resolution.state != "ok":
+                return description, resolution, None, None
+            output, failure = _host_probe.probe(resolution.target)
+            return description, resolution, output, failure
+        except Exception as exc:  # noqa: BLE001
+            return description, _host_probe.Resolution(
+                "error", f"probe raised {type(exc).__name__}"), None, None
 
     workers = min(_MAX_DETAIL_WORKERS, len(descriptions))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1097,6 +1106,9 @@ def _host_mode(only: str | None) -> int:
             print()
         printed += 1
         print(_host_header(description, by_description.get(description), running_count))
+        if shared.get(description):
+            print(f"  note   : {shared[description]} more GitLab runner(s) share this "
+                  f"description; the row above is the first one GitLab listed")
         if resolution.state == "error":
             failed = True
             print(f"  host   : unresolved — {resolution.message}")

@@ -59,9 +59,11 @@ s runnercfg; f=/etc/gitlab-runner/config.toml; if [ ! -e "$f" ]; then echo MISSI
 """
 
 NO_ENTRY_EXIT = 3
-RESOLVER_TIMEOUT = 20
+# Sized so two waves of 8 parallel hosts (15 + 30 each) fit inside the op's
+# 120s ceiling in presets/gitlab.json.
+RESOLVER_TIMEOUT = 15
 SSH_CONNECT_TIMEOUT = 10
-SSH_TIMEOUT = 60
+SSH_TIMEOUT = 30
 _REASON_MAX = 160
 
 # Anything the resolver hands back lands in an ssh argv. argv is not a shell,
@@ -69,6 +71,7 @@ _REASON_MAX = 160
 _HOST_RE = re.compile(r"^[A-Za-z0-9_.:\[\]-]+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PORT_RE = re.compile(r"^[0-9]{1,5}$")
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{12,64}$")
 
 
 class Unreadable:
@@ -118,6 +121,7 @@ def resolve_target(description: str, cfg: dict) -> Resolution:
         result = subprocess.run(
             [*resolver, description], capture_output=True, text=True,
             timeout=RESOLVER_TIMEOUT, encoding="utf-8", errors="replace",
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return Resolution("error", f"host resolver not found: {_untrusted.flat(resolver[0])}")
@@ -125,6 +129,10 @@ def resolve_target(description: str, cfg: dict) -> Resolution:
         return Resolution("error", f"host resolver not executable: {_untrusted.flat(resolver[0])}")
     except subprocess.TimeoutExpired:
         return Resolution("error", f"host resolver timed out after {RESOLVER_TIMEOUT}s")
+    except (OSError, ValueError) as exc:
+        # Windows raises a bare OSError (WinError 193) for a non-executable file.
+        # The class only: the message can echo argv.
+        return Resolution("error", f"host resolver could not start ({type(exc).__name__})")
     if result.returncode == NO_ENTRY_EXIT:
         return Resolution("no-entry")
     if result.returncode != 0:
@@ -177,15 +185,22 @@ def probe(target: dict) -> tuple[str | None, str | None]:
     try:
         result = subprocess.run(
             argv, capture_output=True, text=True, timeout=SSH_TIMEOUT,
-            encoding="utf-8", errors="replace", env=env,
+            encoding="utf-8", errors="replace", env=env, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return None, f"{argv[0]} not found on PATH" + (
             " — password targets need sshpass installed" if argv[0] == "sshpass" else "")
     except subprocess.TimeoutExpired:
         return None, f"ssh timed out after {SSH_TIMEOUT}s"
+    except (OSError, ValueError) as exc:
+        # ValueError: a NUL in the resolver's password reaching env=. The class
+        # only — never str(exc), which could carry the value.
+        return None, f"{argv[0]} could not start ({type(exc).__name__})"
     if "@@ " not in result.stdout:
         reason = _reason(result.stderr) or _reason(result.stdout) or "no output"
+        if result.returncode == 0:
+            return None, (f"connected, but the probe printed no sections — is the remote "
+                          f"login shell POSIX sh-compatible? ({reason})")
         return None, f"ssh failed (exit {result.returncode}): {reason}"
     return result.stdout, None
 
@@ -231,11 +246,18 @@ def _parse_free(lines):
         return lines, lines
     memory: dict | Unreadable = Unreadable("no Mem: line")
     swap: dict | Unreadable = Unreadable("no Swap: line")
+    # Column positions come from the header: procps before 3.3.10 and busybox
+    # have no `available` column, and column 6 there is `cached`.
+    header = next((line.split() for line in lines if "total" in line.split()), [])
+    available_at = header.index("available") + 1 if "available" in header else None
     for line in lines:
         fields = line.split()
         try:
-            if fields and fields[0] == "Mem:" and len(fields) >= 7:
-                memory = {"total": int(fields[1]), "used": int(fields[2]), "available": int(fields[6])}
+            if fields and fields[0] == "Mem:" and available_at is None:
+                memory = Unreadable("free prints no 'available' column on this host")
+            elif fields and fields[0] == "Mem:" and len(fields) > available_at:
+                memory = {"total": int(fields[1]), "used": int(fields[2]),
+                          "available": int(fields[available_at])}
             elif fields and fields[0] == "Swap:" and len(fields) >= 3:
                 swap = {"total": int(fields[1]), "used": int(fields[2])}
         except ValueError:
@@ -287,7 +309,8 @@ def _parse_df(lines):
 def _parse_containers(lines):
     if isinstance(lines, Unreadable):
         return lines
-    return len([line for line in lines if line.strip()])
+    # Container ids only: a daemon WARNING line on stdout is not a container.
+    return len([line for line in lines if _CONTAINER_ID_RE.match(line.strip())])
 
 
 def _parse_stats(lines):

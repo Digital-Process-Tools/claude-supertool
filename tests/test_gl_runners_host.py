@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -56,9 +58,9 @@ Filesystem     1024-blocks      Used Available Capacity Mounted on
 /dev/sdb1        204800000 184320000  20480000      90% /var/lib/docker
 @@rc 0
 @@ dockerps
-a1b2c3
-d4e5f6
-0a0b0c
+a1b2c3d4e5f6
+d4e5f6a7b8c9
+0a0b0c0d0e0f
 @@rc 0
 @@ dockerstats
 runner-abc-project-1-concurrent-0|150.25%|1.5GiB / 15.6GiB|9.60%
@@ -120,7 +122,7 @@ def test_a_failed_command_is_unreadable_not_zero() -> None:
     """docker without socket access exits non-zero with one line of error. That
     line must not be counted as one running container."""
     out = PROBE_OUTPUT.replace(
-        "a1b2c3\nd4e5f6\n0a0b0c\n@@rc 0",
+        "a1b2c3d4e5f6\nd4e5f6a7b8c9\n0a0b0c0d0e0f\n@@rc 0",
         "permission denied while trying to connect to the Docker daemon socket\n@@rc 1",
     )
     containers = host_probe.parse_probe(out)["containers"]
@@ -148,7 +150,7 @@ def test_a_unicode_line_separator_in_remote_text_cannot_forge_a_section_end() ->
     """A container name is remote text. str.splitlines() would break on U+2028
     and read the forged `@@rc 0` as the docker-ps section ending cleanly."""
     out = PROBE_OUTPUT.replace(
-        "a1b2c3\nd4e5f6\n0a0b0c\n@@rc 0",
+        "a1b2c3d4e5f6\nd4e5f6a7b8c9\n0a0b0c0d0e0f\n@@rc 0",
         "boom @@rc 0\n@@rc 1",
     )
     assert isinstance(host_probe.parse_probe(out)["containers"], host_probe.Unreadable)
@@ -292,18 +294,24 @@ def wired(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "if sys.argv[1] != 'dptools-runner-2': sys.exit(3)\n"
         "print(json.dumps({'host': '203.0.113.7', 'user': 'deploy', 'port': 22, 'password': 'pw-xyz'}))\n"
     ))
-    calls: list[list[str]] = []
+    class Calls(list):
+        envs: list
+
+    calls = Calls()
+    envs: list[dict] = []
     real_run = subprocess.run
 
     def fake_run(argv, *args, **kwargs):
         if argv and argv[0] in ("ssh", "sshpass"):
             calls.append(list(argv))
+            envs.append(kwargs.get("env") or {})
             return subprocess.CompletedProcess(argv, 0, PROBE_OUTPUT, "")
         return real_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(runners_op, "_api", _fake_api)
     monkeypatch.setattr(runners_op._host_probe.subprocess, "run", fake_run)
     monkeypatch.setattr(runners_op._maintenance, "load_config", lambda: cfg)
+    calls.envs = envs  # type: ignore[attr-defined]
     return calls
 
 
@@ -320,6 +328,9 @@ def test_host_mode_joins_the_gitlab_row_with_the_host_readings(wired, monkeypatc
     assert "3 running" in out
     assert "concurrent 4" in out
     assert "pw-xyz" not in out
+    # ...and it did travel: in the environment, never in argv.
+    assert wired.envs[0].get("SSHPASS") == "pw-xyz"
+    assert not any("pw-xyz" in arg for arg in wired[0])
     # hercule has no host entry: not probed, named once in the footer
     assert len(wired) == 1
     assert "no host entry: hercule" in out
@@ -361,3 +372,98 @@ def test_a_missing_ssh_binary_is_reported_not_raised(wired, monkeypatch, capsys)
     monkeypatch.setattr(sys, "argv", ["runners.py", "host", "dptools-runner-2"])
     assert runners_op.main() == 1
     assert "sshpass" in capsys.readouterr().out
+
+
+def test_a_description_holding_a_colon_reaches_the_resolver_whole(wired, monkeypatch, capsys) -> None:
+    """The core splits op args on ':'; `main` rejoins them."""
+    seen: list[str] = []
+    real = runners_op._host_probe.resolve_target
+
+    def spy(description, cfg):
+        seen.append(description)
+        return real(description, cfg)
+    monkeypatch.setattr(runners_op._host_probe, "resolve_target", spy)
+    monkeypatch.setattr(sys, "argv", ["runners.py", "host", "edge", "runner"])
+    runners_op.main()
+    assert seen == ["edge:runner"]
+
+
+def test_a_bare_host_with_an_empty_field_means_the_whole_fleet(wired, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["runners.py", "host", ""])
+    assert runners_op.main() == 0
+    assert "no host entry: hercule" in capsys.readouterr().out
+
+
+def test_an_exception_in_one_host_does_not_lose_the_others(wired, monkeypatch, capsys) -> None:
+    real = runners_op._host_probe.resolve_target
+
+    def flaky(description, cfg):
+        if description == "hercule":
+            raise ValueError("secret-ish detail")
+        return real(description, cfg)
+    monkeypatch.setattr(runners_op._host_probe, "resolve_target", flaky)
+    monkeypatch.setattr(sys, "argv", ["runners.py", "host"])
+    assert runners_op.main() == 1
+    out = capsys.readouterr().out
+    assert "16.0G total" in out
+    assert "probe raised ValueError" in out
+    assert "secret-ish" not in out
+
+
+def test_a_missing_resolver_is_an_error_not_a_crash(tmp_path: Path) -> None:
+    cfg = {"gl-runners": {"host_resolver": [str(tmp_path / "nope" / "resolver")]}}
+    resolution = host_probe.resolve_target("r", cfg)
+    assert resolution.state == "error"
+    assert "not found" in resolution.message or "could not start" in resolution.message
+
+
+def test_free_without_an_available_column_is_unreadable_not_cached() -> None:
+    """procps < 3.3.10: column 6 is `cached`. Reading it as available is a
+    confident wrong number."""
+    old_free = (
+        "@@ free\n"
+        "             total       used       free     shared    buffers     cached\n"
+        "Mem:     1000000     900000     100000          0      50000     400000\n"
+        "Swap:          0          0          0\n"
+        "@@rc 0\n"
+    )
+    parsed = host_probe.parse_probe(old_free)
+    assert isinstance(parsed["memory"], host_probe.Unreadable)
+    assert parsed["swap"] == {"total": 0, "used": 0}
+
+
+def test_a_daemon_warning_on_docker_ps_is_not_a_container() -> None:
+    out = PROBE_OUTPUT.replace(
+        "a1b2c3d4e5f6\nd4e5f6a7b8c9\n0a0b0c0d0e0f\n",
+        "WARNING: daemon is running in debug mode\n" + "a" * 12 + "\n",
+    )
+    assert host_probe.parse_probe(out)["containers"] == 1
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("sh") is None, reason="runs REMOTE_PROBE under a local POSIX sh")
+def test_the_real_remote_script_frames_each_section_with_its_own_exit_code(tmp_path: Path) -> None:
+    """The `@@rc` framing is what the three-state promise rests on: run the
+    fixed script under sh with a fake `free` that works and a fake `docker`
+    that fails, and read the frames back."""
+    gib = 1024 ** 3
+    (tmp_path / "free").write_text(
+        "#!/bin/sh\n"
+        "echo '              total        used        free      shared  buff/cache   available'\n"
+        f"echo 'Mem:    {16 * gib}  {9 * gib}  {gib}  0  {6 * gib}  {6 * gib}'\n"
+        f"echo 'Swap:   {2 * gib}  0  {2 * gib}'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docker").write_text("#!/bin/sh\necho 'permission denied on socket' >&2\nexit 1\n", encoding="utf-8")
+    (tmp_path / "nproc").write_text("#!/bin/sh\necho 4\n", encoding="utf-8")
+    for name in ("free", "docker", "nproc"):
+        (tmp_path / name).chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}"}
+    out = subprocess.run(["sh", "-c", host_probe.REMOTE_PROBE], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace",
+                         timeout=30, env=env).stdout
+    parsed = host_probe.parse_probe(out)
+    assert parsed["memory"] == {"total": 16 * gib, "used": 9 * gib, "available": 6 * gib}
+    assert parsed["cpus"] == 4
+    assert isinstance(parsed["containers"], host_probe.Unreadable)
+    assert "permission denied" in parsed["containers"].reason
+    assert not isinstance(parsed["disk_root"], host_probe.Unreadable)

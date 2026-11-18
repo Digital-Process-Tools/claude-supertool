@@ -155,7 +155,7 @@ def load_config() -> dict:
             if violation is not None:
                 sys.stderr.write(
                     f"WARNING: skipped {candidate} ({violation}) -- "
-                    f"ignoring it for gl-runners maintenance windows.\n"
+                    f"ignoring it for gl-runners config (maintenance windows, host_resolver).\n"
                 )
             else:
                 try:
@@ -166,8 +166,8 @@ def load_config() -> dict:
                         sys.stderr.write(
                             f"WARNING: {candidate} does not hold a JSON "
                             f"object (got {type(parsed).__name__}) -- "
-                            f"ignoring it for gl-runners maintenance "
-                            f"windows.\n"
+                            f"ignoring it for gl-runners config "
+                            f"(maintenance windows, host_resolver).\n"
                         )
                     _CACHED_CONFIG = cfg
                     return cfg
@@ -175,7 +175,7 @@ def load_config() -> dict:
                     sys.stderr.write(
                         f"WARNING: could not read {candidate} "
                         f"({exc.__class__.__name__}: {exc}) -- ignoring it "
-                        f"for gl-runners maintenance windows.\n"
+                        f"for gl-runners config (maintenance windows, host_resolver).\n"
                     )
         if (d / ".git").exists():
             break
