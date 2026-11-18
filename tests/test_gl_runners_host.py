@@ -495,7 +495,8 @@ def test_the_real_remote_script_frames_each_section_with_its_own_exit_code(tmp_p
     )
     (tmp_path / "docker").write_text("#!/bin/sh\necho 'permission denied on socket' >&2\nexit 1\n", encoding="utf-8")
     (tmp_path / "nproc").write_text("#!/bin/sh\necho 4\n", encoding="utf-8")
-    for name in ("free", "docker", "nproc"):
+    (tmp_path / "uname").write_text("#!/bin/sh\necho Linux\n", encoding="utf-8")
+    for name in ("free", "docker", "nproc", "uname"):
         (tmp_path / name).chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}"}
     out = subprocess.run(["sh", "-c", host_probe.REMOTE_PROBE], capture_output=True,
@@ -541,7 +542,8 @@ def test_the_real_script_falls_back_to_sudo_n_and_finds_config_through_the_runne
         "#!/bin/sh\n[ \"$1\" = -n ] || exit 1\nshift\nFAKE_PRIV=1 exec \"$@\"\n",
         encoding="utf-8",
     )
-    for name in ("docker", "sudo"):
+    (bin_dir / "uname").write_text("#!/bin/sh\necho Linux\n", encoding="utf-8")
+    for name in ("docker", "sudo", "uname"):
         (bin_dir / name).chmod(0o755)
     home = tmp_path / "home"
     home.mkdir()
@@ -559,3 +561,152 @@ def test_the_real_script_falls_back_to_sudo_n_and_finds_config_through_the_runne
     assert not isinstance(config, host_probe.Unreadable), config
     assert config["concurrent"] == 6 and config["limits"] == [("box", 2)]
     assert config["path"] == f"{mount}/config.toml"
+
+
+# ---------------------------------------------------------------------------
+# macOS runner hosts (mac-mini): same script, Darwin branch
+# ---------------------------------------------------------------------------
+
+DARWIN_OUTPUT = """@@ os
+Darwin
+@@rc 0
+@@ memsize
+51539607552
+@@rc 0
+@@ vmstat
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               100000.
+Pages active:                            1000000.
+Pages inactive:                           200000.
+Pages speculative:                         50000.
+Pages wired down:                         300000.
+@@rc 0
+@@ swapusage
+total = 2048.00M  used = 1024.50M  free = 1023.50M  (encrypted)
+@@rc 0
+@@ loadavg
+{ 3.10 2.50 2.00 }
+@@rc 0
+@@ nproc
+14
+@@rc 0
+@@ dfroot
+Filesystem     1024-blocks      Used Available Capacity Mounted on
+/dev/disk3s5     971350180 600000000 300000000    67%    /System/Volumes/Data
+@@rc 0
+@@ dockersysdf
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          12        3         8.5GB     6.1GB (71%)
+Containers      3         2         120MB     10MB (8%)
+Local Volumes   4         2         2.1GB     500MB (23%)
+Build Cache     50        0         3.2GB     3.2GB
+@@rc 0
+@@ dockervia
+docker
+@@rc 0
+@@ dockerps
+a1b2c3d4e5f6
+@@rc 0
+@@ dockerstats
+runner-mac-concurrent-0|80.00%|2GiB / 7.6GiB|26.3%
+@@rc 0
+@@ runnercfg
+concurrent = 2
+[[runners]]
+  name = "mac-mini"
+  limit = 2
+@@path /Users/ci/.gitlab-runner/config.toml
+@@rc 0
+"""
+
+
+def test_darwin_readings_come_from_sysctl_vm_stat_and_docker_system_df() -> None:
+    parsed = host_probe.parse_probe(DARWIN_OUTPUT)
+    available = (100000 + 200000 + 50000) * 16384
+    assert parsed["memory"] == {"total": 51539607552, "used": 51539607552 - available,
+                                "available": available}
+    assert parsed["swap"] == {"total": 2048 * 1024 ** 2, "used": int(1024.5 * 1024 ** 2)}
+    assert parsed["load"] == (3.10, 2.50, 2.00)
+    assert parsed["cpus"] == 14
+    assert parsed["disk_root"]["mount"] == "/System/Volumes/Data"
+    assert parsed["docker_df"] == {"size": 13_920_000_000, "reclaimable": 9_810_000_000}
+    assert parsed["runner_config"]["path"] == "/Users/ci/.gitlab-runner/config.toml"
+
+
+def test_darwin_render_shows_the_docker_vm_disk_not_a_missing_linux_path() -> None:
+    rendered = "\n".join(host_probe.render(host_probe.parse_probe(DARWIN_OUTPUT)))
+    assert "48.0G total" in rendered
+    assert "on 14 CPU" in rendered
+    assert "/System/Volumes/Data 67% used" in rendered
+    assert "docker vm : 13.9GB in images/containers/volumes/cache, 9.8GB reclaimable" in rendered
+    assert "/var/lib/docker" not in rendered
+    assert "unreadable" not in rendered
+
+
+def test_a_vm_stat_without_page_size_is_unreadable_not_guessed() -> None:
+    out = DARWIN_OUTPUT.replace("Mach Virtual Memory Statistics: (page size of 16384 bytes)",
+                                "Mach Virtual Memory Statistics:")
+    assert isinstance(host_probe.parse_probe(out)["memory"], host_probe.Unreadable)
+
+
+def test_the_darwin_branch_looks_where_homebrew_puts_things() -> None:
+    script = host_probe.REMOTE_PROBE
+    assert "uname -s" in script
+    for needle in ("/opt/homebrew/bin", "hw.memsize", "vm_stat", "vm.swapusage", "vm.loadavg",
+                   "hw.ncpu", "docker system df", "/opt/homebrew/etc/gitlab-runner/config.toml",
+                   "/usr/local/etc/gitlab-runner/config.toml"):
+        assert needle in script, needle
+
+
+def test_an_empty_password_is_key_auth_in_batch_mode_never_sshpass(tmp_path: Path) -> None:
+    """mac-mini's entry carries an empty secret: the key comes from ~/.ssh/config."""
+    cfg = _resolver(tmp_path, "print(json.dumps({'host': 'mac-mini.lan', 'user': 'ci', 'port': '22', 'password': ''}))\n")
+    resolution = host_probe.resolve_target("mac-mini", cfg)
+    assert resolution.state == "ok", resolution.message
+    argv, env = host_probe.ssh_invocation(resolution.target)
+    assert argv[0] == "ssh" and "sshpass" not in argv
+    assert "BatchMode=yes" in argv
+    assert env == {}
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("sh") is None, reason="runs REMOTE_PROBE under a local POSIX sh")
+def test_the_real_script_takes_the_darwin_branch_on_a_mac(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fakes = {
+        "uname": "echo Darwin",
+        "sysctl": (
+            'case "$2" in hw.memsize) echo 51539607552;; vm.swapusage) echo "total = 2048.00M  used = 0.00M  free = 2048.00M";;'
+            ' vm.loadavg) echo "{ 1.00 1.00 1.00 }";; hw.ncpu) echo 14;; *) exit 1;; esac'
+        ),
+        "vm_stat": (
+            'echo "Mach Virtual Memory Statistics: (page size of 16384 bytes)"; echo "Pages free: 1000."; '
+            'echo "Pages inactive: 2000."; echo "Pages speculative: 0."'
+        ),
+        "docker": (
+            'case "$1 $2" in "system df") echo "TYPE TOTAL ACTIVE SIZE RECLAIMABLE"; echo "Images 1 1 1GB 0B (0%)";;'
+            ' "ps -q") echo aaaaaaaaaaaa;; ps*) echo "aaaaaaaaaaaa gitlab/gitlab-runner:latest";;'
+            ' stats*) echo "x|1.00%|1GiB / 8GiB|12.5%";; *) exit 1;; esac'
+        ),
+        "free": "echo should-not-run >&2; exit 9",
+    }
+    for name, body in fakes.items():
+        (bin_dir / name).write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    home = tmp_path / "home"
+    (home / ".gitlab-runner").mkdir(parents=True)
+    (home / ".gitlab-runner" / "config.toml").write_text(
+        'concurrent = 2\n[[runners]]\n  name = "mac-mini"\n  token = "glrt-MAC"\n', encoding="utf-8")
+    env = {**os.environ, "HOME": str(home), "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    out = subprocess.run(["sh", "-c", host_probe.REMOTE_PROBE], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace",
+                         timeout=30, env=env).stdout
+    assert "glrt-" not in out
+    assert "should-not-run" not in out
+    parsed = host_probe.parse_probe(out)
+    assert parsed["os"] == "Darwin"
+    assert parsed["memory"]["available"] == 3000 * 16384
+    assert parsed["cpus"] == 14
+    assert parsed["docker_df"] == {"size": 1_000_000_000, "reclaimable": 0}
+    assert parsed["containers"] == 1
+    assert parsed["runner_config"]["path"] == f"{home}/.gitlab-runner/config.toml"

@@ -51,6 +51,18 @@ import _untrusted  # noqa: E402  (everything the box prints is remote text)
 REMOTE_PROBE = r"""LC_ALL=C; export LC_ALL
 s() { echo "@@ $1"; }
 r() { echo "@@rc $?"; }
+s os; uname -s 2>&1; r
+PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; export PATH
+if [ "$(uname -s)" = Darwin ]; then
+s memsize; sysctl -n hw.memsize 2>&1; r
+s vmstat; vm_stat 2>&1; r
+s swapusage; sysctl -n vm.swapusage 2>&1; r
+s loadavg; sysctl -n vm.loadavg 2>&1; r
+s nproc; sysctl -n hw.ncpu 2>&1; r
+s dfroot; df -P /System/Volumes/Data 2>&1; r
+s dockersysdf; docker system df 2>&1; r
+set -- "$HOME/.gitlab-runner/config.toml" /opt/homebrew/etc/gitlab-runner/config.toml /usr/local/etc/gitlab-runner/config.toml
+else
 s free; free -b 2>&1; r
 s loadavg; { cat</proc/loadavg; } 2>&1; r
 s nproc; nproc 2>&1; r
@@ -58,13 +70,15 @@ d=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null); dn=""; [ -n "$d" ] |
 s dockerroot; echo "$d$dn"; r
 s dfroot; df -P / 2>&1; r
 s dfdocker; df -P "$d" 2>&1; r
+set -- /etc/gitlab-runner/config.toml /srv/gitlab-runner/config/config.toml "$HOME/.gitlab-runner/config.toml"
+fi
 D=docker; docker ps -q >/dev/null 2>&1 || { sudo -n docker ps -q >/dev/null 2>&1 && D="sudo -n docker"; }
 s dockervia; echo "$D"; r
 s dockerps; $D ps -q 2>&1; r
 s dockerstats; $D stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>&1; r
 F='match($0, /^[ \t]*\[\[?[A-Za-z0-9_.-]+\]\]?/) { print substr($0, RSTART, RLENGTH); next } /^[ \t]*(concurrent|limit|name)[ \t]*=/'
 rd() { o=$(awk "$F" "$1" 2>/dev/null) && [ -n "$o" ] && { printf '%s\n' "$o"; echo "@@path $1"; return 0; }; o=$(sudo -n awk "$F" "$1" 2>/dev/null) && [ -n "$o" ] && { printf '%s\n' "$o"; echo "@@path $1 (sudo)"; return 0; }; return 1; }
-s runnercfg; ok=0; for p in /etc/gitlab-runner/config.toml /srv/gitlab-runner/config/config.toml "$HOME/.gitlab-runner/config.toml"; do rd "$p" && { ok=1; break; }; done
+s runnercfg; ok=0; for p in "$@"; do rd "$p" && { ok=1; break; }; done
 if [ "$ok" = 0 ]; then for c in $($D ps --format '{{.ID}} {{.Image}}' 2>/dev/null | awk '$2 ~ /gitlab-runner/ && $2 !~ /helper/ {print $1}'); do m=$($D inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/gitlab-runner"}}{{.Source}}{{end}}{{end}}' "$c" 2>/dev/null); case $m in ""|*"
 "*) continue;; esac; rd "$m/config.toml" && { ok=1; break; }; done; fi
 [ "$ok" = 1 ] || echo MISSING; true; r
@@ -281,10 +295,11 @@ def _parse_load(lines):
     if isinstance(lines, Unreadable):
         return lines
     try:
-        one, five, fifteen = lines[0].split()[:3]
+        # Linux /proc/loadavg `1.20 0.95 ...`; macOS vm.loadavg `{ 1.20 0.95 0.80 }`.
+        one, five, fifteen = lines[0].replace("{", " ").replace("}", " ").split()[:3]
         return (float(one), float(five), float(fifteen))
     except (IndexError, ValueError):
-        return Unreadable("unexpected /proc/loadavg format")
+        return Unreadable("unexpected load average format")
 
 
 def _parse_int(lines):
@@ -365,7 +380,7 @@ def _parse_runner_config(lines):
 
 _CONFIG_MISSING = ("not found, or not readable even with sudo -n, at /etc/gitlab-runner, "
                    "/srv/gitlab-runner/config, ~/.gitlab-runner, or a gitlab-runner "
-                   "container mount")
+                   "container mount (macOS: ~/.gitlab-runner, /opt/homebrew/etc, /usr/local/etc)")
 
 
 def _parse_root(lines):
@@ -374,10 +389,81 @@ def _parse_root(lines):
     return lines[0].strip() if lines and lines[0].strip() else Unreadable("empty")
 
 
+_VM_PAGE_RE = re.compile(r"page size of (\d+) bytes")
+_SWAP_RE = re.compile(r"total = ([\d.]+)([KMG])\s+used = ([\d.]+)([KMG])")
+_SWAP_UNIT = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+_SYSDF_RE = re.compile(r"^(Images|Containers|Local Volumes|Build Cache)\s+\d+\s+\d+\s+(\S+)\s+(\S+)")
+_DOCKER_UNIT = {"B": 1, "kB": 10 ** 3, "KB": 10 ** 3, "MB": 10 ** 6, "GB": 10 ** 9, "TB": 10 ** 12}
+
+
+def _parse_darwin_memory(memsize, vmstat):
+    """Total from hw.memsize; available = (free + inactive + speculative) pages
+    x the page size vm_stat itself states. No stated page size: no guess."""
+    total = _parse_int(memsize)
+    if isinstance(total, Unreadable):
+        return total
+    if isinstance(vmstat, Unreadable):
+        return vmstat
+    page = next((int(m.group(1)) for m in map(_VM_PAGE_RE.search, vmstat) if m), None)
+    if page is None:
+        return Unreadable("vm_stat states no page size")
+    pages = {}
+    for line in vmstat:
+        key, _, value = line.partition(":")
+        if value.strip().rstrip(".").isdigit():
+            pages[key.strip()] = int(value.strip().rstrip("."))
+    if "Pages free" not in pages or "Pages inactive" not in pages:
+        return Unreadable("vm_stat has no free/inactive page counts")
+    available = (pages["Pages free"] + pages["Pages inactive"] + pages.get("Pages speculative", 0)) * page
+    return {"total": total, "used": max(total - available, 0), "available": available}
+
+
+def _parse_darwin_swap(lines):
+    if isinstance(lines, Unreadable):
+        return lines
+    match = _SWAP_RE.search(" ".join(lines))
+    if not match:
+        return Unreadable("unexpected vm.swapusage format")
+    return {"total": int(float(match.group(1)) * _SWAP_UNIT[match.group(2)]),
+            "used": int(float(match.group(3)) * _SWAP_UNIT[match.group(4)])}
+
+
+def _docker_bytes(text: str) -> int | None:
+    match = re.match(r"^([\d.]+)([A-Za-z]+)$", text)
+    if not match or match.group(2) not in _DOCKER_UNIT:
+        return None
+    return round(float(match.group(1)) * _DOCKER_UNIT[match.group(2)])
+
+
+def _parse_system_df(lines):
+    """`docker system df` — on macOS the Docker VM's disk is what fills up, and
+    the host's df cannot see inside it."""
+    if isinstance(lines, Unreadable):
+        return lines
+    size = reclaimable = 0
+    rows = 0
+    for line in lines:
+        match = _SYSDF_RE.match(line.strip())
+        if not match:
+            continue
+        used, freeable = _docker_bytes(match.group(2)), _docker_bytes(match.group(3))
+        if used is None or freeable is None:
+            return Unreadable(f"unexpected docker system df size {_untrusted.flat(line.strip())[:60]}")
+        size, reclaimable, rows = size + used, reclaimable + freeable, rows + 1
+    return {"size": size, "reclaimable": reclaimable} if rows else Unreadable("no rows in docker system df")
+
+
 def parse_probe(text: str) -> dict:
     sections = _sections(text)
-    memory, swap = _parse_free(_section(sections, "free"))
+    os_name = _parse_root(_section(sections, "os"))
+    if os_name == "Darwin":
+        memory = _parse_darwin_memory(_section(sections, "memsize"), _section(sections, "vmstat"))
+        swap = _parse_darwin_swap(_section(sections, "swapusage"))
+    else:
+        memory, swap = _parse_free(_section(sections, "free"))
     return {
+        "os": os_name,
+        "docker_df": _parse_system_df(_section(sections, "dockersysdf")) if os_name == "Darwin" else None,
         "memory": memory,
         "swap": swap,
         "load": _parse_load(_section(sections, "loadavg")),
@@ -423,7 +509,13 @@ def render(parsed: dict) -> list[str]:
     root, docker = parsed["disk_root"], parsed["disk_docker"]
     docker_root = parsed["docker_root"]
     docker_label = "docker" if isinstance(docker_root, Unreadable) else f"docker {_untrusted.flat(docker_root)}"
-    for label, disk in (("/", root), (docker_label, docker)):
+    disks = [("/", root), (docker_label, docker)]
+    if parsed.get("os") == "Darwin":
+        # APFS: / is the sealed system volume; the data volume is what fills.
+        # The docker root lives inside the Docker VM, so the host df has no say.
+        label = "/" if isinstance(root, Unreadable) else _untrusted.flat(root["mount"])
+        disks = [(label, root)]
+    for label, disk in disks:
         if isinstance(disk, Unreadable):
             out.append(f"  disk   : {label} {_cell(disk)}")
             continue
@@ -432,6 +524,11 @@ def render(parsed: dict) -> list[str]:
             same = " (same filesystem as /)"
         out.append(f"  disk   : {label} {disk['percent']}% used, {_gib(disk['available'])} free "
                    f"of {_gib(disk['size'])}{same}")
+    if parsed.get("os") == "Darwin":
+        vm = parsed.get("docker_df")
+        out.append("  docker vm : " + (_cell(vm) or
+                   f"{vm['size'] / 1e9:.1f}GB in images/containers/volumes/cache, "
+                   f"{vm['reclaimable'] / 1e9:.1f}GB reclaimable"))
     containers = parsed["containers"]
     via = parsed.get("docker_via")
     through = " (via sudo -n)" if isinstance(via, str) and via.startswith("sudo") else ""

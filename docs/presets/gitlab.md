@@ -1208,6 +1208,26 @@ leaves a few `sudo: a password is required` lines in that host's auth log
 `[[runners.docker.services]]` is not mistaken for a runner. The remote login
 shell must be POSIX `sh`-compatible.
 
+**macOS runner hosts** take a Darwin branch of the same fixed script, chosen
+on the host by `uname -s`, with `/opt/homebrew/bin` and `/usr/local/bin`
+appended to `PATH` (a non-interactive SSH session usually lacks them, and that
+is where Homebrew and Docker Desktop put `docker`). No sudo is needed there.
+
+- memory: total from `sysctl -n hw.memsize`; available is free + inactive +
+  speculative pages from `vm_stat`, times the page size `vm_stat` states in its
+  own header — no stated page size, no number. Swap from `sysctl -n vm.swapusage`.
+- load: `sysctl -n vm.loadavg` against `sysctl -n hw.ncpu`.
+- disk: `df -P /System/Volumes/Data` — on APFS `/` is the sealed system volume
+  and the data volume is the one that fills. The docker root lives inside the
+  Docker VM, which the host `df` cannot see, so a `docker vm :` line sums
+  `docker system df` instead: `13.9GB in images/containers/volumes/cache, 9.8GB
+  reclaimable`. Nothing is started; `docker run` is never used.
+- `config.toml`: `~/.gitlab-runner`, `/opt/homebrew/etc/gitlab-runner`,
+  `/usr/local/etc/gitlab-runner`, same `awk` filter.
+
+A resolver answer with an empty `password` is key auth: `BatchMode=yes`, never
+`sshpass`.
+
 Hosts are probed in parallel (8 at a time; resolver 15s, ssh 30s, inside
 the op's 120s ceiling — that ceiling is shared with the other modes, which
 finish long before it). Runners sharing one `description` are probed once,
