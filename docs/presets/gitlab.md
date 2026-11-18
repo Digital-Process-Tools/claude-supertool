@@ -16,6 +16,7 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | `gl-pipeline` | `gl-pipeline:NUMBER[:full\|:active\|:failed\|:traces]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke"); `:traces` ([#626](https://github.com/Digital-Process-Tools/claude-supertool/issues/626)) writes every failed job's full trace to one file via `gl-job`'s own trace writer and prints only the path plus a receipt — the actual entry point once a pipeline has failed, since `:failed` otherwise leaves the trail cold at the job IDs |
 | `gl-job` | `gl-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN\|:artifacts\|:artifact:PATH]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**; a START past the end of the log returns the tail of the width requested and says so, rather than declining (see [Reading a range](#reading-a-range)); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Cause markers are always matched on top of the configured patterns, and a *failed* job that matches nothing is reported as unclassified with a log tail rather than as "no errors". `:artifacts` ([#1796](https://github.com/Digital-Process-Tools/claude-supertool/issues/1796)) prints what the job produced — archive filename, size, expiry, and which kinds (`archive`/`metadata`/`trace`) are present — and says plainly that GitLab's job API does not name the paths *inside* the archive, so a specific `PATH` still has to be known some other way (a trace's own printed path, typically); `:artifact:PATH` fetches that one file through GitLab's single-file endpoint (`.../jobs/:job_id/artifacts/*path`), never the whole archive. Printed text only, capped at `GL_JOB_ARTIFACT_MAX_BYTES` (default 65536), and an expired archive says so rather than failing obscurely. This op's own timeout is sized for a single job's fetch — for a comma-separated multi-id trace dump use `gl-job-trace` instead ([#2146](https://github.com/Digital-Process-Tools/claude-supertool/issues/2146)); the old `gl-job:ID:trace` form is refused, pointed at that op, rather than run under a budget too small for it |
 | `gl-job-trace` | `gl-job-trace:NUMBER[,NUMBER...]` | `gl-job`'s trace writer, split into its own op ([#2146](https://github.com/Digital-Process-Tools/claude-supertool/issues/2146)) so its wider timeout budget — sized for a multi-id fan-out fetched serially at up to 30s each — stops leaking onto `gl-job`'s other modes, none of which fan out. Writes the whole trace to a file under the process's own proven-ours temp root, never into context — see [Writing a trace to disk](#writing-a-trace-to-disk) |
+| `gl-runners` | `gl-runners[:full\|:queue\|:host[:DESCRIPTION]]` | Runner fleet health table, STARVED diagnosis; `:full` adds detail, `:queue` groups jobs by eligible runner. `:host` reads every runner box the project's resolver knows (`:host:DESCRIPTION` for one) over a single read-only SSH call — RAM/swap, load against CPU count, `/` and docker-root disk, running containers with a `docker stats` table, `concurrent`/`limit` from `config.toml` — under the runner's GitLab status, tags and running-job count. See [Runner host probe](#runner-host-probe) |
 | `gl-api` | `gl-api:PATH[?query][:full]` | A **GET** of any GitLab REST path, for the rest of the API no `gl-*` op shapes — members, access tokens, deploy keys, protected branches, project and user events. Returns the JSON body fenced as remote text, plus one line saying whether it is the whole answer. `:full` follows every page. See [GET-only, and why that is the whole design](#get-only-and-why-that-is-the-whole-design) and [A full page is not a complete list](#a-full-page-is-not-a-complete-list) |
 
 ### A CI job name is the merge request author's text
@@ -1105,6 +1106,73 @@ trust boundary `_supertool._load_config` enforces for every other op
 reproduced here because a preset script cannot import the core module. A
 stray ancestor config outside the current project is never picked up for a
 maintenance window either.
+
+### Runner host probe
+
+`gl-runners:host` answers what the GitLab API cannot: whether the box behind
+a runner is out of memory, swapping, filling its docker root, or promising
+more `concurrent` jobs than it has CPUs.
+
+```
+## dptools-runner-2  #12 online, tags docker,php, running 2
+  memory : 16.0G total, 9.0G used, 6.0G available
+  swap   : 2.0G total, 0.5G used
+  load   : 1.20 0.95 0.80 on 8 CPU (0.15 per CPU, 1m)
+  disk   : / 45% used, 53.7G free of 97.7G
+  disk   : docker /var/lib/docker 90% used, 19.5G free of 195.3G
+  docker : 3 running
+           NAME                                              CPU    MEM%  MEM
+           runner-abc-project-1-concurrent-0             150.25%   9.60%  1.5GiB / 15.6GiB
+  runner : concurrent 4; limit dptools-runner-2=3, dptools-runner-2 V2=unset
+```
+
+**The op does not know where your hosts are, by design.** Credentials live
+in your project, so the project supplies the lookup:
+
+```json
+{
+  "gl-runners": {
+    "host_resolver": ["python3", "scripts/runner_host.py"]
+  }
+}
+```
+
+`host_resolver` is an argv list — a shell string is refused. It runs from
+the current directory with the runner's GitLab `description` appended as the
+last argument, and answers:
+
+| Exit | stdout | Meaning |
+|------|--------|---------|
+| `0` | one JSON object: `host` (required), `user`, `port`, `password` | probe this box |
+| `3` | ignored | this runner has no host entry — not probed, named in a footer |
+| other | ignored | failure; the last line of **stderr** is shown, flattened |
+
+The resolver's stdout is never printed, on any path — on success it carries
+the secret, so an unparseable answer is reported by its byte count only. A
+`password` reaches `sshpass -e` through the `SSHPASS` environment variable,
+never argv; without one the probe uses key auth with `BatchMode=yes`
+(`BatchMode` forbids the password prompt `sshpass` answers, so it is only set
+when there is no password). `host`, `user` and `port` are checked against
+narrow patterns before they reach `ssh`, because a host spelled
+`-oProxyCommand=...` is an ssh option, argv or not.
+
+**One SSH call per host, one fixed command string.** Nothing — not the
+description, not the target — is interpolated into what runs remotely. It is
+read-only: `free -b`, `/proc/loadavg`, `nproc`, `df -P` once for `/` and once
+for the docker root (so a missing docker root cannot hide `/`), `docker ps -q`,
+`docker stats --no-stream`, and `/etc/gitlab-runner/config.toml` filtered **on
+the host** to section headers and `concurrent` / `limit` / `name`, so the
+runner tokens in that file never cross the wire. No sudo: an unreadable
+`config.toml` prints `not readable`, a docker socket the SSH user cannot reach
+prints `unreadable (permission denied ...)`, never `0 running`. `limit` is
+attributed by `[[runners]]` section, so a `name =` under
+`[[runners.docker.services]]` is not mistaken for a runner. The remote login
+shell must be POSIX `sh`-compatible.
+
+Hosts are probed in parallel. Exit `1` when any host could not be resolved
+or reached, or when `:host:DESCRIPTION` names a runner the resolver has no
+entry for; with no `host_resolver` configured the op refuses rather than
+printing an empty board.
 
 ### Default project for `gl-issue-create`
 

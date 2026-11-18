@@ -19,6 +19,8 @@ and derives the one line you actually want:
     gl-runners           fleet table + queue depth + starvation warnings
     gl-runners:full      adds project scope, timeouts, runner managers
     gl-runners:queue     pending/running jobs grouped by the runner that can take them
+    gl-runners:host[:D]  per-box RAM/swap/load/disk/docker/concurrent over one
+                         read-only ssh call each (see _host_probe.py)
 
 STARVED is the finding this exists for: pending jobs whose tags match only
 runners that have stopped heartbeating. Those jobs cannot move, no other
@@ -38,6 +40,9 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 import _untrusted  # noqa: E402  (a runner description and a CI tag are remote text, and these are hand-padded tables — #970)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _host_probe  # noqa: E402  (gl-runners:host — the per-box readings)
+import _maintenance  # noqa: E402  (the walk-up .supertool.json loader with its trust check)
 
 # GitLab does not write contacted_at on every poll — it throttles the update.
 # Measured on a live fleet: one runner's contacted_at stayed frozen at the same
@@ -1023,11 +1028,104 @@ def _print_full(runners: list[dict]) -> None:
                   f"{_untrusted.flat(str(runner.get('architecture') or ''))}".rstrip())
 
 
+def _host_header(description: str, runner: dict | None, running_count: dict | None) -> str:
+    name = _untrusted.flat(description)
+    if runner is None:
+        return f"## {name}  (no GitLab runner with this description)"
+    status = "paused" if runner.get("paused") else runner.get("status", "?")
+    tags = _untrusted.flat(",".join(runner.get("tag_list") or []) or "-")
+    running = "running unreadable" if running_count is None else f"running {running_count.get(runner['id'], 0)}"
+    return f"## {name}  #{runner['id']} {status}, tags {tags}, {running}"
+
+
+def _host_mode(only: str | None) -> int:
+    """`gl-runners:host[:DESCRIPTION]` — the GitLab row next to the box's own readings."""
+    listed, err = _api("projects/:id/runners?per_page=100", paginate=True)
+    if err:
+        print(err)
+        return 1
+    listed = listed or []
+    if only is not None:
+        selected = [r for r in listed if r.get("description") == only]
+        descriptions = [only]
+    else:
+        selected = listed
+        descriptions = sorted({r.get("description") or "" for r in listed} - {""})
+    by_description: dict = {}
+    for runner in selected:
+        by_description.setdefault(runner.get("description"), runner)
+    details = _fetch_details(list(by_description.values())) if by_description else {}
+    for description, runner in by_description.items():
+        by_description[description] = {**runner, **details.get(runner["id"], {})}
+    running, err_running = _api("projects/:id/jobs?scope[]=running&per_page=100", paginate=True)
+    running_count: dict | None = None
+    if not err_running:
+        running_count = {}
+        for job in running or []:
+            rid = (job.get("runner") or {}).get("id")
+            if rid is not None:
+                running_count[rid] = running_count.get(rid, 0) + 1
+
+    if not descriptions:
+        print("No runners available to this project.")
+        return 0
+    cfg = _maintenance.load_config()
+
+    def one(description: str):
+        resolution = _host_probe.resolve_target(description, cfg)
+        if resolution.state != "ok":
+            return description, resolution, None, None
+        output, failure = _host_probe.probe(resolution.target)
+        return description, resolution, output, failure
+
+    workers = min(_MAX_DETAIL_WORKERS, len(descriptions))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(one, descriptions))
+
+    skipped = [r for _, r, _, _ in results if r.state == "skipped"]
+    if skipped:
+        print(f"ERROR: {skipped[0].message}")
+        return 1
+    failed = False
+    no_entry: list[str] = []
+    printed = 0
+    for description, resolution, output, failure in results:
+        if resolution.state == "no-entry":
+            no_entry.append(description)
+            continue
+        if printed:
+            print()
+        printed += 1
+        print(_host_header(description, by_description.get(description), running_count))
+        if resolution.state == "error":
+            failed = True
+            print(f"  host   : unresolved — {resolution.message}")
+        elif failure:
+            failed = True
+            print(f"  host   : unreachable — {failure}")
+        else:
+            for line in _host_probe.render(_host_probe.parse_probe(output or "")):
+                print(line)
+    if only is not None and no_entry:
+        print(f"ERROR: no host entry for {_untrusted.flat(only)} — the host resolver "
+              f"knows no box for this runner description.")
+        return 1
+    if no_entry:
+        print(f"\nNOTE: not probed, no host entry: {', '.join(_untrusted.flat(d) for d in no_entry)}")
+    if err_running:
+        print(f"\nNOTE: running-job counts unavailable — {err_running}")
+    return 1 if failed else 0
+
+
 def main() -> int:
     use_utf8_stdout()
+    if len(sys.argv) > 1 and sys.argv[1].lower() == "host":
+        # A description may itself hold ':' — the core split it, so rejoin.
+        only = ":".join(sys.argv[2:]) if len(sys.argv) > 2 and any(sys.argv[2:]) else None
+        return _host_mode(only)
     mode = sys.argv[1].lower() if len(sys.argv) > 1 and sys.argv[1] else ""
     if mode and mode not in _MODES:
-        print(f"ERROR: unknown mode {mode!r} — use 'full', 'queue', or omit for the fleet table")
+        print(f"ERROR: unknown mode {mode!r} — use 'full', 'queue', 'host', or omit for the fleet table")
         return 1
 
     listed, err = _api("projects/:id/runners?per_page=100", paginate=True)
