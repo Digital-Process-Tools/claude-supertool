@@ -54,18 +54,19 @@ r() { echo "@@rc $?"; }
 s free; free -b 2>&1; r
 s loadavg; { cat</proc/loadavg; } 2>&1; r
 s nproc; nproc 2>&1; r
-d=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null); [ -n "$d" ] || d=/var/lib/docker
-s dockerroot; echo "$d"; r
+d=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null); dn=""; [ -n "$d" ] || { d=/var/lib/docker; dn=" (assumed)"; }
+s dockerroot; echo "$d$dn"; r
 s dfroot; df -P / 2>&1; r
 s dfdocker; df -P "$d" 2>&1; r
 D=docker; docker ps -q >/dev/null 2>&1 || { sudo -n docker ps -q >/dev/null 2>&1 && D="sudo -n docker"; }
 s dockervia; echo "$D"; r
 s dockerps; $D ps -q 2>&1; r
 s dockerstats; $D stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>&1; r
-F='/^[ \t]*(\[|(concurrent|limit|name)[ \t]*=)/'
-rd() { awk "$F" "$1" 2>/dev/null && { echo "@@path $1"; return 0; }; sudo -n awk "$F" "$1" 2>/dev/null && { echo "@@path $1 (sudo)"; return 0; }; return 1; }
+F='match($0, /^[ \t]*\[\[?[A-Za-z0-9_.-]+\]\]?/) { print substr($0, RSTART, RLENGTH); next } /^[ \t]*(concurrent|limit|name)[ \t]*=/'
+rd() { o=$(awk "$F" "$1" 2>/dev/null) && [ -n "$o" ] && { printf '%s\n' "$o"; echo "@@path $1"; return 0; }; o=$(sudo -n awk "$F" "$1" 2>/dev/null) && [ -n "$o" ] && { printf '%s\n' "$o"; echo "@@path $1 (sudo)"; return 0; }; return 1; }
 s runnercfg; ok=0; for p in /etc/gitlab-runner/config.toml /srv/gitlab-runner/config/config.toml "$HOME/.gitlab-runner/config.toml"; do rd "$p" && { ok=1; break; }; done
-if [ "$ok" = 0 ]; then c=$($D ps --format '{{.ID}} {{.Image}}' 2>/dev/null | awk '$2 ~ /gitlab-runner/ {print $1; exit}'); [ -n "$c" ] && m=$($D inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/gitlab-runner"}}{{.Source}}{{end}}{{end}}' "$c" 2>/dev/null) && [ -n "$m" ] && rd "$m/config.toml" && ok=1; fi
+if [ "$ok" = 0 ]; then for c in $($D ps --format '{{.ID}} {{.Image}}' 2>/dev/null | awk '$2 ~ /gitlab-runner/ && $2 !~ /helper/ {print $1}'); do m=$($D inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/gitlab-runner"}}{{.Source}}{{end}}{{end}}' "$c" 2>/dev/null); case $m in ""|*"
+"*) continue;; esac; rd "$m/config.toml" && { ok=1; break; }; done; fi
 [ "$ok" = 1 ] || echo MISSING; true; r
 """
 

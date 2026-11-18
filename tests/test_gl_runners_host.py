@@ -136,6 +136,8 @@ def test_sudo_is_only_ever_non_interactive_and_only_for_docker_or_awk() -> None:
     assert uses, "the fallback is expected to exist"
     for use in uses:
         assert re.match(r"sudo -n (docker|awk)\b", use), use
+    # `$D` may be `sudo -n docker`: every verb it runs must be a read.
+    assert set(re.findall(r"\$D (\w+)", script)) <= {"ps", "stats", "inspect"}
 
 
 def test_a_service_name_inside_a_runner_is_not_taken_for_the_runner_name() -> None:
@@ -514,19 +516,23 @@ def test_the_real_script_falls_back_to_sudo_n_and_finds_config_through_the_runne
     mount. Fake docker only answers when the fake sudo marked it privileged."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    mount = tmp_path / "runner-config"
+    for real in ("/etc/gitlab-runner/config.toml", "/srv/gitlab-runner/config/config.toml"):
+        if os.path.exists(real):
+            pytest.skip(f"{real} exists on this machine and would be read before the fake mount")
+    mount = tmp_path / "runner config"
     mount.mkdir()
     (mount / "config.toml").write_text(
-        'concurrent = 6\ncheck_interval = 0\n[[runners]]\n  name = "box"\n  token = "glrt-SECRET"\n  limit = 2\n',
+        'concurrent = 6\ncheck_interval = 0\n[[runners]] # glrt-HEADERCOMMENT\n  name = "box"\n'
+        '  token = "glrt-SECRET"\n  limit_x = "glrt-LIMITX"\n  token_name = "glrt-NAME"\n  limit = 2\n',
         encoding="utf-8",
     )
     (bin_dir / "docker").write_text(
         "#!/bin/sh\n"
         "if [ -z \"$FAKE_PRIV\" ]; then echo 'permission denied while trying to connect to the Docker daemon socket' >&2; exit 1; fi\n"
         "case \"$1\" in\n"
-        "  ps) case \"$*\" in *--format*) echo 'aaaaaaaaaaaa gitlab/gitlab-runner:latest';; *) echo bbbbbbbbbbbb; echo cccccccccccc;; esac;;\n"
+        "  ps) case \"$*\" in *--format*) echo 'dddddddddddd gitlab/gitlab-runner-helper:x86_64-v17'; echo 'aaaaaaaaaaaa gitlab/gitlab-runner:latest';; *) echo bbbbbbbbbbbb; echo cccccccccccc;; esac;;\n"
         "  stats) echo 'runner-x|5.00%|1GiB / 8GiB|12.5%';;\n"
-        f"  inspect) echo '{mount}';;\n"
+        f"  inspect) case \"$*\" in *aaaaaaaaaaaa*) echo '{mount}';; *) echo;; esac;;\n"
         "  *) exit 1;;\n"
         "esac\n",
         encoding="utf-8",
@@ -544,7 +550,7 @@ def test_the_real_script_falls_back_to_sudo_n_and_finds_config_through_the_runne
     out = subprocess.run(["sh", "-c", host_probe.REMOTE_PROBE], capture_output=True,
                          text=True, encoding="utf-8", errors="replace",
                          timeout=30, env=env).stdout
-    assert "glrt-SECRET" not in out
+    assert "glrt-" not in out
     parsed = host_probe.parse_probe(out)
     assert parsed["docker_via"] == "sudo -n docker"
     assert parsed["containers"] == 2

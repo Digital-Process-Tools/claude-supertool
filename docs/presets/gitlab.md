@@ -1174,12 +1174,20 @@ description, not the target — is interpolated into what runs remotely. It is
 read-only: `free -b`, `/proc/loadavg`, `nproc`, `df -P` once for `/` and once
 for the docker root (so a missing docker root cannot hide `/`), `docker ps -q`,
 `docker stats --no-stream`, and `config.toml` filtered **on the host** by
-`awk` to section headers and `concurrent` / `limit` / `name`, so the runner
-tokens in that file never cross the wire.
+`awk` to the bare section header (`[[runners]]`, with any trailing comment cut
+off) and the `concurrent` / `limit` / `name` lines, so the runner tokens in that
+file never cross the wire. A TOML multi-line string whose continuation line
+happens to begin with one of those keys is the one shape the filter cannot see.
+
+The docker root comes from an unprivileged `docker info`; when that is refused
+it falls back to `/var/lib/docker` and the disk line says `(assumed)`, since a
+custom `data-root` cannot be read without it.
 
 **`sudo -n`, in two places only, and only after the unprivileged try failed.**
 `-n` never prompts and no password is ever handed to sudo; where sudo would ask,
-the step fails and says so.
+the step fails and says so. On a host where sudo is not allowed, each probe
+leaves a few `sudo: a password is required` lines in that host's auth log
+(one for docker, one per `config.toml` candidate that exists or is hidden).
 
 - Docker: when `docker ps` fails (the SSH user is not in the `docker` group),
   `ps`, `stats` and the `inspect` below run as `sudo -n docker`, and the line
@@ -1188,7 +1196,9 @@ the step fails and says so.
 - `config.toml`: tried in order at `/etc/gitlab-runner/config.toml`,
   `/srv/gitlab-runner/config/config.toml`, `~/.gitlab-runner/config.toml`,
   then the host-side source of the `/etc/gitlab-runner` bind mount of a running
-  container whose image matches `gitlab-runner` (`docker inspect`). Each is read
+  `gitlab-runner` container (`docker inspect`; `gitlab-runner-helper` job
+  containers are skipped, and every candidate is tried until one has that
+  mount). A file that reads empty does not count as found. Each is read
   by `awk`, then by `sudo -n awk`. The line names the file used, with
   `(sudo)` when it took sudo. An unprivileged probe cannot tell an absent file
   from an unreadable one, so the miss says both: `not found, or not readable
