@@ -40,9 +40,14 @@ import _untrusted  # noqa: E402  (everything the box prints is remote text)
 
 # One fixed string, sent verbatim to every host. Nothing is interpolated into
 # it — not the runner description, not the target — so no value from GitLab
-# or from the resolver can reach a remote shell. Read-only: no sudo, and the
-# only file read is config.toml, filtered on the host to section headers and
-# the three keys shown, so the runner tokens it also holds never cross the wire.
+# or from the resolver can reach a remote shell. Read-only. `sudo -n` (never a
+# prompt, never a password) is used in exactly two places, both read-only and
+# both only after the unprivileged try failed: docker ps/stats/inspect when the
+# SSH user is not in the docker group, and `awk` reading config.toml. config.toml
+# is filtered on the host to section headers and the three keys shown, so the
+# runner tokens it also holds never cross the wire. Paths tried, in order:
+# /etc/gitlab-runner, /srv/gitlab-runner/config, ~/.gitlab-runner, then the bind
+# mount behind /etc/gitlab-runner of a running gitlab-runner container.
 REMOTE_PROBE = r"""LC_ALL=C; export LC_ALL
 s() { echo "@@ $1"; }
 r() { echo "@@rc $?"; }
@@ -53,9 +58,15 @@ d=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null); [ -n "$d" ] || d=/va
 s dockerroot; echo "$d"; r
 s dfroot; df -P / 2>&1; r
 s dfdocker; df -P "$d" 2>&1; r
-s dockerps; docker ps -q 2>&1; r
-s dockerstats; docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>&1; r
-s runnercfg; f=/etc/gitlab-runner/config.toml; if [ ! -e "$f" ]; then echo MISSING; elif [ ! -r "$f" ]; then echo NOT_READABLE; else awk '/^[ \t]*(\[|(concurrent|limit|name)[ \t]*=)/' "$f"; fi; r
+D=docker; docker ps -q >/dev/null 2>&1 || { sudo -n docker ps -q >/dev/null 2>&1 && D="sudo -n docker"; }
+s dockervia; echo "$D"; r
+s dockerps; $D ps -q 2>&1; r
+s dockerstats; $D stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>&1; r
+F='/^[ \t]*(\[|(concurrent|limit|name)[ \t]*=)/'
+rd() { awk "$F" "$1" 2>/dev/null && { echo "@@path $1"; return 0; }; sudo -n awk "$F" "$1" 2>/dev/null && { echo "@@path $1 (sudo)"; return 0; }; return 1; }
+s runnercfg; ok=0; for p in /etc/gitlab-runner/config.toml /srv/gitlab-runner/config/config.toml "$HOME/.gitlab-runner/config.toml"; do rd "$p" && { ok=1; break; }; done
+if [ "$ok" = 0 ]; then c=$($D ps --format '{{.ID}} {{.Image}}' 2>/dev/null | awk '$2 ~ /gitlab-runner/ {print $1; exit}'); [ -n "$c" ] && m=$($D inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/gitlab-runner"}}{{.Source}}{{end}}{{end}}' "$c" 2>/dev/null) && [ -n "$m" ] && rd "$m/config.toml" && ok=1; fi
+[ "$ok" = 1 ] || echo MISSING; true; r
 """
 
 NO_ENTRY_EXIT = 3
@@ -323,14 +334,16 @@ def _parse_runner_config(lines):
     if isinstance(lines, Unreadable):
         return lines
     stripped = [line.strip() for line in lines]
-    if stripped[:1] == ["NOT_READABLE"]:
-        return Unreadable("not readable")
-    if stripped[:1] == ["MISSING"]:
-        return Unreadable("no /etc/gitlab-runner/config.toml")
+    if "MISSING" in stripped:
+        return Unreadable(_CONFIG_MISSING)
     concurrent: int | None = None
     limits: list[list] = []
     section = ""
+    path: str | None = None
     for line in stripped:
+        if line.startswith("@@path "):
+            path = line[len("@@path "):]
+            continue
         if line.startswith("["):
             section = line.split("#", 1)[0].strip()
             if section == "[[runners]]":
@@ -345,7 +358,13 @@ def _parse_runner_config(lines):
                 limits[-1][0] = value.strip("\"'")
             elif key == "limit":
                 limits[-1][1] = int(value) if value.isdigit() else None
-    return {"concurrent": concurrent, "limits": [(name or "?", limit) for name, limit in limits]}
+    return {"concurrent": concurrent, "limits": [(name or "?", limit) for name, limit in limits],
+            "path": path}
+
+
+_CONFIG_MISSING = ("not found, or not readable even with sudo -n, at /etc/gitlab-runner, "
+                   "/srv/gitlab-runner/config, ~/.gitlab-runner, or a gitlab-runner "
+                   "container mount")
 
 
 def _parse_root(lines):
@@ -365,6 +384,7 @@ def parse_probe(text: str) -> dict:
         "docker_root": _parse_root(_section(sections, "dockerroot")),
         "disk_root": _parse_df(_section(sections, "dfroot")),
         "disk_docker": _parse_df(_section(sections, "dfdocker")),
+        "docker_via": _parse_root(_section(sections, "dockervia")),
         "containers": _parse_containers(_section(sections, "dockerps")),
         "stats": _parse_stats(_section(sections, "dockerstats")),
         "runner_config": _parse_runner_config(_section(sections, "runnercfg")),
@@ -412,7 +432,9 @@ def render(parsed: dict) -> list[str]:
         out.append(f"  disk   : {label} {disk['percent']}% used, {_gib(disk['available'])} free "
                    f"of {_gib(disk['size'])}{same}")
     containers = parsed["containers"]
-    out.append("  docker : " + (_cell(containers) or f"{containers} running"))
+    via = parsed.get("docker_via")
+    through = " (via sudo -n)" if isinstance(via, str) and via.startswith("sudo") else ""
+    out.append("  docker : " + (_cell(containers) or f"{containers} running{through}"))
     stats = parsed["stats"]
     if isinstance(stats, Unreadable):
         out.append("           stats " + _cell(stats))
@@ -431,5 +453,6 @@ def render(parsed: dict) -> list[str]:
         limits = ", ".join(
             f"{_untrusted.flat(name)}={limit if limit is not None else 'unset'}"
             for name, limit in config["limits"]) or "no [[runners]]"
-        out.append(f"  runner : concurrent {concurrent}; limit {limits}")
+        source = f"; from {_untrusted.flat(config['path'])}" if config.get("path") else ""
+        out.append(f"  runner : concurrent {concurrent}; limit {limits}{source}")
     return out

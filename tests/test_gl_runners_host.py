@@ -57,6 +57,9 @@ Filesystem     1024-blocks      Used Available Capacity Mounted on
 Filesystem     1024-blocks      Used Available Capacity Mounted on
 /dev/sdb1        204800000 184320000  20480000      90% /var/lib/docker
 @@rc 0
+@@ dockervia
+docker
+@@rc 0
 @@ dockerps
 a1b2c3d4e5f6
 d4e5f6a7b8c9
@@ -77,6 +80,7 @@ concurrent = 4
     name = "mysql:5.7"
 [[runners]]
   name = "dptools-runner-2 V2"
+@@path /etc/gitlab-runner/config.toml
 @@rc 0
 """
 
@@ -102,7 +106,36 @@ def test_every_reading_is_parsed_from_the_probe_output() -> None:
     assert parsed["runner_config"] == {
         "concurrent": 4,
         "limits": [("dptools-runner-2", 3), ("dptools-runner-2 V2", None)],
+        "path": "/etc/gitlab-runner/config.toml",
     }
+    assert parsed["docker_via"] == "docker"
+
+
+def test_docker_and_config_read_through_sudo_say_so() -> None:
+    out = (PROBE_OUTPUT.replace("@@ dockervia\ndocker\n", "@@ dockervia\nsudo -n docker\n")
+           .replace("@@path /etc/gitlab-runner/config.toml",
+                    "@@path /srv/gitlab-runner/config/config.toml (sudo)"))
+    parsed = host_probe.parse_probe(out)
+    assert parsed["runner_config"]["path"] == "/srv/gitlab-runner/config/config.toml (sudo)"
+    rendered = "\n".join(host_probe.render(parsed))
+    assert "3 running (via sudo -n)" in rendered
+    assert "from /srv/gitlab-runner/config/config.toml (sudo)" in rendered
+
+
+def test_no_config_anywhere_names_every_place_it_looked() -> None:
+    out = PROBE_OUTPUT.split("@@ runnercfg")[0] + "@@ runnercfg\nMISSING\n@@rc 0\n"
+    config = host_probe.parse_probe(out)["runner_config"]
+    assert isinstance(config, host_probe.Unreadable)
+    for place in ("/etc/gitlab-runner", "/srv/gitlab-runner", "~/.gitlab-runner", "container mount"):
+        assert place in config.reason
+
+
+def test_sudo_is_only_ever_non_interactive_and_only_for_docker_or_awk() -> None:
+    script = host_probe.REMOTE_PROBE
+    uses = re.findall(r"\bsudo\s[^;|&)]*", script)
+    assert uses, "the fallback is expected to exist"
+    for use in uses:
+        assert re.match(r"sudo -n (docker|awk)\b", use), use
 
 
 def test_a_service_name_inside_a_runner_is_not_taken_for_the_runner_name() -> None:
@@ -114,8 +147,12 @@ def test_a_service_name_inside_a_runner_is_not_taken_for_the_runner_name() -> No
 
 
 def test_an_unreadable_config_toml_says_not_readable() -> None:
-    out = PROBE_OUTPUT.split("@@ runnercfg")[0] + "@@ runnercfg\nNOT_READABLE\n@@rc 0\n"
-    assert host_probe.parse_probe(out)["runner_config"] == host_probe.Unreadable("not readable")
+    """Unprivileged, an unreadable /etc/gitlab-runner looks identical to an
+    absent one, so the probe cannot honestly tell the two apart — and says so."""
+    out = PROBE_OUTPUT.split("@@ runnercfg")[0] + "@@ runnercfg\nMISSING\n@@rc 0\n"
+    config = host_probe.parse_probe(out)["runner_config"]
+    assert isinstance(config, host_probe.Unreadable)
+    assert "not readable" in config.reason
 
 
 def test_a_failed_command_is_unreadable_not_zero() -> None:
@@ -170,11 +207,12 @@ def test_a_section_missing_from_the_output_is_unreadable() -> None:
 
 def test_the_remote_command_is_read_only() -> None:
     script = host_probe.REMOTE_PROBE
-    for forbidden in ("sudo", " rm ", "restart", "systemctl", "docker kill", "docker rm", "tee ", ">>"):
+    for forbidden in (" rm ", "restart", "systemctl", "docker kill", "docker rm", "docker exec",
+                      "docker run", "tee ", ">>", "sudo -S", "sudo -A"):
         assert forbidden not in script, forbidden
-    # The only redirections are stderr folds: no output redirect can create a file.
+    # The only redirections fold or discard output: none can create a file.
     redirects = re.findall(r"\d?>[^\s;)]*", script)
-    assert redirects and set(redirects) <= {"2>&1", "2>/dev/null"}, redirects
+    assert redirects and set(redirects) <= {"2>&1", "2>/dev/null", ">/dev/null"}, redirects
 
 
 def test_the_ssh_argv_carries_the_fixed_command_and_no_password() -> None:
@@ -467,3 +505,51 @@ def test_the_real_remote_script_frames_each_section_with_its_own_exit_code(tmp_p
     assert isinstance(parsed["containers"], host_probe.Unreadable)
     assert "permission denied" in parsed["containers"].reason
     assert not isinstance(parsed["disk_root"], host_probe.Unreadable)
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("sh") is None, reason="runs REMOTE_PROBE under a local POSIX sh")
+def test_the_real_script_falls_back_to_sudo_n_and_finds_config_through_the_runner_container(tmp_path: Path) -> None:
+    """Florian's fleet: the SSH user is not in the docker group, sudo -n works,
+    and gitlab-runner runs as a container whose /etc/gitlab-runner is a bind
+    mount. Fake docker only answers when the fake sudo marked it privileged."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    mount = tmp_path / "runner-config"
+    mount.mkdir()
+    (mount / "config.toml").write_text(
+        'concurrent = 6\ncheck_interval = 0\n[[runners]]\n  name = "box"\n  token = "glrt-SECRET"\n  limit = 2\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "docker").write_text(
+        "#!/bin/sh\n"
+        "if [ -z \"$FAKE_PRIV\" ]; then echo 'permission denied while trying to connect to the Docker daemon socket' >&2; exit 1; fi\n"
+        "case \"$1\" in\n"
+        "  ps) case \"$*\" in *--format*) echo 'aaaaaaaaaaaa gitlab/gitlab-runner:latest';; *) echo bbbbbbbbbbbb; echo cccccccccccc;; esac;;\n"
+        "  stats) echo 'runner-x|5.00%|1GiB / 8GiB|12.5%';;\n"
+        f"  inspect) echo '{mount}';;\n"
+        "  *) exit 1;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "sudo").write_text(
+        "#!/bin/sh\n[ \"$1\" = -n ] || exit 1\nshift\nFAKE_PRIV=1 exec \"$@\"\n",
+        encoding="utf-8",
+    )
+    for name in ("docker", "sudo"):
+        (bin_dir / name).chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home),
+           "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    out = subprocess.run(["sh", "-c", host_probe.REMOTE_PROBE], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace",
+                         timeout=30, env=env).stdout
+    assert "glrt-SECRET" not in out
+    parsed = host_probe.parse_probe(out)
+    assert parsed["docker_via"] == "sudo -n docker"
+    assert parsed["containers"] == 2
+    assert [row[0] for row in parsed["stats"]] == ["runner-x"]
+    config = parsed["runner_config"]
+    assert not isinstance(config, host_probe.Unreadable), config
+    assert config["concurrent"] == 6 and config["limits"] == [("box", 2)]
+    assert config["path"] == f"{mount}/config.toml"

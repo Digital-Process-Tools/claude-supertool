@@ -1124,7 +1124,7 @@ more `concurrent` jobs than it has CPUs.
   docker : 3 running
            NAME                                              CPU    MEM%  MEM
            runner-abc-project-1-concurrent-0             150.25%   9.60%  1.5GiB / 15.6GiB
-  runner : concurrent 4; limit dptools-runner-2=3, dptools-runner-2 V2=unset
+  runner : concurrent 4; limit dptools-runner-2=3, dptools-runner-2 V2=unset; from /etc/gitlab-runner/config.toml
 ```
 
 **The op does not know where your hosts are, by design.** Credentials live
@@ -1166,18 +1166,35 @@ or not owned by you is skipped. That is no new class of exposure: a custom op's
 
 Host keys use `StrictHostKeyChecking=accept-new`, matching DVSI's
 `server-diag`, so a first contact writes your local `~/.ssh/known_hosts`
-(OpenSSH 7.6+). That is the only write anywhere, and it is local.
+(OpenSSH 7.6+). That is the only write anywhere, and it is local. The remote
+side writes nothing.
 
 **One SSH call per host, one fixed command string.** Nothing — not the
 description, not the target — is interpolated into what runs remotely. It is
 read-only: `free -b`, `/proc/loadavg`, `nproc`, `df -P` once for `/` and once
 for the docker root (so a missing docker root cannot hide `/`), `docker ps -q`,
-`docker stats --no-stream`, and `/etc/gitlab-runner/config.toml` filtered **on
-the host** to section headers and `concurrent` / `limit` / `name`, so the
-runner tokens in that file never cross the wire. No sudo: an unreadable
-`config.toml` prints `not readable`, a docker socket the SSH user cannot reach
-prints `unreadable (permission denied ...)`, never `0 running`. `limit` is
-attributed by `[[runners]]` section, so a `name =` under
+`docker stats --no-stream`, and `config.toml` filtered **on the host** by
+`awk` to section headers and `concurrent` / `limit` / `name`, so the runner
+tokens in that file never cross the wire.
+
+**`sudo -n`, in two places only, and only after the unprivileged try failed.**
+`-n` never prompts and no password is ever handed to sudo; where sudo would ask,
+the step fails and says so.
+
+- Docker: when `docker ps` fails (the SSH user is not in the `docker` group),
+  `ps`, `stats` and the `inspect` below run as `sudo -n docker`, and the line
+  reads `3 running (via sudo -n)`. A socket neither route can reach still
+  prints `unreadable (permission denied ...)`, never `0 running`.
+- `config.toml`: tried in order at `/etc/gitlab-runner/config.toml`,
+  `/srv/gitlab-runner/config/config.toml`, `~/.gitlab-runner/config.toml`,
+  then the host-side source of the `/etc/gitlab-runner` bind mount of a running
+  container whose image matches `gitlab-runner` (`docker inspect`). Each is read
+  by `awk`, then by `sudo -n awk`. The line names the file used, with
+  `(sudo)` when it took sudo. An unprivileged probe cannot tell an absent file
+  from an unreadable one, so the miss says both: `not found, or not readable
+  even with sudo -n, at ...`.
+
+`limit` is attributed by `[[runners]]` section, so a `name =` under
 `[[runners.docker.services]]` is not mistaken for a runner. The remote login
 shell must be POSIX `sh`-compatible.
 
