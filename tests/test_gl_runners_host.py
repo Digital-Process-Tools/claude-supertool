@@ -849,3 +849,59 @@ def test_the_real_script_reads_the_colima_vm_through_colima_ssh(tmp_path: Path) 
     assert parsed["cpus"] == 8
     assert parsed["host_memory"]["available"] == 3000 * 16384
     assert parsed["docker_df"] is None
+
+
+def _cpustat(first: str, second: str) -> str:
+    return f"@@ cpustat\ncpu  {first}\ncpu  {second}\n@@rc 0\n"
+
+
+def test_cpu_split_is_the_share_of_the_one_second_delta() -> None:
+    out = PROBE_OUTPUT + _cpustat("1000 0 500 8000 500 0 0 0", "1500 0 700 8200 600 0 0 0")
+    cpu = host_probe.parse_probe(out)["cpustat"]
+    assert cpu["busy"] == pytest.approx(70.0)
+    assert cpu["iowait"] == pytest.approx(10.0)
+    assert cpu["idle"] == pytest.approx(20.0)
+    assert cpu["steal"] == 0
+
+
+def test_cpu_line_renders_right_after_the_load_line() -> None:
+    out = PROBE_OUTPUT + _cpustat("0 0 0 0 0 0 0 0", "62 0 0 20 18 0 0 0")
+    lines = host_probe.render(host_probe.parse_probe(out))
+    at = next(i for i, line in enumerate(lines) if line.startswith("  load   :"))
+    assert lines[at + 1] == "  cpu    : 62% busy, 18% io wait, 20% idle (1s sample)"
+
+
+def test_steal_is_counted_as_busy_and_shown_only_when_above_zero() -> None:
+    out = PROBE_OUTPUT + _cpustat("0 0 0 0 0 0 0 0", "50 0 0 20 10 0 0 3")
+    cpu = host_probe.parse_probe(out)["cpustat"]
+    assert cpu["steal"] == pytest.approx(100 * 3 / 83)
+    assert ", 4% steal" in "\n".join(host_probe.render(host_probe.parse_probe(out)))
+    quiet = PROBE_OUTPUT + _cpustat("0 0 0 0 0 0 0 0", "50 0 0 20 10 0 0 0")
+    assert "steal" not in "\n".join(host_probe.render(host_probe.parse_probe(quiet)))
+
+
+@pytest.mark.parametrize("body", [
+    "cpu  a b c d e f g h\ncpu  1 2 3 4 5 6 7 8",
+    "cpu  1 2 3",
+    "cpu  1 2 3 4 5 6 7 8",
+    "cpu  1 2 3 4 5 6 7 8\ncpu  1 2 3 4 5 6 7 8",
+    "garbage",
+])
+def test_an_unparseable_cpu_sample_is_unreadable_not_zero(body: str) -> None:
+    out = PROBE_OUTPUT + f"@@ cpustat\n{body}\n@@rc 0\n"
+    parsed = host_probe.parse_probe(out)
+    assert isinstance(parsed["cpustat"], host_probe.Unreadable)
+    assert "  cpu    : unreadable (" in "\n".join(host_probe.render(parsed))
+
+
+def test_plain_macos_has_no_cpu_line() -> None:
+    parsed = host_probe.parse_probe(DARWIN_OUTPUT)
+    assert parsed["cpustat"] is None
+    assert "cpu    :" not in "\n".join(host_probe.render(parsed))
+
+
+def test_the_remote_script_samples_proc_stat_twice_on_linux_and_colima() -> None:
+    assert host_probe.REMOTE_PROBE.count("s cpustat;") == 2
+    colima_line = next(line for line in host_probe.REMOTE_PROBE.splitlines() if line.startswith("colima ssh"))
+    inner = colima_line.split("sh -c '", 1)[1].rsplit("' 2>/dev/null", 1)[0]
+    assert "cpustat" in inner and "'" not in inner

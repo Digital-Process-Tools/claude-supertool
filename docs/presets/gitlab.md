@@ -1119,6 +1119,7 @@ more `concurrent` jobs than it has CPUs.
   memory : 16.0G total, 9.0G used, 6.0G available
   swap   : 2.0G total, 0.5G used
   load   : 1.20 0.95 0.80 on 8 CPU (0.15 per CPU, 1m)
+  cpu    : 62% busy, 18% io wait, 20% idle (1s sample)
   disk   : / 45% used, 53.7G free of 97.7G
   disk   : docker /var/lib/docker 90% used, 19.5G free of 195.3G
   docker : 3 running

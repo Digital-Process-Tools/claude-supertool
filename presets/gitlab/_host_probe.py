@@ -59,7 +59,7 @@ s vmstat; vm_stat 2>&1; r
 V=none; if command -v colima >/dev/null 2>&1; then if [ "$(docker context show 2>/dev/null)" = colima ] || colima status >/dev/null 2>&1; then V=colima; fi; fi
 s vm; echo "$V"; r
 if [ "$V" = colima ]; then
-colima ssh -- sh -c 'LC_ALL=C; export LC_ALL; s() { echo "@@ $1"; }; r() { echo "@@rc $?"; }; s free; free -b 2>&1; r; s loadavg; awk 1 /proc/loadavg 2>&1; r; s nproc; nproc 2>&1; r; s dockerroot; echo /var/lib/docker; r; s dfroot; df -P / 2>&1; r; s dfdocker; df -P /var/lib/docker 2>&1; r' 2>/dev/null; v=$?
+colima ssh -- sh -c 'LC_ALL=C; export LC_ALL; s() { echo "@@ $1"; }; r() { echo "@@rc $?"; }; s free; free -b 2>&1; r; s loadavg; awk 1 /proc/loadavg 2>&1; r; s nproc; nproc 2>&1; r; s cpustat; { sed -n 1p /proc/stat; sleep 1; sed -n 1p /proc/stat; } 2>&1; r; s dockerroot; echo /var/lib/docker; r; s dfroot; df -P / 2>&1; r; s dfdocker; df -P /var/lib/docker 2>&1; r' 2>/dev/null; v=$?
 s vmssh; echo "exit $v"; [ "$v" = 0 ]; r
 else
 s swapusage; sysctl -n vm.swapusage 2>&1; r
@@ -73,6 +73,7 @@ else
 s free; free -b 2>&1; r
 s loadavg; { cat</proc/loadavg; } 2>&1; r
 s nproc; nproc 2>&1; r
+s cpustat; { awk 'NR==1' /proc/stat; sleep 1; awk 'NR==1' /proc/stat; } 2>&1; r
 d=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null); dn=""; [ -n "$d" ] || { d=/var/lib/docker; dn=" (assumed)"; }
 s dockerroot; echo "$d$dn"; r
 s dfroot; df -P / 2>&1; r
@@ -309,6 +310,32 @@ def _parse_load(lines):
         return Unreadable("unexpected load average format")
 
 
+def _parse_cpustat(lines):
+    """Two /proc/stat `cpu ...` lines one second apart -> share of the delta."""
+    if lines is None or isinstance(lines, Unreadable):
+        return lines
+    samples = []
+    for line in lines:
+        fields = line.split()
+        if fields and fields[0] == "cpu":
+            try:
+                values = [int(v) for v in fields[1:9]]
+            except ValueError:
+                return Unreadable("unexpected /proc/stat format")
+            if len(values) < 8:
+                return Unreadable("unexpected /proc/stat format")
+            samples.append(values)
+    if len(samples) != 2:
+        return Unreadable("unexpected /proc/stat format")
+    user, nice, system, idle, iowait, irq, softirq, steal = (b - a for a, b in zip(*samples))
+    total = user + nice + system + idle + iowait + irq + softirq + steal
+    if total <= 0 or min(user, nice, system, idle, iowait, irq, softirq, steal) < 0:
+        return Unreadable("no CPU time elapsed between the two samples")
+    busy = user + nice + system + irq + softirq + steal
+    return {"busy": 100 * busy / total, "iowait": 100 * iowait / total,
+            "idle": 100 * idle / total, "steal": 100 * steal / total}
+
+
 def _parse_int(lines):
     if isinstance(lines, Unreadable):
         return lines
@@ -485,6 +512,8 @@ def parse_probe(text: str) -> dict:
         "swap": swap,
         "load": _parse_load(_section(sections, "loadavg")),
         "cpus": _parse_int(_section(sections, "nproc")),
+        "cpustat": (None if os_name == "Darwin" and vm != "colima"
+                    else _parse_cpustat(_section(sections, "cpustat"))),
         "docker_root": _parse_root(_section(sections, "dockerroot")),
         "disk_root": _parse_df(_section(sections, "dfroot")),
         "disk_docker": _parse_df(_section(sections, "dfdocker")),
@@ -498,7 +527,7 @@ def parse_probe(text: str) -> dict:
         if isinstance(ssh, Unreadable):
             # The VM's sections never arrived: say why, not "not in the probe output".
             why = Unreadable(f"colima ssh failed ({ssh.reason})")
-            for key in ("memory", "swap", "load", "cpus", "disk_root", "disk_docker", "docker_root"):
+            for key in ("memory", "swap", "load", "cpus", "cpustat", "disk_root", "disk_docker", "docker_root"):
                 if isinstance(parsed[key], Unreadable):
                     parsed[key] = why
     return parsed
@@ -538,6 +567,15 @@ def render(parsed: dict) -> list[str]:
             line += f" (CPU count {_cell(cpus)})"
         else:
             line += f" on {cpus} CPU ({load[0] / max(cpus, 1):.2f} per CPU, 1m)"
+        out.append(line)
+    cpustat = parsed.get("cpustat")
+    if isinstance(cpustat, Unreadable):
+        out.append("  cpu    : " + _cell(cpustat))
+    elif cpustat:
+        line = (f"  cpu    : {cpustat['busy']:.0f}% busy, {cpustat['iowait']:.0f}% io wait, "
+                f"{cpustat['idle']:.0f}% idle (1s sample)")
+        if cpustat["steal"] > 0:
+            line += f", {cpustat['steal']:.0f}% steal"
         out.append(line)
     root, docker = parsed["disk_root"], parsed["disk_docker"]
     docker_root = parsed["docker_root"]
