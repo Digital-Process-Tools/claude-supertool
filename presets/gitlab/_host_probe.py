@@ -56,11 +56,18 @@ PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; export PATH
 if [ "$(uname -s)" = Darwin ]; then
 s memsize; sysctl -n hw.memsize 2>&1; r
 s vmstat; vm_stat 2>&1; r
+V=none; if command -v colima >/dev/null 2>&1; then if [ "$(docker context show 2>/dev/null)" = colima ] || colima status >/dev/null 2>&1; then V=colima; fi; fi
+s vm; echo "$V"; r
+if [ "$V" = colima ]; then
+colima ssh -- sh -c 'LC_ALL=C; export LC_ALL; s() { echo "@@ $1"; }; r() { echo "@@rc $?"; }; s free; free -b 2>&1; r; s loadavg; awk 1 /proc/loadavg 2>&1; r; s nproc; nproc 2>&1; r; s dockerroot; echo /var/lib/docker; r; s dfroot; df -P / 2>&1; r; s dfdocker; df -P /var/lib/docker 2>&1; r' 2>/dev/null; v=$?
+s vmssh; echo "exit $v"; [ "$v" = 0 ]; r
+else
 s swapusage; sysctl -n vm.swapusage 2>&1; r
 s loadavg; sysctl -n vm.loadavg 2>&1; r
 s nproc; sysctl -n hw.ncpu 2>&1; r
 s dfroot; df -P /System/Volumes/Data 2>&1; r
 s dockersysdf; docker system df 2>&1; r
+fi
 set -- "$HOME/.gitlab-runner/config.toml" /opt/homebrew/etc/gitlab-runner/config.toml /usr/local/etc/gitlab-runner/config.toml
 else
 s free; free -b 2>&1; r
@@ -456,14 +463,24 @@ def _parse_system_df(lines):
 def parse_probe(text: str) -> dict:
     sections = _sections(text)
     os_name = _parse_root(_section(sections, "os"))
+    vm = _parse_root(_section(sections, "vm")) if os_name == "Darwin" else None
+    host_memory = None
+    docker_df = None
     if os_name == "Darwin":
-        memory = _parse_darwin_memory(_section(sections, "memsize"), _section(sections, "vmstat"))
-        swap = _parse_darwin_swap(_section(sections, "swapusage"))
+        host_memory = _parse_darwin_memory(_section(sections, "memsize"), _section(sections, "vmstat"))
+    if vm == "colima":
+        # The VM's own free/loadavg/nproc/df, framed identically, via colima ssh.
+        memory, swap = _parse_free(_section(sections, "free"))
+    elif os_name == "Darwin":
+        memory, swap = host_memory, _parse_darwin_swap(_section(sections, "swapusage"))
+        docker_df = _parse_system_df(_section(sections, "dockersysdf"))
     else:
         memory, swap = _parse_free(_section(sections, "free"))
-    return {
+    parsed = {
         "os": os_name,
-        "docker_df": _parse_system_df(_section(sections, "dockersysdf")) if os_name == "Darwin" else None,
+        "vm": vm,
+        "host_memory": host_memory,
+        "docker_df": docker_df,
         "memory": memory,
         "swap": swap,
         "load": _parse_load(_section(sections, "loadavg")),
@@ -476,6 +493,15 @@ def parse_probe(text: str) -> dict:
         "stats": _parse_stats(_section(sections, "dockerstats")),
         "runner_config": _parse_runner_config(_section(sections, "runnercfg")),
     }
+    if vm == "colima":
+        ssh = _section(sections, "vmssh")
+        if isinstance(ssh, Unreadable):
+            # The VM's sections never arrived: say why, not "not in the probe output".
+            why = Unreadable(f"colima ssh failed ({ssh.reason})")
+            for key in ("memory", "swap", "load", "cpus", "disk_root", "disk_docker", "docker_root"):
+                if isinstance(parsed[key], Unreadable):
+                    parsed[key] = why
+    return parsed
 
 
 def _gib(value: int) -> str:
@@ -491,6 +517,13 @@ _STATS_MAX = 15
 
 def render(parsed: dict) -> list[str]:
     out: list[str] = []
+    if parsed.get("vm") == "colima":
+        out.append("  vm     : colima — memory, load and disk below are the Docker VM's")
+        host = parsed.get("host_memory")
+        out.append("  mac host : " + (_cell(host) or
+                   f"{_gib(host['available'])} available of {_gib(host['total'])}"))
+    elif parsed.get("os") == "Darwin":
+        out.append("  vm     : not readable (only colima is read) — readings below are the Mac's")
     memory, swap = parsed["memory"], parsed["swap"]
     out.append("  memory : " + (_cell(memory) or
                f"{_gib(memory['total'])} total, {_gib(memory['used'])} used, "
@@ -510,7 +543,8 @@ def render(parsed: dict) -> list[str]:
     docker_root = parsed["docker_root"]
     docker_label = "docker" if isinstance(docker_root, Unreadable) else f"docker {_untrusted.flat(docker_root)}"
     disks = [("/", root), (docker_label, docker)]
-    if parsed.get("os") == "Darwin":
+    mac_only = parsed.get("os") == "Darwin" and parsed.get("vm") != "colima"
+    if mac_only:
         # APFS: / is the sealed system volume; the data volume is what fills.
         # The docker root lives inside the Docker VM, so the host df has no say.
         label = "/" if isinstance(root, Unreadable) else _untrusted.flat(root["mount"])
@@ -524,7 +558,7 @@ def render(parsed: dict) -> list[str]:
             same = " (same filesystem as /)"
         out.append(f"  disk   : {label} {disk['percent']}% used, {_gib(disk['available'])} free "
                    f"of {_gib(disk['size'])}{same}")
-    if parsed.get("os") == "Darwin":
+    if mac_only:
         vm = parsed.get("docker_df")
         out.append("  docker vm : " + (_cell(vm) or
                    f"{vm['size'] / 1e9:.1f}GB in images/containers/volumes/cache, "

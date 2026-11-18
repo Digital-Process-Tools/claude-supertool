@@ -1225,6 +1225,27 @@ is where Homebrew and Docker Desktop put `docker`). No sudo is needed there.
 - `config.toml`: `~/.gitlab-runner`, `/opt/homebrew/etc/gitlab-runner`,
   `/usr/local/etc/gitlab-runner`, same `awk` filter.
 
+**colima: the Docker VM's own numbers.** On a Mac the jobs run inside a Linux
+VM, and that VM's RAM and disk are what run out, not the Mac's. When `colima`
+is on `PATH` and `docker context show` says `colima` (or `colima status`
+succeeds), memory, swap, load, CPU count and disk come from inside the VM:
+`colima ssh -- sh -c '<fixed Linux block>'` runs the same `free -b`,
+`/proc/loadavg`, `nproc`, `df -P /` and `df -P /var/lib/docker` the Linux branch
+runs, framed the same way, and nothing is started. The output says so and keeps
+one line about the Mac itself:
+
+```
+  vm     : colima — memory, load and disk below are the Docker VM's
+  mac host : 13.0G available of 48.0G
+  memory : 23.4G total, 3.7G used, 19.7G available
+  disk   : docker /var/lib/docker 43% used, 81.8G free of 143.4G
+```
+
+If `colima ssh` itself fails, every VM reading says `colima ssh failed (exit N)`.
+Any other VM (Docker Desktop, OrbStack) is not read: the output says
+`vm : not readable (only colima is read)` and falls back to the Mac's own
+readings above plus the `docker vm :` line.
+
 A resolver answer with an empty `password` is key auth: `BatchMode=yes`, never
 `sshpass`.
 

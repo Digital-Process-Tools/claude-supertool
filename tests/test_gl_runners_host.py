@@ -530,10 +530,12 @@ def test_the_real_script_falls_back_to_sudo_n_and_finds_config_through_the_runne
     (bin_dir / "docker").write_text(
         "#!/bin/sh\n"
         "if [ -z \"$FAKE_PRIV\" ]; then echo 'permission denied while trying to connect to the Docker daemon socket' >&2; exit 1; fi\n"
-        "case \"$1\" in\n"
-        "  ps) case \"$*\" in *--format*) echo 'dddddddddddd gitlab/gitlab-runner-helper:x86_64-v17'; echo 'aaaaaaaaaaaa gitlab/gitlab-runner:latest';; *) echo bbbbbbbbbbbb; echo cccccccccccc;; esac;;\n"
-        "  stats) echo 'runner-x|5.00%|1GiB / 8GiB|12.5%';;\n"
-        f"  inspect) case \"$*\" in *aaaaaaaaaaaa*) echo '{mount}';; *) echo;; esac;;\n"
+        "case \"$*\" in\n"
+        "  ps*--format*) echo 'dddddddddddd gitlab/gitlab-runner-helper:x86_64-v17'; echo 'aaaaaaaaaaaa gitlab/gitlab-runner:latest';;\n"
+        "  ps*) echo bbbbbbbbbbbb; echo cccccccccccc;;\n"
+        "  stats*) echo 'runner-x|5.00%|1GiB / 8GiB|12.5%';;\n"
+        f"  inspect*aaaaaaaaaaaa*) echo '{mount}';;\n"
+        "  inspect*) echo;;\n"
         "  *) exit 1;;\n"
         "esac\n",
         encoding="utf-8",
@@ -684,10 +686,12 @@ def test_the_real_script_takes_the_darwin_branch_on_a_mac(tmp_path: Path) -> Non
             'echo "Pages inactive: 2000."; echo "Pages speculative: 0."'
         ),
         "docker": (
-            'case "$1 $2" in "system df") echo "TYPE TOTAL ACTIVE SIZE RECLAIMABLE"; echo "Images 1 1 1GB 0B (0%)";;'
-            ' "ps -q") echo aaaaaaaaaaaa;; ps*) echo "aaaaaaaaaaaa gitlab/gitlab-runner:latest";;'
+            'case "$*" in "system df"*) echo "TYPE TOTAL ACTIVE SIZE RECLAIMABLE"; echo "Images 1 1 1GB 0B (0%)";;'
+            ' "context show"*) echo desktop-linux;; "ps -q"*) echo aaaaaaaaaaaa;;'
+            ' ps*) echo "aaaaaaaaaaaa gitlab/gitlab-runner:latest";;'
             ' stats*) echo "x|1.00%|1GiB / 8GiB|12.5%";; *) exit 1;; esac'
         ),
+        "colima": "exit 1",
         "free": "echo should-not-run >&2; exit 9",
     }
     for name, body in fakes.items():
@@ -710,3 +714,138 @@ def test_the_real_script_takes_the_darwin_branch_on_a_mac(tmp_path: Path) -> Non
     assert parsed["docker_df"] == {"size": 1_000_000_000, "reclaimable": 0}
     assert parsed["containers"] == 1
     assert parsed["runner_config"]["path"] == f"{home}/.gitlab-runner/config.toml"
+    assert parsed["vm"] == "none"
+    assert "vm     : not readable" in "\n".join(host_probe.render(parsed))
+
+
+# ---------------------------------------------------------------------------
+# colima: the Docker VM's own memory/load/disk, read through `colima ssh`
+# ---------------------------------------------------------------------------
+
+COLIMA_OUTPUT = """@@ os
+Darwin
+@@rc 0
+@@ memsize
+51539607552
+@@rc 0
+@@ vmstat
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               500000.
+Pages inactive:                           300000.
+Pages speculative:                         54000.
+@@rc 0
+@@ vm
+colima
+@@rc 0
+@@ free
+               total        used        free      shared  buff/cache   available
+Mem:     25100000000  4000000000  1000000000         0 20000000000 21100000000
+Swap:              0           0           0
+@@rc 0
+@@ loadavg
+2.00 1.50 1.00 3/400 999
+@@rc 0
+@@ nproc
+8
+@@rc 0
+@@ dockerroot
+/var/lib/docker
+@@rc 0
+@@ dfroot
+Filesystem     1024-blocks      Used Available Capacity Mounted on
+/dev/vda1         19000000   9000000  10000000      48% /
+@@rc 0
+@@ dfdocker
+Filesystem     1024-blocks      Used Available Capacity Mounted on
+/dev/vdb1        150390625  64667969  85722656      43% /var/lib/docker
+@@rc 0
+@@ vmssh
+exit 0
+@@rc 0
+@@ dockervia
+docker
+@@rc 0
+@@ dockerps
+a1b2c3d4e5f6
+@@rc 0
+@@ dockerstats
+runner-mac-concurrent-0|80.00%|2GiB / 23GiB|8.7%
+@@rc 0
+@@ runnercfg
+concurrent = 2
+@@path /Users/ci/.gitlab-runner/config.toml
+@@rc 0
+"""
+
+
+def test_colima_memory_load_and_disk_are_the_vms() -> None:
+    parsed = host_probe.parse_probe(COLIMA_OUTPUT)
+    assert parsed["vm"] == "colima"
+    assert parsed["memory"] == {"total": 25100000000, "used": 4000000000, "available": 21100000000}
+    assert parsed["cpus"] == 8
+    assert parsed["load"] == (2.00, 1.50, 1.00)
+    assert parsed["disk_docker"]["mount"] == "/var/lib/docker"
+    assert parsed["disk_docker"]["percent"] == 43
+    assert parsed["host_memory"]["available"] == (500000 + 300000 + 54000) * 16384
+
+
+def test_colima_render_labels_the_vm_and_keeps_one_mac_line() -> None:
+    rendered = "\n".join(host_probe.render(host_probe.parse_probe(COLIMA_OUTPUT)))
+    assert "vm     : colima" in rendered
+    assert "mac host : 13.0G available of 48.0G" in rendered
+    assert "23.4G total" in rendered
+    assert "on 8 CPU" in rendered
+    assert "docker /var/lib/docker 43% used" in rendered
+    assert "docker vm :" not in rendered
+    assert "/System/Volumes/Data" not in rendered
+
+
+def test_a_failed_colima_ssh_says_so_instead_of_missing_sections() -> None:
+    before, _, rest = COLIMA_OUTPUT.partition("@@ free")
+    rest = rest.partition("@@ vmssh")[2]
+    out = before + "@@ vmssh" + rest.replace("exit 0\n@@rc 0", "exit 255\n@@rc 1", 1)
+    parsed = host_probe.parse_probe(out)
+    for key in ("memory", "load", "cpus", "disk_docker"):
+        assert isinstance(parsed[key], host_probe.Unreadable), key
+        assert "colima ssh failed" in parsed[key].reason, key
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("sh") is None, reason="runs REMOTE_PROBE under a local POSIX sh")
+def test_the_real_script_reads_the_colima_vm_through_colima_ssh(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gib = 1024 ** 3
+    fakes = {
+        "uname": "echo Darwin",
+        "sysctl": 'case "$2" in hw.memsize) echo 51539607552;; *) exit 1;; esac',
+        "vm_stat": (
+            'echo "Mach Virtual Memory Statistics: (page size of 16384 bytes)"; echo "Pages free: 1000."; '
+            'echo "Pages inactive: 2000."'
+        ),
+        "docker": (
+            'case "$*" in "context show"*) echo colima;; "ps -q"*) echo aaaaaaaaaaaa;; ps*) echo;;'
+            ' stats*) echo "x|1.00%|1GiB / 8GiB|12.5%";; *) exit 1;; esac'
+        ),
+        "colima": 'case "$*" in "ssh -- "*) shift 2; exec "$@";; *) exit 0;; esac',
+        "free": (
+            "echo '              total        used        free      shared  buff/cache   available'; "
+            f"echo 'Mem:    {24 * gib}  {4 * gib}  {gib}  0  {19 * gib}  {20 * gib}'; "
+            "echo 'Swap:   0  0  0'"
+        ),
+        "nproc": "echo 8",
+    }
+    for name, body in fakes.items():
+        (bin_dir / name).write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {**os.environ, "HOME": str(home), "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    out = subprocess.run(["sh", "-c", host_probe.REMOTE_PROBE], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace",
+                         timeout=30, env=env).stdout
+    parsed = host_probe.parse_probe(out)
+    assert parsed["vm"] == "colima"
+    assert parsed["memory"] == {"total": 24 * gib, "used": 4 * gib, "available": 20 * gib}
+    assert parsed["cpus"] == 8
+    assert parsed["host_memory"]["available"] == 3000 * 16384
+    assert parsed["docker_df"] is None
