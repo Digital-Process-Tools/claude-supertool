@@ -16,6 +16,7 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | `gl-pipeline` | `gl-pipeline:NUMBER[:full\|:active\|:failed\|:traces]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke"); `:traces` ([#626](https://github.com/Digital-Process-Tools/claude-supertool/issues/626)) writes every failed job's full trace to one file via `gl-job`'s own trace writer and prints only the path plus a receipt — the actual entry point once a pipeline has failed, since `:failed` otherwise leaves the trail cold at the job IDs |
 | `gl-job` | `gl-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN\|:artifacts\|:artifact:PATH]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**; a START past the end of the log returns the tail of the width requested and says so, rather than declining (see [Reading a range](#reading-a-range)); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Cause markers are always matched on top of the configured patterns, and a *failed* job that matches nothing is reported as unclassified with a log tail rather than as "no errors". `:artifacts` ([#1796](https://github.com/Digital-Process-Tools/claude-supertool/issues/1796)) prints what the job produced — archive filename, size, expiry, and which kinds (`archive`/`metadata`/`trace`) are present — and says plainly that GitLab's job API does not name the paths *inside* the archive, so a specific `PATH` still has to be known some other way (a trace's own printed path, typically); `:artifact:PATH` fetches that one file through GitLab's single-file endpoint (`.../jobs/:job_id/artifacts/*path`), never the whole archive. Printed text only, capped at `GL_JOB_ARTIFACT_MAX_BYTES` (default 65536), and an expired archive says so rather than failing obscurely. This op's own timeout is sized for a single job's fetch — for a comma-separated multi-id trace dump use `gl-job-trace` instead ([#2146](https://github.com/Digital-Process-Tools/claude-supertool/issues/2146)); the old `gl-job:ID:trace` form is refused, pointed at that op, rather than run under a budget too small for it |
 | `gl-job-trace` | `gl-job-trace:NUMBER[,NUMBER...]` | `gl-job`'s trace writer, split into its own op ([#2146](https://github.com/Digital-Process-Tools/claude-supertool/issues/2146)) so its wider timeout budget — sized for a multi-id fan-out fetched serially at up to 30s each — stops leaking onto `gl-job`'s other modes, none of which fan out. Writes the whole trace to a file under the process's own proven-ours temp root, never into context — see [Writing a trace to disk](#writing-a-trace-to-disk) |
+| `gl-runners` | `gl-runners[:full\|:queue\|:host[:DESCRIPTION]]` | Runner fleet health table, STARVED diagnosis; `:full` adds detail, `:queue` groups jobs by eligible runner. `:host` reads every runner box the project's resolver knows (`:host:DESCRIPTION` for one) over a single read-only SSH call — RAM/swap, load against CPU count, `/` and docker-root disk, `/tmp` (size, used, free, inode use, tmpfs or not), running containers with a `docker stats` table, `docker info` (not `docker system df` on Linux: too slow on a busy runner; the macOS colima path still reads it), `concurrent`/`limit` and the docker keys (`privileged`, `volumes`, `shm_size`, `disable_cache`, tmpfs tables) from `config.toml` — under the runner's GitLab status, tags and running-job count. See [Runner host probe](#runner-host-probe) |
 | `gl-api` | `gl-api:PATH[?query][:full]` | A **GET** of any GitLab REST path, for the rest of the API no `gl-*` op shapes — members, access tokens, deploy keys, protected branches, project and user events. Returns the JSON body fenced as remote text, plus one line saying whether it is the whole answer. `:full` follows every page. See [GET-only, and why that is the whole design](#get-only-and-why-that-is-the-whole-design) and [A full page is not a complete list](#a-full-page-is-not-a-complete-list) |
 
 ### A CI job name is the merge request author's text
@@ -1100,11 +1101,201 @@ only for a container-level exit code — never for a real test failure.
 
 **The config walk stops at the nearest `.git` ancestor and skips a
 group/world-writable or not-caller-owned `.supertool.json`** — the same
-trust boundary `_supertool._load_config` enforces for every other op
+trust boundary `_supertool._load_config` enforces for every other op — and
+the one `host_resolver` (below) relies on before it executes anything
 ([#695](https://github.com/Digital-Process-Tools/claude-supertool/issues/695)),
 reproduced here because a preset script cannot import the core module. A
 stray ancestor config outside the current project is never picked up for a
 maintenance window either.
+
+### Runner host probe
+
+`gl-runners:host` answers what the GitLab API cannot: whether the box behind
+a runner is out of memory, swapping, filling its docker root, or promising
+more `concurrent` jobs than it has CPUs.
+
+```
+## dptools-runner-2  #12 online, tags docker,php, running 2
+  memory : 16.0G total, 9.0G used, 6.0G available
+  swap   : 2.0G total, 0.5G used
+  load   : 1.20 0.95 0.80 on 8 CPU (0.15 per CPU, 1m)
+  cpu    : 62% busy, 18% io wait, 20% idle (1s sample)
+  disk   : / 45% used, 53.7G free of 97.7G
+  disk   : docker /var/lib/docker 90% used, 19.5G free of 195.3G
+  tmp    : 97.7G total, 44.0G used, 53.7G free (45% used), inodes 4% used; ext4; same filesystem as /
+  docker : 3 running
+           NAME                                              CPU    MEM%  MEM
+           runner-abc-project-1-concurrent-0             150.25%   9.60%  1.5GiB / 15.6GiB
+  docker info : root /var/lib/docker, driver overlay2
+  docker df : not measured: docker system df takes up to a minute on a busy runner
+  runner : concurrent 4; limit dptools-runner-2=3, dptools-runner-2 V2=unset; from /etc/gitlab-runner/config.toml
+           dptools-runner-2: privileged true, shm_size 0, disable_cache false, volumes [/cache]
+           dptools-runner-2: tmpfs empty; services_tmpfs empty
+```
+
+The `tmp` line, the two `docker info` / `docker df` lines (the latter says `not measured`) and the extra `runner`
+lines answer "is there room in `/tmp`, and what does the runner give its jobs"
+without a hand-written SSH script:
+
+- `tmp`: `df -Ph /tmp` and `df -Pi /tmp` (size, used, free, use%, inode use%;
+  sizes stay as `df` prints them) plus the filesystem type from
+  `findmnt -no FSTYPE,SIZE -T /tmp`, falling back to the `mount` line. It says
+  `same filesystem as /` or `own mount ...`, and `tmpfs ... (memory-backed)` when
+  `/tmp` lives in RAM. A filesystem with no inode counts says `inodes n/a`; a
+  failed reading is `unreadable (...)`, never zero.
+- `docker info`: `timeout 5 docker info --format '{{.DockerRootDir}} {{.Driver}}'`,
+  through the same docker the `docker :` line chose, so `sudo -n docker` is tried
+  when the plain socket is refused. `docker df` is **not measured** on Linux:
+  `docker system df` takes 17 to 57 s on a busy runner, and `timeout` cannot stop
+  it (it kills `sudo` while the orphaned docker keeps the SSH stdout open), so the
+  whole probe hit the 30 s SSH timeout. The line says `not measured` instead. The
+  macOS colima path is unchanged and still reads `docker system df`
+  (`docker vm :`). When neither route reaches the socket the line reads
+  `docker info : no access (permission denied ...)`.
+- `runner` detail lines: per `[[runners]]` block, `privileged`, `shm_size`,
+  `disable_cache` and `volumes` (from `[runners.docker]`), then the contents of
+  `[runners.docker.tmpfs]` and `[runners.docker.services_tmpfs]`
+  (`/tmp=rw,noexec`) or `empty`. An unset key says `unset`. When `config.toml`
+  cannot be read the `runner :` line says `config.toml not found, or not
+  readable ...` and no detail lines follow; the probe does not fail.
+
+**The op does not know where your hosts are, by design.** Credentials live
+in your project, so the project supplies the lookup:
+
+```json
+{
+  "gl-runners": {
+    "host_resolver": ["python3", "scripts/runner_host.py"]
+  }
+}
+```
+
+`host_resolver` is an argv list — a shell string is refused. It runs from
+the current directory with the runner's GitLab `description` appended as the
+last argument — GitLab-hosted text, so the resolver must treat it as data and
+never as a flag — and answers:
+
+| Exit | stdout | Meaning |
+|------|--------|---------|
+| `0` | one JSON object: `host` (required), `user`, `port`, `password` | probe this box |
+| `3` | ignored | this runner has no host entry — not probed, named in a footer |
+| other | ignored | failure; the last line of **stderr** is shown, flattened |
+
+The resolver's stdout is never printed, on any path — on success it carries
+the secret, so an unparseable answer is reported by its byte count only. A
+`password` reaches `sshpass -e` through the `SSHPASS` environment variable,
+never argv; without one the probe uses key auth with `BatchMode=yes`
+(`BatchMode` forbids the password prompt `sshpass` answers, so it is only set
+when there is no password). `host`, `user` and `port` are checked against
+narrow patterns before they reach `ssh`, because a host spelled
+`-oProxyCommand=...` is an ssh option, argv or not.
+
+**`host_resolver` executes code, so it rides the same trust check as the
+maintenance windows above** — a `.supertool.json` that is group/world-writable
+or not owned by you is skipped. That is no new class of exposure: a custom op's
+`cmd` in the same file already runs. On Windows the ownership check is a no-op
+(`st_uid` means nothing there), as it already is for the core loader.
+
+Host keys use `StrictHostKeyChecking=accept-new`, matching DVSI's
+`server-diag`, so a first contact writes your local `~/.ssh/known_hosts`
+(OpenSSH 7.6+). That is the only write anywhere, and it is local. The remote
+side writes nothing.
+
+**One SSH call per host, one fixed command string.** Nothing — not the
+description, not the target — is interpolated into what runs remotely. It is
+read-only: `free -b`, `/proc/loadavg`, `nproc`, `df -P` once for `/` and once
+for the docker root (so a missing docker root cannot hide `/`), `docker ps -q`,
+`timeout 8 docker stats --no-stream` and `timeout 5 docker info --format` (no `docker system df` on Linux),
+`df -Ph /tmp`, `df -Pi /tmp`, `findmnt -no FSTYPE,SIZE -T /tmp`, and `config.toml`
+filtered **on the host** by `awk` through a whitelist, never a blacklist: the bare
+section header (`[[runners]]`, with any trailing comment cut off), the
+`concurrent` / `limit` / `name` / `privileged` / `shm_size` / `disable_cache`
+lines, the `volumes` array (at most 20 lines), and the body of
+`[runners.docker.tmpfs]` and `[runners.docker.services_tmpfs]` only. The runner
+`token`, `url`, cache credentials and every other line never cross the wire. A TOML multi-line string whose continuation line
+happens to begin with one of those keys is the one shape the filter cannot see.
+
+The docker root comes from an unprivileged `docker info`; when that is refused
+it falls back to `/var/lib/docker` and the disk line says `(assumed)`, since a
+custom `data-root` cannot be read without it.
+
+**`sudo -n`, in two places only, and only after the unprivileged try failed.**
+`-n` never prompts and no password is ever handed to sudo; where sudo would ask,
+the step fails and says so. On a host where sudo is not allowed, each probe
+leaves a few `sudo: a password is required` lines in that host's auth log
+(one for docker, one per `config.toml` candidate that exists or is hidden).
+
+- Docker: when `docker ps` fails (the SSH user is not in the `docker` group),
+  `ps`, `stats`, `info` and the `inspect` below run as `sudo -n docker`, and the line
+  reads `3 running (via sudo -n)`. A socket neither route can reach still
+  prints `unreadable (permission denied ...)`, never `0 running`.
+- `config.toml`: tried in order at `/etc/gitlab-runner/config.toml`,
+  `/srv/gitlab-runner/config/config.toml`, `~/.gitlab-runner/config.toml`,
+  then the host-side source of the `/etc/gitlab-runner` bind mount of a running
+  `gitlab-runner` container (`docker inspect`; `gitlab-runner-helper` job
+  containers are skipped, and every candidate is tried until one has that
+  mount). A file that reads empty does not count as found. Each is read
+  by `awk`, then by `sudo -n awk`. The line names the file used, with
+  `(sudo)` when it took sudo. An unprivileged probe cannot tell an absent file
+  from an unreadable one, so the miss says both: `not found, or not readable
+  even with sudo -n, at ...`.
+
+`limit` is attributed by `[[runners]]` section, so a `name =` under
+`[[runners.docker.services]]` is not mistaken for a runner. The remote login
+shell must be POSIX `sh`-compatible.
+
+**macOS runner hosts** take a Darwin branch of the same fixed script, chosen
+on the host by `uname -s`, with `/opt/homebrew/bin` and `/usr/local/bin`
+appended to `PATH` (a non-interactive SSH session usually lacks them, and that
+is where Homebrew and Docker Desktop put `docker`). No sudo is needed there.
+
+- memory: total from `sysctl -n hw.memsize`; available is free + inactive +
+  speculative pages from `vm_stat`, times the page size `vm_stat` states in its
+  own header — no stated page size, no number. Swap from `sysctl -n vm.swapusage`.
+- load: `sysctl -n vm.loadavg` against `sysctl -n hw.ncpu`.
+- disk: `df -P /System/Volumes/Data` — on APFS `/` is the sealed system volume
+  and the data volume is the one that fills. The docker root lives inside the
+  Docker VM, which the host `df` cannot see, so a `docker vm :` line sums
+  `docker system df` instead: `13.9GB in images/containers/volumes/cache, 9.8GB
+  reclaimable`. Nothing is started; `docker run` is never used.
+- `config.toml`: `~/.gitlab-runner`, `/opt/homebrew/etc/gitlab-runner`,
+  `/usr/local/etc/gitlab-runner`, same `awk` filter.
+- `tmp`, `docker info` and `docker df` are skipped on a plain Mac: `/tmp` is a
+  symlink onto the data volume the `disk` line already shows, and the docker root
+  is inside the VM (the `docker vm :` line covers it). The `config.toml` detail
+  lines work there as on Linux.
+
+**colima: the Docker VM's own numbers.** On a Mac the jobs run inside a Linux
+VM, and that VM's RAM and disk are what run out, not the Mac's. When `colima`
+is on `PATH` and `docker context show` says `colima` (or `colima status`
+succeeds), memory, swap, load, CPU count and disk come from inside the VM:
+`colima ssh -- sh -c '<fixed Linux block>'` runs the same `free -b`,
+`/proc/loadavg`, `nproc`, `df -P /`, `df -P /var/lib/docker` and the `/tmp`
+readings (a colima VM's `/tmp` is the VM's) the Linux branch runs, framed the same way, and nothing is started. The output says so and keeps
+one line about the Mac itself:
+
+```
+  vm     : colima — memory, load and disk below are the Docker VM's
+  mac host : 13.0G available of 48.0G
+  memory : 23.4G total, 3.7G used, 19.7G available
+  disk   : docker /var/lib/docker 43% used, 81.8G free of 143.4G
+```
+
+If `colima ssh` itself fails, every VM reading says `colima ssh failed (exit N)`.
+Any other VM (Docker Desktop, OrbStack) is not read: the output says
+`vm : not readable (only colima is read)` and falls back to the Mac's own
+readings above plus the `docker vm :` line.
+
+A resolver answer with an empty `password` is key auth: `BatchMode=yes`, never
+`sshpass`.
+
+Hosts are probed in parallel (8 at a time; resolver 15s, ssh 30s, inside
+the op's 120s ceiling — that ceiling is shared with the other modes, which
+finish long before it). Runners sharing one `description` are probed once,
+with a note. Exit `1` when any host could not be resolved
+or reached, or when `:host:DESCRIPTION` names a runner the resolver has no
+entry for; with no `host_resolver` configured the op refuses rather than
+printing an empty board.
 
 ### Default project for `gl-issue-create`
 
