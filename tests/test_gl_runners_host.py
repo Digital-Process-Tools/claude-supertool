@@ -137,7 +137,8 @@ def test_sudo_is_only_ever_non_interactive_and_only_for_docker_or_awk() -> None:
     for use in uses:
         assert re.match(r"sudo -n (docker|awk)\b", use), use
     # `$D` may be `sudo -n docker`: every verb it runs must be a read.
-    assert set(re.findall(r"\$D (\w+)", script)) <= {"ps", "stats", "inspect"}
+    assert set(re.findall(r"\$D (\w+)", script)) <= {"ps", "stats", "inspect", "info", "system"}
+    assert re.findall(r"\$D system (\w+)", script) == ["df"]
 
 
 def test_a_service_name_inside_a_runner_is_not_taken_for_the_runner_name() -> None:
@@ -905,3 +906,273 @@ def test_the_remote_script_samples_proc_stat_twice_on_linux_and_colima() -> None
     colima_line = next(line for line in host_probe.REMOTE_PROBE.splitlines() if line.startswith("colima ssh"))
     inner = colima_line.split("sh -c '", 1)[1].rsplit("' 2>/dev/null", 1)[0]
     assert "cpustat" in inner and "'" not in inner
+
+
+# ---------------------------------------------------------------------------
+# tmp, runner config detail, docker info / df
+# ---------------------------------------------------------------------------
+
+def _tmp_sections(df_row: str, inode_row: str, fstype: str) -> str:
+    return (
+        "@@ tmpdf\nFilesystem      Size  Used Avail Use% Mounted on\n" + df_row + "\n@@rc 0\n"
+        "@@ tmpinode\nFilesystem       Inodes   IUsed    IFree IUse% Mounted on\n" + inode_row + "\n@@rc 0\n"
+        "@@ tmpfstype\n" + fstype + "\n@@rc 0\n"
+    )
+
+
+EXT4_TMP = _tmp_sections("/dev/sda1       410G   64G  327G  17% /",
+                         "/dev/sda1      27262976  523001 26739975    2% /", "ext4 410G")
+
+
+def test_tmp_on_the_root_filesystem_reads_size_used_avail_percent_and_inodes() -> None:
+    tmp = host_probe.parse_probe(PROBE_OUTPUT + EXT4_TMP)["tmp"]
+    assert tmp["size"] == "410G" and tmp["used"] == "64G" and tmp["available"] == "327G"
+    assert tmp["percent"] == 17 and tmp["inode_percent"] == 2
+    assert tmp["fstype"] == {"type": "ext4", "size": "410G"}
+    rendered = "\n".join(host_probe.render(host_probe.parse_probe(PROBE_OUTPUT + EXT4_TMP)))
+    assert ("  tmp    : 410G total, 64G used, 327G free (17% used), inodes 2% used; "
+            "ext4; same filesystem as /") in rendered
+
+
+def test_a_tmpfs_tmp_says_it_is_memory_backed_and_has_its_own_mount() -> None:
+    out = PROBE_OUTPUT + _tmp_sections("tmpfs           7.8G  1.2G  6.6G  15% /tmp",
+                                       "tmpfs           2000000     90  1999910    1% /tmp", "tmpfs 7.8G")
+    rendered = "\n".join(host_probe.render(host_probe.parse_probe(out)))
+    assert ("  tmp    : 7.8G total, 1.2G used, 6.6G free (15% used), inodes 1% used; "
+            "tmpfs 7.8G (memory-backed); own mount /tmp") in rendered
+
+
+def test_the_mount_line_fallback_still_tells_tmpfs() -> None:
+    out = PROBE_OUTPUT + _tmp_sections("tmpfs           7.8G  1.2G  6.6G  15% /tmp",
+                                       "tmpfs           2000000     90  1999910    1% /tmp",
+                                       "tmpfs on /tmp type tmpfs (rw,nosuid,nodev)")
+    assert host_probe.parse_probe(out)["tmp"]["fstype"] == {"type": "tmpfs", "size": None}
+    assert "tmpfs (memory-backed)" in "\n".join(host_probe.render(host_probe.parse_probe(out)))
+
+
+def test_a_filesystem_without_inode_counts_says_n_a_and_a_missing_type_says_so() -> None:
+    out = PROBE_OUTPUT + _tmp_sections("/dev/sda1       410G   64G  327G  17% /",
+                                       "/dev/sda1               0       0        0     - /", "")
+    out = out.replace("@@ tmpfstype\n\n@@rc 0\n", "@@ tmpfstype\nfindmnt: not found\n@@rc 1\n")
+    tmp = host_probe.parse_probe(out)["tmp"]
+    assert tmp["inode_percent"] is None
+    assert isinstance(tmp["fstype"], host_probe.Unreadable)
+    rendered = "\n".join(host_probe.render(host_probe.parse_probe(out)))
+    assert "inodes n/a" in rendered and "filesystem type unreadable (findmnt: not found)" in rendered
+
+
+def test_a_df_without_inode_columns_is_unreadable_not_the_block_percent() -> None:
+    """macOS `df -Pi` prints the POSIX block columns: column 5 is Capacity, not IUse%."""
+    out = PROBE_OUTPUT + _tmp_sections("/dev/disk3s5  410G  64G  327G  17% /",
+                                       "/dev/disk3s5  1000  300  700  30% /", "ext4 410G")
+    out = out.replace("Filesystem       Inodes   IUsed    IFree IUse% Mounted on",
+                      "Filesystem 512-blocks Used Available Capacity Mounted on")
+    assert isinstance(host_probe.parse_probe(out)["tmp"]["inode_percent"], host_probe.Unreadable)
+
+
+def test_an_unreadable_tmp_is_stated_not_zero() -> None:
+    out = PROBE_OUTPUT + "@@ tmpdf\ndf: /tmp: No such file or directory\n@@rc 1\n"
+    parsed = host_probe.parse_probe(out)
+    assert isinstance(parsed["tmp"], host_probe.Unreadable)
+    assert "  tmp    : unreadable (df: /tmp: No such file or directory)" in "\n".join(host_probe.render(parsed))
+
+
+def _with_config(body: str) -> str:
+    return (PROBE_OUTPUT.split("@@ runnercfg")[0] + "@@ runnercfg\n" + body
+            + "@@path /etc/gitlab-runner/config.toml\n@@rc 0\n")
+
+
+RUNNER_5_CONFIG = """concurrent = 4
+[[runners]]
+  name = "dptools-runner-5"
+  limit = 2
+  [runners.docker]
+    privileged = true
+    volumes = ["/cache"]
+    shm_size = 0
+    disable_cache = false
+  [runners.docker.tmpfs]
+  [runners.docker.services_tmpfs]
+"""
+
+
+def test_runner_docker_settings_are_read_per_runner_block() -> None:
+    parsed = host_probe.parse_probe(_with_config(RUNNER_5_CONFIG))
+    assert parsed["runner_detail"] == [{
+        "name": "dptools-runner-5", "privileged": "true", "volumes": ["/cache"], "shm_size": "0",
+        "disable_cache": "false", "tmpfs": [], "services_tmpfs": []}]
+    lines = host_probe.render(parsed)
+    at = next(i for i, line in enumerate(lines) if line.startswith("  runner : concurrent 4"))
+    assert lines[at + 1] == ("           dptools-runner-5: privileged true, shm_size 0, disable_cache false, "
+                             "volumes [/cache]")
+    assert lines[at + 2] == "           dptools-runner-5: tmpfs empty; services_tmpfs empty"
+
+
+def test_tmpfs_tables_and_a_multi_line_volumes_array_are_shown() -> None:
+    body = RUNNER_5_CONFIG.replace(
+        'volumes = ["/cache"]', 'volumes = [\n      "/cache",\n      "/var/run/docker.sock:/var/run/docker.sock"\n    ]'
+    ).replace("[runners.docker.tmpfs]\n", '[runners.docker.tmpfs]\n    "/tmp" = "rw,noexec"\n'
+    ).replace("[runners.docker.services_tmpfs]\n", '[runners.docker.services_tmpfs]\n    "/var/lib/mysql" = "rw"\n')
+    parsed = host_probe.parse_probe(_with_config(body))
+    runner = parsed["runner_detail"][0]
+    assert runner["volumes"] == ["/cache", "/var/run/docker.sock:/var/run/docker.sock"]
+    assert runner["tmpfs"] == ["/tmp=rw,noexec"] and runner["services_tmpfs"] == ["/var/lib/mysql=rw"]
+    rendered = "\n".join(host_probe.render(parsed))
+    assert "tmpfs /tmp=rw,noexec; services_tmpfs /var/lib/mysql=rw" in rendered
+
+
+def test_a_runner_without_docker_keys_says_unset_and_a_service_name_is_not_a_runner() -> None:
+    parsed = host_probe.parse_probe(_with_config(
+        'concurrent = 1\n[[runners]]\n  name = "a"\n  [[runners.docker.services]]\n    name = "mysql:5.7"\n'))
+    assert [r["name"] for r in parsed["runner_detail"]] == ["a"]
+    assert "a: privileged unset, shm_size unset, disable_cache unset, volumes [unset]" in "\n".join(
+        host_probe.render(parsed))
+
+
+def test_an_unreadable_config_adds_no_detail_lines_and_does_not_fail() -> None:
+    out = PROBE_OUTPUT.split("@@ runnercfg")[0] + "@@ runnercfg\nMISSING\n@@rc 0\n"
+    parsed = host_probe.parse_probe(out)
+    assert isinstance(parsed["runner_detail"], host_probe.Unreadable)
+    rendered = "\n".join(host_probe.render(parsed))
+    assert "runner : config.toml not found, or not readable" in rendered
+    assert "privileged" not in rendered
+
+
+DOCKER_INFO_OUTPUT = (
+    "@@ dockerinfo\n/var/lib/docker overlay2\n@@rc 0\n"
+    "@@ dockerdf\n"
+    "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\n"
+    "Images          12        3         3.1GB     1.2GB (38%)\n"
+    "Containers      4         2         50MB      0B (0%)\n"
+    "Local Volumes   5         2         1GB       200MB (20%)\n"
+    "Build Cache     30        0         9GB       9GB\n"
+    "@@rc 0\n"
+)
+
+
+def test_docker_info_and_the_three_df_rows_are_parsed_and_shown() -> None:
+    parsed = host_probe.parse_probe(PROBE_OUTPUT + DOCKER_INFO_OUTPUT)
+    assert parsed["docker_info"] == {"root": "/var/lib/docker", "driver": "overlay2"}
+    assert parsed["docker_system_df"] == {
+        "images": {"total": 12, "active": 3, "size": "3.1GB", "reclaimable": "1.2GB"},
+        "containers": {"total": 4, "active": 2, "size": "50MB", "reclaimable": "0B"},
+        "volumes": {"total": 5, "active": 2, "size": "1GB", "reclaimable": "200MB"},
+    }
+    rendered = "\n".join(host_probe.render(parsed))
+    assert "  docker info : root /var/lib/docker, driver overlay2" in rendered
+    assert ("  docker df : images 12 (3.1GB, 1.2GB reclaimable); containers 4 (50MB, 0B reclaimable); "
+            "volumes 5 (1GB, 200MB reclaimable)") in rendered
+
+
+def test_a_docker_socket_the_user_cannot_reach_says_no_access() -> None:
+    denied = "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock"
+    out = PROBE_OUTPUT + f"@@ dockerinfo\n{denied}\n@@rc 1\n@@ dockerdf\n{denied}\n@@rc 1\n"
+    rendered = "\n".join(host_probe.render(host_probe.parse_probe(out)))
+    assert "  docker info : no access (permission denied while trying to connect" in rendered
+    assert "docker df" not in rendered
+
+
+def test_a_docker_df_that_fails_alone_is_unreadable_next_to_the_info_line() -> None:
+    out = PROBE_OUTPUT + (DOCKER_INFO_OUTPUT.split("@@ dockerdf")[0] + "@@ dockerdf\nboom\n@@rc 1\n")
+    rendered = "\n".join(host_probe.render(host_probe.parse_probe(out)))
+    assert "docker info : root /var/lib/docker, driver overlay2" in rendered
+    assert "  docker df : unreadable (boom)" in rendered
+
+
+def test_plain_macos_skips_tmp_and_the_docker_info_lines() -> None:
+    parsed = host_probe.parse_probe(DARWIN_OUTPUT)
+    assert parsed["tmp"] is None and parsed["docker_info"] is None and parsed["docker_system_df"] is None
+    rendered = "\n".join(host_probe.render(parsed))
+    assert "tmp    :" not in rendered and "docker info" not in rendered and "docker df" not in rendered
+
+
+def test_the_remote_script_reads_tmp_on_linux_and_in_the_colima_vm() -> None:
+    assert host_probe.REMOTE_PROBE.count("s tmpdf;") == 2
+    colima_line = next(line for line in host_probe.REMOTE_PROBE.splitlines() if line.startswith("colima ssh"))
+    inner = colima_line.split("sh -c '", 1)[1].rsplit("' 2>/dev/null", 1)[0]
+    assert "tmpdf" in inner and "tmpinode" in inner and "tmpfstype" in inner
+
+
+def _fake_bin(tmp_path: Path, docker_body: str) -> tuple[Path, dict]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "uname").write_text("#!/bin/sh\necho Linux\n", encoding="utf-8")
+    (bin_dir / "docker").write_text("#!/bin/sh\n" + docker_body + "\n", encoding="utf-8")
+    (bin_dir / "sudo").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    for name in ("uname", "docker", "sudo"):
+        (bin_dir / name).chmod(0o755)
+    home = tmp_path / "home"
+    (home / ".gitlab-runner").mkdir(parents=True)
+    env = {**os.environ, "HOME": str(home), "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    return home, env
+
+
+def _run_probe(env: dict) -> str:
+    return subprocess.run(["sh", "-c", host_probe.REMOTE_PROBE], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=30, env=env).stdout
+
+
+FULL_CONFIG = """concurrent = 4
+check_interval = 0
+[[runners]]
+  name = "box"
+  url = "https://gitlab-secret.example/"
+  token = "glrt-SECRETTOKEN"
+  executor = "docker"
+  [runners.cache]
+    [runners.cache.s3]
+      AccessKey = "AKIAFAKEKEY"
+      SecretKey = "hunter2"
+  [runners.docker]
+    image = "alpine"
+    password = "hunter2-docker"
+    privileged = true
+    disable_cache = false
+    volumes = [
+      "/cache",
+      "/var/run/docker.sock:/var/run/docker.sock"
+    ]
+    shm_size = 0
+    [runners.docker.tmpfs]
+      "/tmp" = "rw,noexec"
+    [runners.docker.services_tmpfs]
+  [runners.custom_build_dir]
+    enabled = true
+"""
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("sh") is None, reason="runs REMOTE_PROBE under a local POSIX sh")
+def test_the_real_script_lets_only_the_whitelisted_config_keys_cross_the_wire(tmp_path: Path) -> None:
+    for real in ("/etc/gitlab-runner/config.toml", "/srv/gitlab-runner/config/config.toml"):
+        if os.path.exists(real):
+            pytest.skip(f"{real} exists on this machine and would be read before the fake one")
+    home, env = _fake_bin(tmp_path, "echo 'permission denied while trying to connect to the Docker daemon socket' >&2; exit 1")
+    (home / ".gitlab-runner" / "config.toml").write_text(FULL_CONFIG, encoding="utf-8")
+    out = _run_probe(env)
+    for secret in ("glrt-", "gitlab-secret", "AKIA", "hunter2", "alpine", "token", "url", "executor"):
+        assert secret not in out, secret
+    parsed = host_probe.parse_probe(out)
+    assert parsed["runner_detail"] == [{
+        "name": "box", "privileged": "true", "disable_cache": "false", "shm_size": "0",
+        "volumes": ["/cache", "/var/run/docker.sock:/var/run/docker.sock"],
+        "tmpfs": ["/tmp=rw,noexec"], "services_tmpfs": []}]
+    assert parsed["runner_config"]["concurrent"] == 4
+    assert isinstance(parsed["docker_info"], host_probe.Unreadable)
+    assert "docker info : no access" in "\n".join(host_probe.render(parsed))
+    assert not isinstance(parsed["tmp"], host_probe.Unreadable) and isinstance(parsed["tmp"]["percent"], int)
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("sh") is None, reason="runs REMOTE_PROBE under a local POSIX sh")
+def test_the_real_script_reads_docker_info_and_system_df_through_the_chosen_docker(tmp_path: Path) -> None:
+    _, env = _fake_bin(tmp_path, (
+        'case "$*" in\n'
+        '  "info --format"*) echo "/var/lib/docker overlay2";;\n'
+        '  "system df"*) echo "TYPE TOTAL ACTIVE SIZE RECLAIMABLE"; echo "Images 2 1 1GB 500MB (50%)"; '
+        'echo "Containers 1 1 10MB 0B (0%)"; echo "Local Volumes 3 1 2GB 1GB (50%)";;\n'
+        '  "ps -q"*) echo aaaaaaaaaaaa;;\n'
+        '  *) exit 1;;\n'
+        'esac'))
+    parsed = host_probe.parse_probe(_run_probe(env))
+    assert parsed["docker_info"] == {"root": "/var/lib/docker", "driver": "overlay2"}
+    assert parsed["docker_system_df"]["volumes"] == {"total": 3, "active": 1, "size": "2GB", "reclaimable": "1GB"}
+    assert parsed["docker_via"] == "docker"

@@ -44,8 +44,9 @@ import _untrusted  # noqa: E402  (everything the box prints is remote text)
 # prompt, never a password) is used in exactly two places, both read-only and
 # both only after the unprivileged try failed: docker ps/stats/inspect when the
 # SSH user is not in the docker group, and `awk` reading config.toml. config.toml
-# is filtered on the host to section headers and the three keys shown, so the
-# runner tokens it also holds never cross the wire. Paths tried, in order:
+# is filtered on the host by a WHITELIST (section headers, the keys shown, and the
+# body of the two tmpfs sections), never a blacklist, so the runner tokens, urls
+# and cache credentials it also holds never cross the wire. Paths tried, in order:
 # /etc/gitlab-runner, /srv/gitlab-runner/config, ~/.gitlab-runner, then the bind
 # mount behind /etc/gitlab-runner of a running gitlab-runner container.
 REMOTE_PROBE = r"""LC_ALL=C; export LC_ALL
@@ -59,7 +60,7 @@ s vmstat; vm_stat 2>&1; r
 V=none; if command -v colima >/dev/null 2>&1; then if [ "$(docker context show 2>/dev/null)" = colima ] || colima status >/dev/null 2>&1; then V=colima; fi; fi
 s vm; echo "$V"; r
 if [ "$V" = colima ]; then
-colima ssh -- sh -c 'LC_ALL=C; export LC_ALL; s() { echo "@@ $1"; }; r() { echo "@@rc $?"; }; s free; free -b 2>&1; r; s loadavg; awk 1 /proc/loadavg 2>&1; r; s nproc; nproc 2>&1; r; s cpustat; { sed -n 1p /proc/stat; sleep 1; sed -n 1p /proc/stat; } 2>&1; r; s dockerroot; echo /var/lib/docker; r; s dfroot; df -P / 2>&1; r; s dfdocker; df -P /var/lib/docker 2>&1; r' 2>/dev/null; v=$?
+colima ssh -- sh -c 'LC_ALL=C; export LC_ALL; s() { echo "@@ $1"; }; r() { echo "@@rc $?"; }; s free; free -b 2>&1; r; s loadavg; awk 1 /proc/loadavg 2>&1; r; s nproc; nproc 2>&1; r; s cpustat; { sed -n 1p /proc/stat; sleep 1; sed -n 1p /proc/stat; } 2>&1; r; s dockerroot; echo /var/lib/docker; r; s dfroot; df -P / 2>&1; r; s dfdocker; df -P /var/lib/docker 2>&1; r; s tmpdf; df -Ph /tmp 2>&1; r; s tmpinode; df -Pi /tmp 2>&1; r; s tmpfstype; { findmnt -no FSTYPE,SIZE -T /tmp 2>/dev/null || mount 2>/dev/null | grep " on /tmp type "; }; r' 2>/dev/null; v=$?
 s vmssh; echo "exit $v"; [ "$v" = 0 ]; r
 else
 s swapusage; sysctl -n vm.swapusage 2>&1; r
@@ -78,13 +79,18 @@ d=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null); dn=""; [ -n "$d" ] |
 s dockerroot; echo "$d$dn"; r
 s dfroot; df -P / 2>&1; r
 s dfdocker; df -P "$d" 2>&1; r
+s tmpdf; df -Ph /tmp 2>&1; r
+s tmpinode; df -Pi /tmp 2>&1; r
+s tmpfstype; { findmnt -no FSTYPE,SIZE -T /tmp 2>/dev/null || mount 2>/dev/null | grep " on /tmp type "; }; r
 set -- /etc/gitlab-runner/config.toml /srv/gitlab-runner/config/config.toml "$HOME/.gitlab-runner/config.toml"
 fi
 D=docker; docker ps -q >/dev/null 2>&1 || { sudo -n docker ps -q >/dev/null 2>&1 && D="sudo -n docker"; }
 s dockervia; echo "$D"; r
 s dockerps; $D ps -q 2>&1; r
 s dockerstats; $D stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>&1; r
-F='match($0, /^[ \t]*\[\[?[A-Za-z0-9_.-]+\]\]?/) { print substr($0, RSTART, RLENGTH); next } /^[ \t]*(concurrent|limit|name)[ \t]*=/'
+s dockerinfo; $D info --format '{{.DockerRootDir}} {{.Driver}}' 2>&1; r
+s dockerdf; $D system df 2>&1; r
+F='match($0, /^[ \t]*\[\[?[A-Za-z0-9_.-]+\]\]?/) { t = ($0 ~ /^[ \t]*\[runners\.docker\.(services_)?tmpfs\]/); v = 0; print substr($0, RSTART, RLENGTH); next } v { print; if ($0 ~ /\]/ || ++v == 21) v = 0; next } /^[ \t]*volumes[ \t]*=/ { print; if ($0 !~ /\]/) v = 1; next } t && $0 !~ /^[ \t]*(#|$)/ { print; next } /^[ \t]*(concurrent|limit|name|privileged|shm_size|disable_cache)[ \t]*=/'
 rd() { o=$(awk "$F" "$1" 2>/dev/null) && [ -n "$o" ] && { printf '%s\n' "$o"; echo "@@path $1"; return 0; }; o=$(sudo -n awk "$F" "$1" 2>/dev/null) && [ -n "$o" ] && { printf '%s\n' "$o"; echo "@@path $1 (sudo)"; return 0; }; return 1; }
 s runnercfg; ok=0; for p in "$@"; do rd "$p" && { ok=1; break; }; done
 if [ "$ok" = 0 ]; then for c in $($D ps --format '{{.ID}} {{.Image}}' 2>/dev/null | awk '$2 ~ /gitlab-runner/ && $2 !~ /helper/ {print $1}'); do m=$($D inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/gitlab-runner"}}{{.Source}}{{end}}{{end}}' "$c" 2>/dev/null); case $m in ""|*"
@@ -216,16 +222,17 @@ def probe(target: dict) -> tuple[str | None, str | None]:
     """Run the probe. Returns (output, None) or (None, reason)."""
     argv, extra_env = ssh_invocation(target)
     env = {**os.environ, **extra_env} if extra_env else None
+    limit = SSH_TIMEOUT * 2 if str(target.get("host", "")).endswith(".local") else SSH_TIMEOUT
     try:
         result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=SSH_TIMEOUT,
+            argv, capture_output=True, text=True, timeout=limit,
             encoding="utf-8", errors="replace", env=env, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return None, f"{argv[0]} not found on PATH" + (
             " — password targets need sshpass installed" if argv[0] == "sshpass" else "")
     except subprocess.TimeoutExpired:
-        return None, f"ssh timed out after {SSH_TIMEOUT}s"
+        return None, f"ssh timed out after {limit}s"
     except (OSError, ValueError) as exc:
         # ValueError: a NUL in the resolver's password reaching env=. The class
         # only — never str(exc), which could carry the value.
@@ -412,6 +419,148 @@ def _parse_runner_config(lines):
             "path": path}
 
 
+_RUNNER_KEYS = ("privileged", "shm_size", "disable_cache")
+_TOML_STRING_RE = re.compile(r"\"([^\"]*)\"|'([^']*)'")
+
+
+def _unquote(text: str) -> str:
+    return text.strip().strip("\"'")
+
+
+def _toml_strings(text: str) -> list[str]:
+    return [a or b for a, b in _TOML_STRING_RE.findall(text)]
+
+
+def _parse_runner_detail(lines):
+    """Per `[[runners]]` block: the whitelisted docker keys and the two tmpfs
+    tables, as the host-side awk let them through."""
+    if isinstance(lines, Unreadable):
+        return lines
+    stripped = [line.strip() for line in lines]
+    if "MISSING" in stripped:
+        return Unreadable(_CONFIG_MISSING)
+    runners: list[dict] = []
+    section = ""
+    volumes: list[str] | None = None
+    for line in stripped:
+        if not line or line.startswith("@@path "):
+            continue
+        if volumes is not None:
+            volumes.append(line)
+            if "]" in line:
+                runners[-1]["volumes"] = _toml_strings(" ".join(volumes))
+                volumes = None
+            continue
+        if line.startswith("["):
+            section = line.split("#", 1)[0].strip()
+            if section == "[[runners]]":
+                runners.append({"name": None, "privileged": None, "volumes": None, "shm_size": None,
+                                "disable_cache": None, "tmpfs": [], "services_tmpfs": []})
+            continue
+        if not runners:
+            continue
+        current = runners[-1]
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.split("#", 1)[0].strip()
+        if section == "[[runners]]" and key == "name":
+            current["name"] = _unquote(value)
+        elif section == "[runners.docker]" and key in _RUNNER_KEYS:
+            current[key] = _unquote(value)
+        elif section == "[runners.docker]" and key == "volumes":
+            if "]" in value:
+                current["volumes"] = _toml_strings(value)
+            else:
+                volumes = [value]
+        elif section in ("[runners.docker.tmpfs]", "[runners.docker.services_tmpfs]") and key:
+            table = "tmpfs" if section == "[runners.docker.tmpfs]" else "services_tmpfs"
+            current[table].append(f"{_unquote(key)}={_unquote(value)}")
+    if volumes is not None and runners:
+        runners[-1]["volumes"] = _toml_strings(" ".join(volumes))
+    return runners
+
+
+def _parse_tmp(df_lines, inode_lines, fstype_lines):
+    """`df -Ph /tmp`, `df -Pi /tmp` and the filesystem type: sizes stay as df
+    printed them (human units), percentages become numbers."""
+    if isinstance(df_lines, Unreadable):
+        return df_lines
+    result: dict | None = None
+    for line in df_lines[1:]:
+        fields = line.split()
+        if len(fields) < 6:
+            continue
+        try:
+            result = {"filesystem": fields[0], "size": fields[1], "used": fields[2],
+                      "available": fields[3], "percent": int(fields[4].rstrip("%")),
+                      "mount": " ".join(fields[5:])}
+        except ValueError:
+            continue
+        break
+    if result is None:
+        return Unreadable("no filesystem line")
+    result["inode_percent"] = _parse_inode_percent(inode_lines)
+    result["fstype"] = _parse_fstype(fstype_lines)
+    return result
+
+
+def _parse_inode_percent(lines):
+    if isinstance(lines, Unreadable):
+        return lines
+    if not any("IUsed" in line or "Inodes" in line for line in lines):
+        return Unreadable("df prints no inode columns on this host")
+    for line in lines:
+        fields = line.split()
+        if len(fields) >= 6 and "IUse%" not in fields and (fields[4].endswith("%") or fields[4] == "-"):
+            return int(fields[4].rstrip("%")) if fields[4].rstrip("%").isdigit() else None
+    return Unreadable("no inode line")
+
+
+_MOUNT_TYPE_RE = re.compile(r" type (\S+)")
+
+
+def _parse_fstype(lines):
+    """`findmnt -no FSTYPE,SIZE` -> `ext4 410G`; the `mount` fallback line
+    `tmpfs on /tmp type tmpfs (rw,...)` carries no size."""
+    if isinstance(lines, Unreadable):
+        return lines
+    for line in lines:
+        match = _MOUNT_TYPE_RE.search(line)
+        if match:
+            return {"type": match.group(1), "size": None}
+        fields = line.split()
+        if fields:
+            return {"type": fields[0], "size": fields[1] if len(fields) > 1 else None}
+    return Unreadable("no filesystem type")
+
+
+def _parse_docker_info(lines):
+    if isinstance(lines, Unreadable):
+        return lines
+    for line in lines:
+        fields = line.split()
+        if len(fields) >= 2:
+            return {"root": " ".join(fields[:-1]), "driver": fields[-1]}
+    return Unreadable("no DockerRootDir / Driver line")
+
+
+_DOCKER_DF_RE = re.compile(r"^(Images|Containers|Local Volumes)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)")
+_DOCKER_DF_LABEL = {"Images": "images", "Containers": "containers", "Local Volumes": "volumes"}
+
+
+def _parse_docker_df(lines):
+    """The Images, Containers and Local Volumes rows of `docker system df`."""
+    if isinstance(lines, Unreadable):
+        return lines
+    rows: dict[str, dict] = {}
+    for line in lines:
+        match = _DOCKER_DF_RE.match(line.strip())
+        if match:
+            rows[_DOCKER_DF_LABEL[match.group(1)]] = {
+                "total": int(match.group(2)), "active": int(match.group(3)),
+                "size": match.group(4), "reclaimable": match.group(5)}
+    return rows or Unreadable("no Images / Containers / Volumes rows in docker system df")
+
+
 _CONFIG_MISSING = ("not found, or not readable even with sudo -n, at /etc/gitlab-runner, "
                    "/srv/gitlab-runner/config, ~/.gitlab-runner, or a gitlab-runner "
                    "container mount (macOS: ~/.gitlab-runner, /opt/homebrew/etc, /usr/local/etc)")
@@ -493,6 +642,7 @@ def parse_probe(text: str) -> dict:
     vm = _parse_root(_section(sections, "vm")) if os_name == "Darwin" else None
     host_memory = None
     docker_df = None
+    mac_only = os_name == "Darwin" and vm != "colima"
     if os_name == "Darwin":
         host_memory = _parse_darwin_memory(_section(sections, "memsize"), _section(sections, "vmstat"))
     if vm == "colima":
@@ -521,13 +671,18 @@ def parse_probe(text: str) -> dict:
         "containers": _parse_containers(_section(sections, "dockerps")),
         "stats": _parse_stats(_section(sections, "dockerstats")),
         "runner_config": _parse_runner_config(_section(sections, "runnercfg")),
+        "runner_detail": _parse_runner_detail(_section(sections, "runnercfg")),
+        "tmp": None if mac_only else _parse_tmp(_section(sections, "tmpdf"), _section(sections, "tmpinode"),
+                                                _section(sections, "tmpfstype")),
+        "docker_info": None if mac_only else _parse_docker_info(_section(sections, "dockerinfo")),
+        "docker_system_df": None if mac_only else _parse_docker_df(_section(sections, "dockerdf")),
     }
     if vm == "colima":
         ssh = _section(sections, "vmssh")
         if isinstance(ssh, Unreadable):
             # The VM's sections never arrived: say why, not "not in the probe output".
             why = Unreadable(f"colima ssh failed ({ssh.reason})")
-            for key in ("memory", "swap", "load", "cpus", "cpustat", "disk_root", "disk_docker", "docker_root"):
+            for key in ("memory", "swap", "load", "cpus", "cpustat", "disk_root", "disk_docker", "docker_root", "tmp"):
                 if isinstance(parsed[key], Unreadable):
                     parsed[key] = why
     return parsed
@@ -596,6 +751,25 @@ def render(parsed: dict) -> list[str]:
             same = " (same filesystem as /)"
         out.append(f"  disk   : {label} {disk['percent']}% used, {_gib(disk['available'])} free "
                    f"of {_gib(disk['size'])}{same}")
+    tmp = parsed.get("tmp")
+    if isinstance(tmp, Unreadable):
+        out.append("  tmp    : " + _cell(tmp))
+    elif tmp:
+        fstype = tmp["fstype"]
+        if isinstance(fstype, Unreadable):
+            kind = "filesystem type " + _cell(fstype)
+        else:
+            kind = _untrusted.flat(fstype["type"])
+            if fstype["type"] == "tmpfs":
+                kind += (f" {_untrusted.flat(fstype['size'])}" if fstype["size"] else "") + " (memory-backed)"
+        inodes = tmp["inode_percent"]
+        inode_text = ("inodes " + _cell(inodes)) if isinstance(inodes, Unreadable) else (
+            "inodes n/a" if inodes is None else f"inodes {inodes}% used")
+        where = ("same filesystem as /" if not isinstance(root, Unreadable) and tmp["mount"] == root["mount"]
+                 else f"own mount {_untrusted.flat(tmp['mount'])}")
+        out.append(f"  tmp    : {_untrusted.flat(tmp['size'])} total, {_untrusted.flat(tmp['used'])} used, "
+                   f"{_untrusted.flat(tmp['available'])} free ({tmp['percent']}% used), {inode_text}; "
+                   f"{kind}; {where}")
     if mac_only:
         vm = parsed.get("docker_df")
         out.append("  docker vm : " + (_cell(vm) or
@@ -615,6 +789,18 @@ def render(parsed: dict) -> list[str]:
                        f"{_untrusted.flat(mem_pct):>7}  {_untrusted.flat(mem)}")
         if len(stats) > _STATS_MAX:
             out.append(f"           … +{len(stats) - _STATS_MAX} more")
+    info, system_df = parsed.get("docker_info"), parsed.get("docker_system_df")
+    if isinstance(info, Unreadable) and isinstance(system_df, Unreadable):
+        out.append(f"  docker info : no access ({info.reason})")
+    elif info is not None:
+        out.append("  docker info : " + (_cell(info) or
+                   f"root {_untrusted.flat(info['root'])}, driver {_untrusted.flat(info['driver'])}"))
+        if isinstance(system_df, Unreadable):
+            out.append("  docker df : " + _cell(system_df))
+        elif system_df:
+            out.append("  docker df : " + "; ".join(
+                f"{label} {row['total']} ({_untrusted.flat(row['size'])}, "
+                f"{_untrusted.flat(row['reclaimable'])} reclaimable)" for label, row in system_df.items()))
     config = parsed["runner_config"]
     if isinstance(config, Unreadable):
         out.append(f"  runner : config.toml {config.reason}")
@@ -625,4 +811,16 @@ def render(parsed: dict) -> list[str]:
             for name, limit in config["limits"]) or "no [[runners]]"
         source = f"; from {_untrusted.flat(config['path'])}" if config.get("path") else ""
         out.append(f"  runner : concurrent {concurrent}; limit {limits}{source}")
+        detail = parsed.get("runner_detail")
+        for runner in detail if isinstance(detail, list) else []:
+            name = _untrusted.flat(runner["name"] or "?")
+            volumes = runner["volumes"]
+            shown = "unset" if volumes is None else ", ".join(_untrusted.flat(v) for v in volumes) or "none"
+            keys = ", ".join(f"{key} {_untrusted.flat(runner[key]) if runner[key] is not None else 'unset'}"
+                             for key in _RUNNER_KEYS)
+            out.append(f"           {name}: {keys}, volumes [{shown}]")
+            out.append(f"           {name}: tmpfs "
+                       + (", ".join(_untrusted.flat(e) for e in runner["tmpfs"]) or "empty")
+                       + "; services_tmpfs "
+                       + (", ".join(_untrusted.flat(e) for e in runner["services_tmpfs"]) or "empty"))
     return out

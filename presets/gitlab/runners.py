@@ -19,8 +19,8 @@ and derives the one line you actually want:
     gl-runners           fleet table + queue depth + starvation warnings
     gl-runners:full      adds project scope, timeouts, runner managers
     gl-runners:queue     pending/running jobs grouped by the runner that can take them
-    gl-runners:host[:D]  per-box RAM/swap/load/disk/docker/concurrent over one
-                         read-only ssh call each (see _host_probe.py)
+    gl-runners:host[:D]  per-box RAM/swap/load/disk, /tmp, docker, runner config over
+                         one read-only ssh call each (see _host_probe.py)
 
 STARVED is the finding this exists for: pending jobs whose tags match only
 runners that have stopped heartbeating. Those jobs cannot move, no other
