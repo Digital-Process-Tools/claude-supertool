@@ -138,7 +138,9 @@ def test_sudo_is_only_ever_non_interactive_and_only_for_docker_or_awk() -> None:
         assert re.match(r"sudo -n (docker|awk)\b", use), use
     # `$D` may be `sudo -n docker`: every verb it runs must be a read.
     assert set(re.findall(r"\$D (\w+)", script)) <= {"ps", "stats", "inspect", "info", "system"}
-    assert re.findall(r"\$D system (\w+)", script) == ["df"]
+    assert re.findall(r"\$D system (\w+)", script) == []
+    # A `timeout N` prefix in front of `$D` is allowed: it bounds the slow reads.
+    assert re.findall(r"timeout \d+ \$D (\w+)", script) == ["stats", "info"]
 
 
 def test_a_service_name_inside_a_runner_is_not_taken_for_the_runner_name() -> None:
@@ -1174,5 +1176,10 @@ def test_the_real_script_reads_docker_info_and_system_df_through_the_chosen_dock
         'esac'))
     parsed = host_probe.parse_probe(_run_probe(env))
     assert parsed["docker_info"] == {"root": "/var/lib/docker", "driver": "overlay2"}
-    assert parsed["docker_system_df"]["volumes"] == {"total": 3, "active": 1, "size": "2GB", "reclaimable": "1GB"}
+    assert isinstance(parsed["docker_system_df"], host_probe.Unreadable)
+    assert parsed["docker_system_df"].reason.startswith("not measured")
+    rendered = "\n".join(host_probe.render(parsed))
+    assert "  docker info : root /var/lib/docker, driver overlay2" in rendered
+    assert "  docker df : not measured: docker system df takes up to a minute" in rendered
+    assert "unreadable" not in rendered.split("docker df :")[1].splitlines()[0]
     assert parsed["docker_via"] == "docker"

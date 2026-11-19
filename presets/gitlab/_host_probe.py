@@ -87,9 +87,9 @@ fi
 D=docker; docker ps -q >/dev/null 2>&1 || { sudo -n docker ps -q >/dev/null 2>&1 && D="sudo -n docker"; }
 s dockervia; echo "$D"; r
 s dockerps; $D ps -q 2>&1; r
-s dockerstats; $D stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>&1; r
-s dockerinfo; $D info --format '{{.DockerRootDir}} {{.Driver}}' 2>&1; r
-s dockerdf; $D system df 2>&1; r
+s dockerstats; timeout 8 $D stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>&1; r
+s dockerinfo; timeout 5 $D info --format '{{.DockerRootDir}} {{.Driver}}' 2>&1; r
+s dockerdf; echo "not measured: docker system df takes up to a minute on a busy runner"; r
 F='match($0, /^[ \t]*\[\[?[A-Za-z0-9_.-]+\]\]?/) { t = ($0 ~ /^[ \t]*\[runners\.docker\.(services_)?tmpfs\]/); v = 0; print substr($0, RSTART, RLENGTH); next } v { print; if ($0 ~ /\]/ || ++v == 21) v = 0; next } /^[ \t]*volumes[ \t]*=/ { print; if ($0 !~ /\]/) v = 1; next } t && $0 !~ /^[ \t]*(#|$)/ { print; next } /^[ \t]*(concurrent|limit|name|privileged|shm_size|disable_cache)[ \t]*=/'
 rd() { o=$(awk "$F" "$1" 2>/dev/null) && [ -n "$o" ] && { printf '%s\n' "$o"; echo "@@path $1"; return 0; }; o=$(sudo -n awk "$F" "$1" 2>/dev/null) && [ -n "$o" ] && { printf '%s\n' "$o"; echo "@@path $1 (sudo)"; return 0; }; return 1; }
 s runnercfg; ok=0; for p in "$@"; do rd "$p" && { ok=1; break; }; done
@@ -553,6 +553,8 @@ def _parse_docker_df(lines):
         return lines
     rows: dict[str, dict] = {}
     for line in lines:
+        if line.startswith("not measured"):
+            return Unreadable(_untrusted.flat(line.strip())[:120])
         match = _DOCKER_DF_RE.match(line.strip())
         if match:
             rows[_DOCKER_DF_LABEL[match.group(1)]] = {
@@ -795,7 +797,9 @@ def render(parsed: dict) -> list[str]:
     elif info is not None:
         out.append("  docker info : " + (_cell(info) or
                    f"root {_untrusted.flat(info['root'])}, driver {_untrusted.flat(info['driver'])}"))
-        if isinstance(system_df, Unreadable):
+        if isinstance(system_df, Unreadable) and system_df.reason.startswith("not measured"):
+            out.append("  docker df : " + system_df.reason)
+        elif isinstance(system_df, Unreadable):
             out.append("  docker df : " + _cell(system_df))
         elif system_df:
             out.append("  docker df : " + "; ".join(

@@ -16,7 +16,7 @@ GitLab ops via the `glab` CLI. Replaces the 3-5 separate `glab` calls needed to 
 | `gl-pipeline` | `gl-pipeline:NUMBER[:full\|:active\|:failed\|:traces]` | Pipeline job list grouped by stage with pass/fail status and failed job IDs. The default board collapses the `manual`/`created`/`skipped` bulk to a one-line count so the running/done/failed jobs aren't buried. `:active` shows only running/pending jobs ("what's still going"); `:failed` shows only failed jobs plus their job IDs/URLs ("what broke"); `:traces` ([#626](https://github.com/Digital-Process-Tools/claude-supertool/issues/626)) writes every failed job's full trace to one file via `gl-job`'s own trace writer and prints only the path plus a receipt — the actual entry point once a pipeline has failed, since `:failed` otherwise leaves the trail cold at the job IDs |
 | `gl-job` | `gl-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN\|:artifacts\|:artifact:PATH]` | Job failure detail: MR context + error pattern search + log tail. `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**; a START past the end of the log returns the tail of the width requested and says so, rather than declining (see [Reading a range](#reading-a-range)); `:grep:PATTERN` runs an ad-hoc regex over the trace (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Cause markers are always matched on top of the configured patterns, and a *failed* job that matches nothing is reported as unclassified with a log tail rather than as "no errors". `:artifacts` ([#1796](https://github.com/Digital-Process-Tools/claude-supertool/issues/1796)) prints what the job produced — archive filename, size, expiry, and which kinds (`archive`/`metadata`/`trace`) are present — and says plainly that GitLab's job API does not name the paths *inside* the archive, so a specific `PATH` still has to be known some other way (a trace's own printed path, typically); `:artifact:PATH` fetches that one file through GitLab's single-file endpoint (`.../jobs/:job_id/artifacts/*path`), never the whole archive. Printed text only, capped at `GL_JOB_ARTIFACT_MAX_BYTES` (default 65536), and an expired archive says so rather than failing obscurely. This op's own timeout is sized for a single job's fetch — for a comma-separated multi-id trace dump use `gl-job-trace` instead ([#2146](https://github.com/Digital-Process-Tools/claude-supertool/issues/2146)); the old `gl-job:ID:trace` form is refused, pointed at that op, rather than run under a budget too small for it |
 | `gl-job-trace` | `gl-job-trace:NUMBER[,NUMBER...]` | `gl-job`'s trace writer, split into its own op ([#2146](https://github.com/Digital-Process-Tools/claude-supertool/issues/2146)) so its wider timeout budget — sized for a multi-id fan-out fetched serially at up to 30s each — stops leaking onto `gl-job`'s other modes, none of which fan out. Writes the whole trace to a file under the process's own proven-ours temp root, never into context — see [Writing a trace to disk](#writing-a-trace-to-disk) |
-| `gl-runners` | `gl-runners[:full\|:queue\|:host[:DESCRIPTION]]` | Runner fleet health table, STARVED diagnosis; `:full` adds detail, `:queue` groups jobs by eligible runner. `:host` reads every runner box the project's resolver knows (`:host:DESCRIPTION` for one) over a single read-only SSH call — RAM/swap, load against CPU count, `/` and docker-root disk, `/tmp` (size, used, free, inode use, tmpfs or not), running containers with a `docker stats` table, `docker info` / `docker system df`, `concurrent`/`limit` and the docker keys (`privileged`, `volumes`, `shm_size`, `disable_cache`, tmpfs tables) from `config.toml` — under the runner's GitLab status, tags and running-job count. See [Runner host probe](#runner-host-probe) |
+| `gl-runners` | `gl-runners[:full\|:queue\|:host[:DESCRIPTION]]` | Runner fleet health table, STARVED diagnosis; `:full` adds detail, `:queue` groups jobs by eligible runner. `:host` reads every runner box the project's resolver knows (`:host:DESCRIPTION` for one) over a single read-only SSH call — RAM/swap, load against CPU count, `/` and docker-root disk, `/tmp` (size, used, free, inode use, tmpfs or not), running containers with a `docker stats` table, `docker info` (not `docker system df` on Linux: too slow on a busy runner; the macOS colima path still reads it), `concurrent`/`limit` and the docker keys (`privileged`, `volumes`, `shm_size`, `disable_cache`, tmpfs tables) from `config.toml` — under the runner's GitLab status, tags and running-job count. See [Runner host probe](#runner-host-probe) |
 | `gl-api` | `gl-api:PATH[?query][:full]` | A **GET** of any GitLab REST path, for the rest of the API no `gl-*` op shapes — members, access tokens, deploy keys, protected branches, project and user events. Returns the JSON body fenced as remote text, plus one line saying whether it is the whole answer. `:full` follows every page. See [GET-only, and why that is the whole design](#get-only-and-why-that-is-the-whole-design) and [A full page is not a complete list](#a-full-page-is-not-a-complete-list) |
 
 ### A CI job name is the merge request author's text
@@ -1127,13 +1127,13 @@ more `concurrent` jobs than it has CPUs.
            NAME                                              CPU    MEM%  MEM
            runner-abc-project-1-concurrent-0             150.25%   9.60%  1.5GiB / 15.6GiB
   docker info : root /var/lib/docker, driver overlay2
-  docker df : images 12 (3.1GB, 1.2GB reclaimable); containers 4 (50MB, 0B reclaimable); volumes 5 (1GB, 200MB reclaimable)
+  docker df : not measured: docker system df takes up to a minute on a busy runner
   runner : concurrent 4; limit dptools-runner-2=3, dptools-runner-2 V2=unset; from /etc/gitlab-runner/config.toml
            dptools-runner-2: privileged true, shm_size 0, disable_cache false, volumes [/cache]
            dptools-runner-2: tmpfs empty; services_tmpfs empty
 ```
 
-The `tmp` line, the two `docker info` / `docker df` lines and the extra `runner`
+The `tmp` line, the two `docker info` / `docker df` lines (the latter says `not measured`) and the extra `runner`
 lines answer "is there room in `/tmp`, and what does the runner give its jobs"
 without a hand-written SSH script:
 
@@ -1143,11 +1143,14 @@ without a hand-written SSH script:
   `same filesystem as /` or `own mount ...`, and `tmpfs ... (memory-backed)` when
   `/tmp` lives in RAM. A filesystem with no inode counts says `inodes n/a`; a
   failed reading is `unreadable (...)`, never zero.
-- `docker info`: `docker info --format '{{.DockerRootDir}} {{.Driver}}'`, and
-  `docker df`: the Images, Containers and Local Volumes rows of
-  `docker system df` (count, size, reclaimable). Both go through the same docker
-  the `docker :` line chose, so `sudo -n docker` is tried when the plain socket is
-  refused. When neither route reaches the socket the line reads
+- `docker info`: `timeout 5 docker info --format '{{.DockerRootDir}} {{.Driver}}'`,
+  through the same docker the `docker :` line chose, so `sudo -n docker` is tried
+  when the plain socket is refused. `docker df` is **not measured** on Linux:
+  `docker system df` takes 17 to 57 s on a busy runner, and `timeout` cannot stop
+  it (it kills `sudo` while the orphaned docker keeps the SSH stdout open), so the
+  whole probe hit the 30 s SSH timeout. The line says `not measured` instead. The
+  macOS colima path is unchanged and still reads `docker system df`
+  (`docker vm :`). When neither route reaches the socket the line reads
   `docker info : no access (permission denied ...)`.
 - `runner` detail lines: per `[[runners]]` block, `privileged`, `shm_size`,
   `disable_cache` and `volumes` (from `[runners.docker]`), then the contents of
@@ -1202,7 +1205,7 @@ side writes nothing.
 description, not the target — is interpolated into what runs remotely. It is
 read-only: `free -b`, `/proc/loadavg`, `nproc`, `df -P` once for `/` and once
 for the docker root (so a missing docker root cannot hide `/`), `docker ps -q`,
-`docker stats --no-stream`, `docker info --format` and `docker system df`,
+`timeout 8 docker stats --no-stream` and `timeout 5 docker info --format` (no `docker system df` on Linux),
 `df -Ph /tmp`, `df -Pi /tmp`, `findmnt -no FSTYPE,SIZE -T /tmp`, and `config.toml`
 filtered **on the host** by `awk` through a whitelist, never a blacklist: the bare
 section header (`[[runners]]`, with any trailing comment cut off), the
@@ -1223,7 +1226,7 @@ leaves a few `sudo: a password is required` lines in that host's auth log
 (one for docker, one per `config.toml` candidate that exists or is hidden).
 
 - Docker: when `docker ps` fails (the SSH user is not in the `docker` group),
-  `ps`, `stats`, `info`, `system df` and the `inspect` below run as `sudo -n docker`, and the line
+  `ps`, `stats`, `info` and the `inspect` below run as `sudo -n docker`, and the line
   reads `3 running (via sudo -n)`. A socket neither route can reach still
   prints `unreadable (permission denied ...)`, never `0 running`.
 - `config.toml`: tried in order at `/etc/gitlab-runner/config.toml`,
